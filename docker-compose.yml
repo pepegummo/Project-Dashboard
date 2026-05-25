@@ -1,0 +1,111 @@
+version: "3.9"
+
+services:
+  # ─────────────────────────────────────────────────────────────
+  #  PostgreSQL + TimescaleDB
+  # ─────────────────────────────────────────────────────────────
+  db:
+    image: timescale/timescaledb:latest-pg16
+    container_name: iot_timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-iot_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-iot_password}
+      POSTGRES_DB: ${POSTGRES_DB:-iot_dashboard}
+    ports:
+      - "5432:5432"
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+      - ./scripts/init-timescale.sql:/docker-entrypoint-initdb.d/01-init-timescale.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-iot_user} -d ${POSTGRES_DB:-iot_dashboard}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─────────────────────────────────────────────────────────────
+  #  Redis (session / pub-sub / caching)
+  # ─────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: iot_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─────────────────────────────────────────────────────────────
+  #  Backend API + WebSocket server
+  # ─────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: iot_backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-iot_user}:${POSTGRES_PASSWORD:-iot_password}@db:5432/${POSTGRES_DB:-iot_dashboard}
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-change-this-super-secret-key-in-production}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-24h}
+      PORT: 4000
+      WS_PORT: 4001
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+    ports:
+      - "4000:4000"   # REST API
+      - "4001:4001"   # WebSocket
+      - "5555:5555"   # Prisma Studio
+    volumes:
+      - backend_logs:/app/logs
+
+  # ─────────────────────────────────────────────────────────────
+  #  Frontend Dev Server (override for prod with nginx)
+  # ─────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: iot_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:4000}
+      VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:4001}
+    ports:
+      - "5173:80"
+
+  # ─────────────────────────────────────────────────────────────
+  #  pgAdmin 4 — DB browser + ER diagram
+  # ─────────────────────────────────────────────────────────────
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: iot_pgadmin
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@admin.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+volumes:
+  timescale_data:
+  redis_data:
+  backend_logs:
+  pgadmin_data:

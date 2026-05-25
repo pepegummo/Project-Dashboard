@@ -1,0 +1,95 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Base ─────────────────────────────────────────────────────────────────── */
+@layer base {
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html { font-family: 'Inter', system-ui, sans-serif; }
+  body { @apply bg-surface text-gray-100 antialiased; }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { @apply bg-surface-100; }
+  ::-webkit-scrollbar-thumb { @apply bg-surface-400 rounded-full; }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-surface-500; }
+}
+
+/* ─── Components ───────────────────────────────────────────────────────────── */
+@layer components {
+  /* Cards */
+  .card { @apply bg-surface-100 border border-white/5 rounded-xl p-4 shadow-card; }
+  .card-hover { @apply card hover:border-white/10 hover:shadow-card-hover transition-all duration-200; }
+
+  /* Buttons */
+  .btn { @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-surface; }
+  .btn-primary { @apply btn bg-primary-500 text-white hover:bg-primary-600 focus:ring-primary-500; }
+  .btn-secondary { @apply btn bg-surface-300 text-gray-200 hover:bg-surface-400 focus:ring-surface-400; }
+  .btn-danger { @apply btn bg-red-600 text-white hover:bg-red-700 focus:ring-red-500; }
+  .btn-ghost { @apply btn text-gray-400 hover:text-white hover:bg-surface-200; }
+  .btn-sm { @apply px-3 py-1.5 text-xs; }
+  .btn-icon { @apply p-2; }
+
+  /* Form inputs */
+  .input {
+    @apply w-full bg-surface-200 border border-white/10 rounded-lg px-3 py-2 text-sm text-gray-100
+           placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent
+           transition-colors;
+  }
+  .label { @apply block text-xs font-medium text-gray-400 mb-1.5 uppercase tracking-wide; }
+
+  /* Badges */
+  .badge { @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium; }
+  .badge-green  { @apply badge bg-emerald-500/20 text-emerald-400 border border-emerald-500/30; }
+  .badge-yellow { @apply badge bg-amber-500/20 text-amber-400 border border-amber-500/30; }
+  .badge-red    { @apply badge bg-red-500/20 text-red-400 border border-red-500/30; }
+  .badge-blue   { @apply badge bg-blue-500/20 text-blue-400 border border-blue-500/30; }
+  .badge-gray   { @apply badge bg-gray-500/20 text-gray-400 border border-gray-500/30; }
+
+  /* Status dot */
+  .status-dot { @apply w-2 h-2 rounded-full flex-shrink-0; }
+  .status-dot-online      { @apply status-dot bg-emerald-500 shadow-glow-green animate-pulse-slow; }
+  .status-dot-offline     { @apply status-dot bg-gray-500; }
+  .status-dot-maintenance { @apply status-dot bg-amber-500; }
+  .status-dot-error       { @apply status-dot bg-red-500 shadow-glow-red; }
+
+  /* Page header */
+  .page-header { @apply flex items-center justify-between mb-6; }
+  .page-title { @apply text-2xl font-bold text-white; }
+  .page-subtitle { @apply text-sm text-gray-400 mt-1; }
+
+  /* Table */
+  .table-container { @apply overflow-x-auto rounded-xl border border-white/5; }
+  .table { @apply w-full text-sm; }
+  .table thead tr { @apply border-b border-white/5 bg-surface-200; }
+  .table th { @apply px-4 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider; }
+  .table tbody tr { @apply border-b border-white/5 hover:bg-surface-200/50 transition-colors; }
+  .table td { @apply px-4 py-3 text-gray-300; }
+
+  /* Sidebar link */
+  .nav-link {
+    @apply flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-gray-400
+           hover:text-white hover:bg-surface-200 transition-all duration-150;
+  }
+  .nav-link.active { @apply text-white bg-primary-500/10 border border-primary-500/20; }
+
+  /* Spinner */
+  .spinner { @apply w-5 h-5 border-2 border-white/20 border-t-primary-500 rounded-full animate-spin; }
+}
+
+/* ─── GridStack overrides ──────────────────────────────────────────────────── */
+.grid-stack { background: transparent; }
+.grid-stack-item-content {
+  @apply rounded-xl overflow-hidden border border-white/5 bg-surface-100;
+  inset: 4px !important;
+}
+.grid-stack-item.ui-draggable-dragging .grid-stack-item-content {
+  @apply border-primary-500/50 shadow-glow-blue;
+}
+.grid-stack-placeholder > .placeholder-content {
+  @apply bg-primary-500/10 border-2 border-dashed border-primary-500/40 rounded-xl;
+  inset: 4px !important;
+}
+
+/* ─── ECharts sizing ───────────────────────────────────────────────────────── */
+.echarts { width: 100% !important; height: 100% !important; }

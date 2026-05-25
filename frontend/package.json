@@ -1,0 +1,35 @@
+{
+  "name": "iot-dashboard-frontend",
+  "version": "1.0.0",
+  "description": "Industrial IoT AI Dashboard — Frontend",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5173",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit",
+    "lint": "eslint src --ext .vue,.ts,.tsx"
+  },
+  "dependencies": {
+    "@vueuse/core": "^10.11.0",
+    "axios": "^1.7.2",
+    "echarts": "^5.5.0",
+    "gridstack": "^10.3.1",
+    "lucide-vue-next": "^0.395.0",
+    "pinia": "^2.1.7",
+    "vue": "^3.4.29",
+    "vue-echarts": "^6.7.3",
+    "vue-router": "^4.3.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/forms": "^0.5.7",
+    "@types/node": "^20.14.9",
+    "@vitejs/plugin-vue": "^5.0.5",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.39",
+    "tailwindcss": "^3.4.4",
+    "typescript": "^5.5.3",
+    "vite": "^5.3.3",
+    "vue-tsc": "^2.0.26"
+  }
+}

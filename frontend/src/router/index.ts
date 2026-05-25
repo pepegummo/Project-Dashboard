@@ -1,0 +1,68 @@
+import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router';
+import { useAuthStore } from '@/stores/auth.store';
+
+const routes: RouteRecordRaw[] = [
+  {
+    path: '/login',
+    name: 'Login',
+    component: () => import('@/pages/LoginPage.vue'),
+    meta: { public: true, layout: 'blank' },
+  },
+  {
+    path: '/',
+    redirect: '/dashboards',
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/dashboards',
+    name: 'DashboardList',
+    component: () => import('@/pages/DashboardListPage.vue'),
+    meta: { requiresAuth: true, title: 'Dashboards' },
+  },
+  {
+    path: '/dashboards/:id',
+    name: 'DashboardEditor',
+    component: () => import('@/pages/DashboardEditorPage.vue'),
+    meta: { requiresAuth: true, title: 'Dashboard Editor' },
+  },
+  {
+    path: '/machines',
+    name: 'MachineManagement',
+    component: () => import('@/pages/MachineManagementPage.vue'),
+    meta: { requiresAuth: true, title: 'Machines' },
+  },
+  {
+    path: '/alerts',
+    name: 'Alerts',
+    component: () => import('@/pages/AlertsPage.vue'),
+    meta: { requiresAuth: true, title: 'Alerts' },
+  },
+  {
+    path: '/ai',
+    name: 'AIAssistant',
+    component: () => import('@/pages/AIAssistantPage.vue'),
+    meta: { requiresAuth: true, title: 'AI Assistant' },
+  },
+  {
+    path: '/:pathMatch(.*)*',
+    redirect: '/dashboards',
+  },
+];
+
+const router = createRouter({
+  history: createWebHistory(),
+  routes,
+  scrollBehavior: () => ({ top: 0 }),
+});
+
+router.beforeEach((to) => {
+  const auth = useAuthStore();
+  if (!to.meta.public && !auth.isAuthenticated) {
+    return { name: 'Login', query: { redirect: to.fullPath } };
+  }
+  if (to.name === 'Login' && auth.isAuthenticated) {
+    return { name: 'DashboardList' };
+  }
+});
+
+export default router;

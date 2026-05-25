@@ -1,0 +1,303 @@
+// ─── Prisma Schema — Industrial IoT AI Dashboard ───────────────────────────
+// PostgreSQL + TimescaleDB
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+generator erd {
+  provider = "prisma-erd-generator"
+  output   = "./ERD.svg"
+  theme    = "default"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── ORGANIZATION ─────────────────────────────────────────────────────────────
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  slug      String   @unique
+  plan      String   @default("starter") // starter, pro, enterprise
+  settings  Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  factories  Factory[]
+  users      User[]
+  dashboards Dashboard[]
+
+  @@map("organizations")
+}
+
+// ─── FACTORY ──────────────────────────────────────────────────────────────────
+model Factory {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  name           String
+  location       String?
+  timezone       String   @default("UTC")
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  productionLines ProductionLine[]
+
+  @@map("factories")
+}
+
+// ─── PRODUCTION LINE ──────────────────────────────────────────────────────────
+model ProductionLine {
+  id        String   @id @default(uuid())
+  factoryId String   @map("factory_id")
+  name      String
+  code      String?
+  status    String   @default("active") // active, paused, maintenance, offline
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  factory  Factory   @relation(fields: [factoryId], references: [id], onDelete: Cascade)
+  machines Machine[]
+
+  @@map("production_lines")
+}
+
+// ─── MACHINE ──────────────────────────────────────────────────────────────────
+model Machine {
+  id               String   @id @default(uuid())
+  productionLineId String   @map("production_line_id")
+  name             String
+  type             String   // checkweigher | temperature_sensor | conveyor | vision_camera
+  serialNumber     String?  @map("serial_number")
+  model            String?
+  manufacturer     String?
+  status           String   @default("online") // online | offline | maintenance | error
+  lastSeenAt       DateTime? @map("last_seen_at")
+  metadata         Json     @default("{}")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  productionLine ProductionLine    @relation(fields: [productionLineId], references: [id], onDelete: Cascade)
+  fields         MachineField[]
+  telemetryRaw   TelemetryRaw[]
+  widgets        DashboardWidget[]
+  alerts         Alert[]
+
+  @@map("machines")
+}
+
+// ─── MACHINE FIELD (Schema / Metadata) ───────────────────────────────────────
+model MachineField {
+  id          String   @id @default(uuid())
+  machineId   String   @map("machine_id")
+  key         String   // e.g. "weight", "temp", "rpm"
+  label       String   // e.g. "Weight (kg)", "Temperature"
+  unit        String?  // e.g. "kg", "°C", "rpm", "%"
+  dataType    String   @default("number") @map("data_type") // number | boolean | string | enum
+  min         Float?
+  max         Float?
+  precision   Int      @default(2)
+  enumValues  Json?    @map("enum_values") // for enum dataType
+  isKey       Boolean  @default(false) @map("is_key")  // primary metric
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  machine Machine @relation(fields: [machineId], references: [id], onDelete: Cascade)
+
+  @@unique([machineId, key])
+  @@map("machine_fields")
+}
+
+// ─── TELEMETRY RAW (TimescaleDB Hypertable) ───────────────────────────────────
+// Composite PK (id, timestamp) is required by TimescaleDB — the partitioning
+// column must be part of every unique constraint.
+model TelemetryRaw {
+  id        BigInt   @default(autoincrement())
+  machineId String   @map("machine_id")
+  timestamp DateTime @default(now()) @db.Timestamptz
+  data      Json     // { "weight": 502.3, "temp": 31.5, "rpm": 1200 }
+  quality   String   @default("good") // good | bad | uncertain
+
+  machine Machine @relation(fields: [machineId], references: [id], onDelete: Cascade)
+
+  @@id([id, timestamp])
+  @@index([machineId, timestamp(sort: Desc)])
+  @@map("telemetry_raw")
+}
+
+// ─── TELEMETRY AGGREGATES ─────────────────────────────────────────────────────
+model TelemetryAggregate {
+  id        BigInt   @id @default(autoincrement())
+  machineId String   @map("machine_id")
+  field     String
+  period    String   // 1m | 5m | 1h | 1d
+  timestamp DateTime @db.Timestamptz
+  avg       Float?
+  min       Float?
+  max       Float?
+  stddev    Float?
+  count     Int?
+
+  @@index([machineId, field, period, timestamp(sort: Desc)])
+  @@map("telemetry_aggregates")
+}
+
+// ─── USER ─────────────────────────────────────────────────────────────────────
+model User {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  email          String   @unique
+  name           String
+  passwordHash   String   @map("password_hash")
+  role           String   @default("viewer") // admin | editor | viewer
+  avatarUrl      String?  @map("avatar_url")
+  preferences    Json     @default("{}") // theme, notifications, etc.
+  lastLoginAt    DateTime? @map("last_login_at")
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  dashboards      Dashboard[]
+  aiConversations AiConversation[]
+  auditLogs       AuditLog[]
+
+  @@map("users")
+}
+
+// ─── DASHBOARD ────────────────────────────────────────────────────────────────
+model Dashboard {
+  id             String   @id @default(uuid())
+  organizationId String   @map("organization_id")
+  userId         String   @map("user_id")
+  name           String
+  description    String?
+  isPublic       Boolean  @default(false) @map("is_public")
+  isDefault      Boolean  @default(false) @map("is_default")
+  thumbnail      String?  // base64 or URL
+  tags           String[] @default([])
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User              @relation(fields: [userId], references: [id])
+  widgets      DashboardWidget[]
+
+  @@map("dashboards")
+}
+
+// ─── DASHBOARD WIDGET ─────────────────────────────────────────────────────────
+model DashboardWidget {
+  id          String   @id @default(uuid())
+  dashboardId String   @map("dashboard_id")
+  machineId   String?  @map("machine_id")
+  widgetType  String   @map("widget_type") // line-chart | gauge | kpi-card | status-card | table | alarm-panel
+  title       String?
+  layout      Json     // { x: 0, y: 0, w: 6, h: 4 }
+  config      Json     // widget-specific config
+  order       Int      @default(0)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  dashboard Dashboard @relation(fields: [dashboardId], references: [id], onDelete: Cascade)
+  machine   Machine?  @relation(fields: [machineId], references: [id], onDelete: SetNull)
+
+  @@map("dashboard_widgets")
+}
+
+// ─── ALERT RULE ───────────────────────────────────────────────────────────────
+model Alert {
+  id          String   @id @default(uuid())
+  machineId   String   @map("machine_id")
+  name        String
+  description String?
+  field       String   // telemetry field key
+  condition   String   // gt | lt | eq | gte | lte | neq | between | outside
+  threshold   Float
+  thresholdHi Float?   @map("threshold_hi") // for "between" / "outside"
+  severity    String   @default("warning") // info | warning | critical
+  isActive    Boolean  @default(true) @map("is_active")
+  cooldownSec Int      @default(300) @map("cooldown_sec") // suppress repeat alerts
+  notifyEmail String[] @default([]) @map("notify_email")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  machine Machine      @relation(fields: [machineId], references: [id], onDelete: Cascade)
+  events  AlertEvent[]
+
+  @@map("alerts")
+}
+
+// ─── ALERT EVENT ─────────────────────────────────────────────────────────────
+model AlertEvent {
+  id         String    @id @default(uuid())
+  alertId    String    @map("alert_id")
+  value      Float
+  message    String?
+  status     String    @default("open") // open | acknowledged | resolved
+  resolvedAt DateTime? @map("resolved_at")
+  resolvedBy String?   @map("resolved_by")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  alert Alert @relation(fields: [alertId], references: [id], onDelete: Cascade)
+
+  @@index([alertId, createdAt(sort: Desc)])
+  @@map("alert_events")
+}
+
+// ─── AI CONVERSATION ──────────────────────────────────────────────────────────
+model AiConversation {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  title     String   @default("New Conversation")
+  context   Json     @default("{}") // active dashboard, machine IDs, etc.
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user     User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages AiMessage[]
+
+  @@map("ai_conversations")
+}
+
+// ─── AI MESSAGE ───────────────────────────────────────────────────────────────
+model AiMessage {
+  id             String   @id @default(uuid())
+  conversationId String   @map("conversation_id")
+  role           String   // user | assistant | tool
+  content        String
+  toolName       String?  @map("tool_name")
+  toolInput      Json?    @map("tool_input")
+  toolResult     Json?    @map("tool_result")
+  tokens         Int?
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  conversation AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@map("ai_messages")
+}
+
+// ─── AUDIT LOG ───────────────────────────────────────────────────────────────
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?  @map("user_id")
+  action     String   // CREATE | UPDATE | DELETE | LOGIN | LOGOUT
+  resource   String   // machine | dashboard | widget | alert | user
+  resourceId String?  @map("resource_id")
+  before     Json?    // previous state
+  after      Json?    // new state
+  ipAddress  String?  @map("ip_address")
+  userAgent  String?  @map("user_agent")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([resource, resourceId])
+  @@map("audit_logs")
+}
