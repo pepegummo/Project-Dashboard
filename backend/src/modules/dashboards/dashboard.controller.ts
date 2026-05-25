@@ -12,7 +12,7 @@ const layoutSchema = z.object({
 
 const addWidgetSchema = z.object({
   machineId: z.string().uuid().optional(),
-  widgetType: z.enum(['line-chart', 'gauge', 'kpi-card', 'status-card', 'table', 'alarm-panel']),
+  widgetType: z.enum(['line-chart', 'gauge', 'kpi-card', 'status-card', 'table', 'alarm-panel', 'daily-count']),
   title: z.string().max(100).optional(),
   layout: layoutSchema,
   config: z.record(z.unknown()),

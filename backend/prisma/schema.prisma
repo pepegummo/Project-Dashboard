@@ -96,6 +96,9 @@ model MachineField {
   dataType    String   @default("number") @map("data_type") // number | boolean | string | enum
   min         Float?
   max         Float?
+  threshold   Float?                       // target / nominal operating value
+  upperLimit  Float?   @map("upper_limit") // threshold + 10%  (data should stay below)
+  lowerLimit  Float?   @map("lower_limit") // threshold - 10%  (data should stay above)
   precision   Int      @default(2)
   enumValues  Json?    @map("enum_values") // for enum dataType
   isKey       Boolean  @default(false) @map("is_key")  // primary metric

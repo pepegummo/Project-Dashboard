@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { defineAsyncComponent, computed } from 'vue';
-import { GripVertical, Settings, X, TrendingUp, Gauge, CreditCard, Activity, Table2, Bell } from 'lucide-vue-next';
+import { GripVertical, Settings, X, TrendingUp, Gauge, CreditCard, Activity, Table2, Bell, BarChart2 } from 'lucide-vue-next';
 import type { DashboardWidget } from '@/types';
 
 const props = defineProps<{
@@ -11,12 +11,13 @@ const props = defineProps<{
 
 // Dynamic component loading by widget type
 const widgetComponents = {
-  'line-chart':  defineAsyncComponent(() => import('./LineChartWidget.vue')),
-  'gauge':       defineAsyncComponent(() => import('./GaugeWidget.vue')),
-  'kpi-card':    defineAsyncComponent(() => import('./KpiCardWidget.vue')),
-  'status-card': defineAsyncComponent(() => import('./StatusCardWidget.vue')),
-  'table':       defineAsyncComponent(() => import('./TableWidget.vue')),
-  'alarm-panel': defineAsyncComponent(() => import('./AlarmPanelWidget.vue')),
+  'line-chart':   defineAsyncComponent(() => import('./LineChartWidget.vue')),
+  'gauge':        defineAsyncComponent(() => import('./GaugeWidget.vue')),
+  'kpi-card':     defineAsyncComponent(() => import('./KpiCardWidget.vue')),
+  'status-card':  defineAsyncComponent(() => import('./StatusCardWidget.vue')),
+  'table':        defineAsyncComponent(() => import('./TableWidget.vue')),
+  'alarm-panel':  defineAsyncComponent(() => import('./AlarmPanelWidget.vue')),
+  'daily-count':  defineAsyncComponent(() => import('./MachineDailyCountWidget.vue')),
 };
 
 const WidgetComponent = computed(() => widgetComponents[props.widget.widgetType] ?? null);
@@ -34,6 +35,7 @@ const typeIcon = computed(() => {
   const map: Record<string, any> = {
     'line-chart': TrendingUp, 'gauge': Gauge, 'kpi-card': CreditCard,
     'status-card': Activity, 'table': Table2, 'alarm-panel': Bell,
+    'daily-count': BarChart2,
   };
   return map[props.widget.widgetType] ?? CreditCard;
 });

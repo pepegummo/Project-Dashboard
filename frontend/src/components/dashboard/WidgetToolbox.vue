@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { X, TrendingUp, Gauge, CreditCard, Activity, Table2, Bell } from 'lucide-vue-next';
+import { X, TrendingUp, Gauge, CreditCard, Activity, Table2, Bell, BarChart2 } from 'lucide-vue-next';
 import type { WidgetType } from '@/types';
 
 defineEmits<{ select: [type: WidgetType]; close: [] }>();
@@ -46,6 +46,13 @@ const widgetTypes: Array<{ type: WidgetType; label: string; description: string;
     description: 'Active alert events feed',
     icon: Bell,
     color: 'from-red-500/20 to-red-600/10 border-red-500/30',
+  },
+  {
+    type: 'daily-count',
+    label: 'Daily Count',
+    description: 'Readings per day — 7 / 14 / 30 day view',
+    icon: BarChart2,
+    color: 'from-sky-500/20 to-sky-600/10 border-sky-500/30',
   },
 ];
 </script>

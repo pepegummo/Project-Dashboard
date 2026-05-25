@@ -22,23 +22,27 @@ async function bootstrap() {
   // ─── WebSocket (same port upgrade or separate port) ───────────────────────
   const gateway = new WsGateway(); // standalone WS server on WS_PORT
 
-  // ─── Telemetry Simulator ──────────────────────────────────────────────────
+  // ─── Telemetry Simulator (set SIMULATOR_ENABLED=true to enable) ──────────
+  const simulatorEnabled = process.env.SIMULATOR_ENABLED === 'true';
   const simulator = new TelemetrySimulator(gateway, 1000, 1);
 
-  // Load seeded machines for simulation
-  try {
-    const machines = await prisma.machine.findMany({
-      select: { id: true, name: true, type: true },
-    });
+  if (simulatorEnabled) {
+    try {
+      const machines = await prisma.machine.findMany({
+        select: { id: true, name: true, type: true },
+      });
 
-    if (machines.length > 0) {
-      simulator.configureMachines(machines);
-      simulator.start();
-    } else {
-      console.warn('⚠️  No machines found. Run db:seed first.');
+      if (machines.length > 0) {
+        simulator.configureMachines(machines);
+        simulator.start();
+      } else {
+        console.warn('⚠️  No machines found. Run db:seed first.');
+      }
+    } catch (err) {
+      console.warn('⚠️  Could not load machines for simulator:', (err as Error).message);
     }
-  } catch (err) {
-    console.warn('⚠️  Could not load machines for simulator:', (err as Error).message);
+  } else {
+    console.log('ℹ️  Simulator disabled (SIMULATOR_ENABLED=false) — using static backfill data only');
   }
 
   // ─── Start HTTP ───────────────────────────────────────────────────────────
