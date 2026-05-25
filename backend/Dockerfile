@@ -24,6 +24,8 @@ COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY prisma ./prisma
 COPY entrypoint.sh ./entrypoint.sh
 
+RUN sed -i 's/\r$//' entrypoint.sh
+
 # Create non-root user and grant ownership BEFORE switching
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup \
     && chown -R appuser:appgroup /app
