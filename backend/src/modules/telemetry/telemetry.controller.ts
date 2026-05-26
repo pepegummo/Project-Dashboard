@@ -10,12 +10,12 @@ const ingestSchema = z.object({
 
 const seriesQuerySchema = z.object({
   field: z.string(),
-  timeRange: z.enum(['5m', '15m', '30m', '1h', '6h', '24h', '7d', '14d', '30d']).default('1h'),
+  timeRange: z.enum(['5m', '15m', '30m', '1h', '6h', '24h', '7d', '15d', '30d', '3mo', '6mo', '1y']).default('1h'),
 });
 
 const aggregateQuerySchema = z.object({
   field:  z.string(),
-  period: z.enum(['5m', '15m', '30m', '1h', '6h', '24h', '7d', '14d', '30d']).default('1h'),
+  period: z.enum(['5m', '15m', '30m', '1h', '6h', '24h', '7d', '15d', '30d', '3mo', '6mo', '1y']).default('1h'),
 });
 
 const dailyCountQuerySchema = z.object({

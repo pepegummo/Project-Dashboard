@@ -72,11 +72,12 @@ export class TelemetryRepository {
         ORDER BY bucket ASC
       `;
       return rows.map(r => ({
-        ...r,
-        count: Number(r.count),
-        avg: Number(r.avg),
-        min: Number(r.min),
-        max: Number(r.max),
+        bucket: r.bucket,
+        count:  Number(r.count),
+        // Use null-safe conversion: Number(null) === 0 which would corrupt min/max
+        avg: r.avg != null ? Number(r.avg) : null,
+        min: r.min != null ? Number(r.min) : null,
+        max: r.max != null ? Number(r.max) : null,
       }));
     } catch {
       // Fallback if TimescaleDB not available

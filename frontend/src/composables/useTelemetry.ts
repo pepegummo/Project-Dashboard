@@ -54,7 +54,7 @@ export function useMachineTelemetry(machineId: string, fields: string[]) {
 
 /** Composable for a single field series within a chart widget */
 export function useFieldSeries(machineId: string, field: string, timeRange: string | Ref<string> = '1h') {
-  const apiData = ref<Array<{ ts: string; value: number }>>([]);
+  const apiData = ref<Array<{ ts: string; value: number; min?: number; max?: number }>>([]);
   const loading = ref(false);
 
   // Support both plain strings and reactive refs
@@ -64,10 +64,16 @@ export function useFieldSeries(machineId: string, field: string, timeRange: stri
     loading.value = true;
     try {
       const series = await api.getTelemetrySeries(machineId, field, timeRangeRef.value);
-      apiData.value = (series?.data ?? []).map(p => ({
-        ts: (p as any).bucket ?? p.ts,
-        value: (p as any).avg ?? p.value,
-      }));
+      apiData.value = (series?.data ?? []).map(p => {
+        const raw = p as any;
+        return {
+          ts:    raw.bucket ?? p.ts,
+          value: raw.avg    ?? p.value,
+          // Explicitly check for null/undefined — Number(null)===0 would corrupt band
+          min:   (raw.min != null) ? Number(raw.min) : undefined,
+          max:   (raw.max != null) ? Number(raw.max) : undefined,
+        };
+      });
     } catch { /* ok */ }
     loading.value = false;
   }
@@ -89,8 +95,12 @@ export function useFieldSeries(machineId: string, field: string, timeRange: stri
     if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
   });
 
-  // Reload whenever timeRange changes
-  watch(timeRangeRef, () => { loadFromApi(); });
+  // Reload whenever timeRange changes — clear stale data first so the old
+  // range never bleeds through while the new request is in-flight.
+  watch(timeRangeRef, () => {
+    apiData.value = [];
+    loadFromApi();
+  });
 
   // Use only API bucket data — never merge raw store history.
   // Gauge/KPI polling accumulates up to 300 raw-second points in the store for

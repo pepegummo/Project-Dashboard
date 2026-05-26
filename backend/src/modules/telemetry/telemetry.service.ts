@@ -19,20 +19,26 @@ const TIME_RANGE_PRESETS: Record<string, number> = {
   '1y':  365 * 24 * 60 * 60 * 1000,
 };
 
-// TimescaleDB time_bucket size per range (data is 1-min resolution)
+// TimescaleDB time_bucket size per range.
+// Rule: bucket MUST be < 1 pulse cycle (120 min) to preserve pulse shape in AVG.
+// For ranges where that would give >1500 pts we accept a flat avg but compensate
+// with min/max band in the frontend (see LineChartWidget).
+// Pulse cycle = 120 min (2 h). Keep bucket < 60 min to ensure the bucket never
+// spans a full cycle (which would cause avg ≈ threshold → flat line).
+// For ranges where that gives too many points use ≥ 1-cycle buckets + min/max band.
 const BUCKET_FOR_RANGE: Record<string, string> = {
-  '5m':  '1 minute',
-  '15m': '1 minute',
-  '30m': '1 minute',
-  '1h':  '1 minute',
-  '6h':  '5 minutes',
-  '24h': '15 minutes',
-  '7d':  '1 hour',
-  '15d': '2 hours',
-  '30d': '4 hours',
-  '3mo': '8 hours',
-  '6mo': '12 hours',
-  '1y':  '1 day',
+  '5m':  '1 minute',   //    5 pts  — raw
+  '15m': '1 minute',   //   15 pts  — raw
+  '30m': '1 minute',   //   30 pts  — raw
+  '1h':  '1 minute',   //   60 pts  — raw
+  '6h':  '5 minutes',  //   72 pts  — sub-cycle → pulse visible
+  '24h': '15 minutes', //   96 pts  — sub-cycle → pulse visible
+  '7d':  '30 minutes', //  336 pts  — sub-cycle → pulse visible
+  '15d': '30 minutes', //  720 pts  — sub-cycle → pulse visible (was 1h → hit cycle boundary)
+  '30d': '1 hour',     //  720 pts  — half-cycle → pulse visible
+  '3mo': '1 hour',     // 2160 pts  — half-cycle → pulse visible
+  '6mo': '1 hour',     // 4320 pts  — half-cycle → pulse visible
+  '1y':  '1 hour',     // 8760 pts  — half-cycle → pulse visible
 };
 
 export class TelemetryService {

@@ -10,7 +10,9 @@ export const useAuthStore = defineStore('auth', () => {
   const loading = ref(false);
   const error = ref<string | null>(null);
 
-  const isAuthenticated = computed(() => !!token.value && !!user.value);
+  // Only the token is checked — user is loaded async after refresh.
+  // If the token is expired the 401 interceptor in api.service.ts clears it and redirects.
+  const isAuthenticated = computed(() => !!token.value);
   const isAdmin = computed(() => user.value?.role === 'admin');
   const isEditor = computed(() => ['admin', 'editor'].includes(user.value?.role ?? ''));
 
