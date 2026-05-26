@@ -1,20 +1,17 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import Sidebar from '@/components/layout/Sidebar.vue'
 import TopBar from '@/components/layout/TopBar.vue'
 import LEDCarousel from '@/components/led/LEDCarousel.vue'
-import type { LEDItem } from '@/components/led/LEDCarousel.vue'
 import { useScreenMode } from '@/composables/useScreenMode'
-import { useAlertStore } from '@/stores/alert.store'
 
 const { isLED, isMobile } = useScreenMode()
-const alertStore = useAlertStore()
 const route = useRoute()
 
 // ── Sidebar state ───────────────────────────────────────────────────────────
-const sidebarOpen = ref(false)           // mobile overlay
-const desktopSidebarOpen = ref(true)     // desktop collapsible
+const sidebarOpen = ref(false)       // mobile overlay
+const desktopSidebarOpen = ref(true) // desktop collapsible
 
 const toggleSidebar = () => {
   if (isMobile.value) sidebarOpen.value = !sidebarOpen.value
@@ -24,34 +21,11 @@ const closeSidebar = () => { sidebarOpen.value = false }
 
 // Close mobile overlay on navigation
 watch(() => route.path, () => { if (isMobile.value) closeSidebar() })
-
-// ── LED carousel items ──────────────────────────────────────────────────────
-// Replace static values with live store/composable values as needed.
-const ledItems = computed<LEDItem[]>(() => [
-  {
-    label: 'Weight',
-    value: '483.88',
-    unit: 'g',
-    color: 'text-green-400',
-  },
-  {
-    label: 'Throughput',
-    value: '1,240',
-    unit: 'u / h',
-    color: 'text-cyan-400',
-  },
-  {
-    label: 'Alerts',
-    value: alertStore.openCount,
-    unit: 'open',
-    color: alertStore.openCount > 0 ? 'text-red-400' : 'text-gray-500',
-  },
-])
 </script>
 
 <template>
   <!-- ── LED Screen mode: full-viewport carousel, nothing else ── -->
-  <LEDCarousel v-if="isLED" :items="ledItems" :interval="5000" />
+  <LEDCarousel v-if="isLED" :interval="5000" />
 
   <!-- ── Desktop / Mobile layout ── -->
   <div v-else class="flex h-screen overflow-hidden">
