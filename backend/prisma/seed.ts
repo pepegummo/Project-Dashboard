@@ -147,30 +147,31 @@ async function main() {
   console.log('  ✅ Machines: Checkweigher, Temp Sensor, Conveyor, Vision Camera');
 
   // ─── Machine Fields ──────────────────────────────────────────────────────────
+  // threshold = nominal value, upper/lower = threshold ±10%
   const cwFields = [
-    { key: 'weight',     label: 'Weight',      unit: 'g',       min: 0, max: 2000, isKey: true },
-    { key: 'speed',      label: 'Belt Speed',   unit: 'ppm',     min: 0, max: 120 },
-    { key: 'rejects',    label: 'Reject Count', unit: 'pcs',     min: 0, max: 9999 },
-    { key: 'throughput', label: 'Throughput',   unit: 'pcs/min', min: 0, max: 120 },
-    { key: 'status_code',label: 'Status Code',  unit: '' },
+    { key: 'weight',      label: 'Weight',       unit: 'g',       min: 0, max: 2000, isKey: true, threshold: 500,  upperLimit: 550,  lowerLimit: 450  },
+    { key: 'speed',       label: 'Belt Speed',   unit: 'ppm',     min: 0, max: 120,              threshold: 60,   upperLimit: 66,   lowerLimit: 54   },
+    { key: 'rejects',     label: 'Reject Count', unit: 'pcs',     min: 0, max: 9999,             threshold: 0,    upperLimit: 3,    lowerLimit: 0    },
+    { key: 'throughput',  label: 'Throughput',   unit: 'pcs/min', min: 0, max: 120,              threshold: 60,   upperLimit: 66,   lowerLimit: 54   },
+    { key: 'status_code', label: 'Status Code',  unit: '' },
   ];
   const tsFields = [
-    { key: 'temp',      label: 'Temperature', unit: '°C',  min: -20, max: 80,  isKey: true },
-    { key: 'humidity',  label: 'Humidity',    unit: '%RH', min: 0,   max: 100 },
-    { key: 'dew_point', label: 'Dew Point',   unit: '°C',  min: -30, max: 60 },
+    { key: 'temp',      label: 'Temperature', unit: '°C',  min: -20, max: 80,  isKey: true, threshold: 22,  upperLimit: 24.2, lowerLimit: 19.8 },
+    { key: 'humidity',  label: 'Humidity',    unit: '%RH', min: 0,   max: 100,              threshold: 55,  upperLimit: 60.5, lowerLimit: 49.5 },
+    { key: 'dew_point', label: 'Dew Point',   unit: '°C',  min: -30, max: 60,               threshold: 11,  upperLimit: 12.1, lowerLimit: 9.9  },
   ];
   const convFields = [
-    { key: 'speed',     label: 'Belt Speed',   unit: 'mm/s', min: 0, max: 2000, isKey: true },
-    { key: 'load',      label: 'Motor Load',   unit: '%',    min: 0, max: 100 },
-    { key: 'rpm',       label: 'Motor RPM',    unit: 'rpm',  min: 0, max: 1500 },
-    { key: 'vibration', label: 'Vibration',    unit: 'mm/s²',min: 0, max: 50 },
+    { key: 'speed',     label: 'Belt Speed', unit: 'mm/s',  min: 0, max: 2000, isKey: true, threshold: 1000, upperLimit: 1100, lowerLimit: 900  },
+    { key: 'load',      label: 'Motor Load', unit: '%',     min: 0, max: 100,               threshold: 45,   upperLimit: 49.5, lowerLimit: 40.5 },
+    { key: 'rpm',       label: 'Motor RPM',  unit: 'rpm',   min: 0, max: 1500,              threshold: 750,  upperLimit: 825,  lowerLimit: 675  },
+    { key: 'vibration', label: 'Vibration',  unit: 'mm/s²', min: 0, max: 50,               threshold: 5,    upperLimit: 5.5,  lowerLimit: 4.5  },
   ];
   const vcFields = [
-    { key: 'defect_rate', label: 'Defect Rate',     unit: '%',  min: 0, max: 100,    isKey: true },
+    { key: 'defect_rate', label: 'Defect Rate',     unit: '%',  min: 0, max: 100,    isKey: true, threshold: 1,  upperLimit: 1.1, lowerLimit: 0.9  },
     { key: 'inspected',   label: 'Items Inspected', unit: 'pcs',min: 0, max: 999999 },
     { key: 'passed',      label: 'Items Passed',    unit: 'pcs',min: 0, max: 999999 },
     { key: 'failed',      label: 'Items Failed',    unit: 'pcs',min: 0, max: 999999 },
-    { key: 'confidence',  label: 'AI Confidence',   unit: '%',  min: 0, max: 100 },
+    { key: 'confidence',  label: 'AI Confidence',   unit: '%',  min: 0, max: 100,              threshold: 97, upperLimit: 99.9, lowerLimit: 87.3 },
   ];
 
   const fieldSets: Array<{ machineId: string; fields: typeof cwFields }> = [
@@ -184,7 +185,13 @@ async function main() {
     for (const f of fields) {
       await prisma.machineField.upsert({
         where: { machineId_key: { machineId, key: f.key } },
-        update: {},
+        update: {
+          label:      f.label,
+          unit:       f.unit ?? null,
+          threshold:  (f as any).threshold   ?? null,
+          upperLimit: (f as any).upperLimit  ?? null,
+          lowerLimit: (f as any).lowerLimit  ?? null,
+        },
         create: { machineId, ...f },
       });
     }

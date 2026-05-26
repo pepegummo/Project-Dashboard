@@ -10,12 +10,16 @@ const ingestSchema = z.object({
 
 const seriesQuerySchema = z.object({
   field: z.string(),
-  timeRange: z.enum(['5m', '15m', '30m', '1h', '6h', '24h', '7d']).default('1h'),
+  timeRange: z.enum(['5m', '15m', '30m', '1h', '6h', '24h', '7d', '14d', '30d']).default('1h'),
 });
 
 const aggregateQuerySchema = z.object({
   field:  z.string(),
-  period: z.enum(['5m', '15m', '30m', '1h', '6h', '24h', '7d']).default('1h'),
+  period: z.enum(['5m', '15m', '30m', '1h', '6h', '24h', '7d', '14d', '30d']).default('1h'),
+});
+
+const dailyCountQuerySchema = z.object({
+  days: z.coerce.number().int().min(1).max(90).default(7),
 });
 
 export class TelemetryController {
@@ -52,6 +56,15 @@ export class TelemetryController {
       const { orgId } = (req as AuthenticatedRequest).user;
       const { field, period } = aggregateQuerySchema.parse(req.query);
       const result = await this.svc.getAggregate(req.params.machineId, field, period, orgId);
+      res.json({ success: true, data: result });
+    } catch (err) { next(err); }
+  };
+
+  getDailyCount = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const { orgId } = (req as AuthenticatedRequest).user;
+      const { days } = dailyCountQuerySchema.parse(req.query);
+      const result = await this.svc.getDailyCount(req.params.machineId, days, orgId);
       res.json({ success: true, data: result });
     } catch (err) { next(err); }
   };

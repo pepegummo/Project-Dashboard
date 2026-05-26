@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted, onUnmounted } from 'vue';
 import { TrendingUp, TrendingDown, Minus, RefreshCw } from 'lucide-vue-next';
 import type { DashboardWidget } from '@/types';
 import { useTelemetryStore } from '@/stores/telemetry.store';
 import { useAggregatedValue } from '@/composables/useTelemetry';
+import { wsService } from '@/services/ws.service';
+import { api } from '@/services/api.service';
 
 const props = defineProps<{ widget: DashboardWidget }>();
 
@@ -52,9 +54,46 @@ const trendPct = computed(() => {
   return ((trend.value / Math.abs(prev)) * 100).toFixed(1);
 });
 
+// ── Live mode: WebSocket subscription + 2-second polling fallback ─────────────
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+async function fetchLatest() {
+  if (!machineId.value) return;
+  try {
+    const latest = await api.getLatestTelemetry(machineId.value);
+    if (latest) store.updateSnapshot(machineId.value, latest.timestamp as unknown as string, latest.data as Record<string, any>);
+  } catch { /* ok */ }
+}
+
+onMounted(() => {
+  if (isLive && machineId.value) {
+    wsService.subscribe([machineId.value]);
+    fetchLatest();
+    pollTimer = setInterval(fetchLatest, 2000);
+  }
+});
+
+onUnmounted(() => {
+  if (isLive && machineId.value) wsService.unsubscribe([machineId.value]);
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+});
+
 const machineField = computed(() => props.widget.machine?.fields?.find(f => f.key === field.value));
-const label        = computed(() => machineField.value?.label ?? field.value);
-const machineName  = computed(() => props.widget.machine?.name ?? '');
+const label        = computed(() => machineField.value?.label     ?? field.value);
+const machineName  = computed(() => props.widget.machine?.name    ?? '');
+const threshold    = computed(() => machineField.value?.threshold  ?? null);
+const upperLimit   = computed(() => machineField.value?.upperLimit ?? null);
+const lowerLimit   = computed(() => machineField.value?.lowerLimit ?? null);
+
+// Green = in range, Red = out of range, Gray = no threshold defined
+const rangeStatus = computed(() => {
+  const val = displayValue.value;
+  if (val === undefined || val === null) return 'none';
+  if (lowerLimit.value !== null && val < lowerLimit.value) return 'below';
+  if (upperLimit.value !== null && val > upperLimit.value) return 'above';
+  if (lowerLimit.value !== null || upperLimit.value !== null) return 'ok';
+  return 'none';
+});
 </script>
 
 <template>
@@ -84,13 +123,16 @@ const machineName  = computed(() => props.widget.machine?.name ?? '');
     <!-- Main value -->
     <div class="flex items-end justify-between mt-1">
       <div>
+        <span v-if="aggLoading && !isLive" class="text-3xl font-bold text-gray-600 font-mono">…</span>
         <span
-          v-if="aggLoading && !isLive"
-          class="text-3xl font-bold text-gray-600 font-mono"
-        >…</span>
-        <span v-else class="text-3xl font-bold text-white font-mono tabular-nums">
-          {{ formattedValue }}
-        </span>
+          v-else
+          class="text-3xl font-bold font-mono tabular-nums"
+          :class="{
+            'text-emerald-400': rangeStatus === 'ok',
+            'text-red-400':     rangeStatus === 'above' || rangeStatus === 'below',
+            'text-white':       rangeStatus === 'none',
+          }"
+        >{{ formattedValue }}</span>
         <span v-if="unit" class="text-sm text-gray-400 ml-1.5">{{ unit }}</span>
       </div>
 
@@ -104,6 +146,31 @@ const machineName  = computed(() => props.widget.machine?.name ?? '');
         <span :class="trend > 0 ? 'text-emerald-400' : trend < 0 ? 'text-red-400' : 'text-gray-400'">
           {{ Math.abs(parseFloat(trendPct)) }}%
         </span>
+      </div>
+    </div>
+
+    <!-- Threshold / limit row -->
+    <div v-if="threshold !== null || upperLimit !== null" class="flex gap-3 mt-1">
+      <div v-if="lowerLimit !== null" class="text-[10px]">
+        <span class="text-gray-600">lower </span>
+        <span class="font-mono text-amber-400">{{ lowerLimit }}</span>
+      </div>
+      <div v-if="threshold !== null" class="text-[10px]">
+        <span class="text-gray-600">target </span>
+        <span class="font-mono text-indigo-400">{{ threshold }}</span>
+      </div>
+      <div v-if="upperLimit !== null" class="text-[10px]">
+        <span class="text-gray-600">upper </span>
+        <span class="font-mono text-amber-400">{{ upperLimit }}</span>
+      </div>
+      <div v-if="rangeStatus !== 'none'" class="text-[10px] ml-auto">
+        <span
+          class="px-1.5 py-0.5 rounded-full font-medium"
+          :class="{
+            'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20': rangeStatus === 'ok',
+            'bg-red-500/15 text-red-400 border border-red-500/20': rangeStatus === 'above' || rangeStatus === 'below',
+          }"
+        >{{ rangeStatus === 'ok' ? 'IN RANGE' : rangeStatus === 'above' ? 'OVER' : 'UNDER' }}</span>
       </div>
     </div>
 

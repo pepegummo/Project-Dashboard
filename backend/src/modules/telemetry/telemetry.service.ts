@@ -11,6 +11,8 @@ const TIME_RANGE_PRESETS: Record<string, number> = {
   '6h': 6 * 60 * 60 * 1000,
   '24h': 24 * 60 * 60 * 1000,
   '7d': 7 * 24 * 60 * 60 * 1000,
+  '14d': 14 * 24 * 60 * 60 * 1000,
+  '30d': 30 * 24 * 60 * 60 * 1000,
 };
 
 const BUCKET_FOR_RANGE: Record<string, string> = {
@@ -20,7 +22,9 @@ const BUCKET_FOR_RANGE: Record<string, string> = {
   '1h': '1 minute',
   '6h': '5 minutes',
   '24h': '15 minutes',
-  '7d': '1 hour',
+  '7d': '30 minutes',
+  '14d': '45 minutes',
+  '30d': '90 minutes',
 };
 
 export class TelemetryService {
@@ -71,6 +75,15 @@ export class TelemetryService {
     const from = new Date(to.getTime() - rangeMs);
     const summary = await this.repo.getAggregateSummary(machineId, field, from, to);
     return { machineId, field, period, from, to, summary };
+  }
+
+  async getDailyCount(machineId: string, days: number, organizationId: string) {
+    const machine = await this.machineRepo.findById(machineId);
+    if (!machine || machine.productionLine.factory.organizationId !== organizationId) {
+      throw new AppError(404, 'NOT_FOUND', 'Machine not found');
+    }
+    const data = await this.repo.getDailyCount(machineId, days);
+    return { machineId, days, data };
   }
 
   async getMultiMachineLatest(machineIds: string[], organizationId: string) {

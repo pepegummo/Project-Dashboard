@@ -1,4 +1,5 @@
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch, isRef } from 'vue';
+import type { Ref } from 'vue';
 import { wsService } from '@/services/ws.service';
 import { useTelemetryStore } from '@/stores/telemetry.store';
 import { api } from '@/services/api.service';
@@ -52,15 +53,17 @@ export function useMachineTelemetry(machineId: string, fields: string[]) {
 }
 
 /** Composable for a single field series within a chart widget */
-export function useFieldSeries(machineId: string, field: string, timeRange = '1h') {
-  const store = useTelemetryStore();
+export function useFieldSeries(machineId: string, field: string, timeRange: string | Ref<string> = '1h') {
   const apiData = ref<Array<{ ts: string; value: number }>>([]);
   const loading = ref(false);
+
+  // Support both plain strings and reactive refs
+  const timeRangeRef = isRef(timeRange) ? timeRange : ref(timeRange);
 
   async function loadFromApi() {
     loading.value = true;
     try {
-      const series = await api.getTelemetrySeries(machineId, field, timeRange);
+      const series = await api.getTelemetrySeries(machineId, field, timeRangeRef.value);
       apiData.value = (series?.data ?? []).map(p => ({
         ts: (p as any).bucket ?? p.ts,
         value: (p as any).avg ?? p.value,
@@ -69,25 +72,32 @@ export function useFieldSeries(machineId: string, field: string, timeRange = '1h
     loading.value = false;
   }
 
-  onMounted(() => { loadFromApi(); wsService.subscribe([machineId]); });
-  onUnmounted(() => { wsService.unsubscribe([machineId]); });
+  // Auto-refresh every 60 s to stay current without merging raw store history.
+  // Gauge/KPI widgets poll every 2 s and write raw-second points into the shared
+  // store history. If we merged those points here, 200+ raw-second entries would
+  // be appended after the last API bucket, completely distorting the aggregated
+  // chart shape (this is why CW-01/TS-01 looked wrong while CB-01/VC-01 were fine).
+  let refreshTimer: ReturnType<typeof setInterval> | null = null;
 
-  // Computed: merge API data with live rolling history
-  const mergedData = computed(() => {
-    const live = store.getHistory(machineId, field);
-    if (!live) return apiData.value;
-
-    // Combine and deduplicate by timestamp
-    const map = new Map<string, number>();
-    for (const p of apiData.value) map.set(p.ts, p.value);
-    for (let i = 0; i < live.timestamps.length; i++) {
-      map.set(live.timestamps[i], live.values[i]);
-    }
-    return Array.from(map.entries())
-      .map(([ts, value]) => ({ ts, value }))
-      .sort((a, b) => a.ts.localeCompare(b.ts))
-      .slice(-500);
+  onMounted(() => {
+    loadFromApi();
+    wsService.subscribe([machineId]);
+    refreshTimer = setInterval(loadFromApi, 60_000);
   });
+  onUnmounted(() => {
+    wsService.unsubscribe([machineId]);
+    if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  });
+
+  // Reload whenever timeRange changes
+  watch(timeRangeRef, () => { loadFromApi(); });
+
+  // Use only API bucket data — never merge raw store history.
+  // Gauge/KPI polling accumulates up to 300 raw-second points in the store for
+  // every machine that has a live widget. Merging those into a 30-min-bucket
+  // 7-day chart would cluster hundreds of raw points at the right edge and
+  // make the chart look like a flat spike rather than a sine wave.
+  const mergedData = computed(() => apiData.value);
 
   return { mergedData, loading, reload: loadFromApi };
 }

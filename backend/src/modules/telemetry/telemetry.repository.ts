@@ -14,7 +14,7 @@ export class TelemetryRepository {
 
   async getLatest(machineId: string): Promise<{ timestamp: Date; data: TelemetryData } | null> {
     const row = await prisma.telemetryRaw.findFirst({
-      where: { machineId },
+      where: { machineId, timestamp: { lte: new Date() } },   // ← only rows up to NOW
       orderBy: { timestamp: 'desc' },
       select: { timestamp: true, data: true },
     });
@@ -122,6 +122,28 @@ export class TelemetryRepository {
     }
   }
 
+  /** Count telemetry rows per day for N days back */
+  async getDailyCount(machineId: string, days: number): Promise<Array<{ date: Date; count: number }>> {
+    try {
+      const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+      const to   = new Date();
+      const rows = await prisma.$queryRaw<Array<{ date: Date; count: bigint }>>`
+        SELECT
+          time_bucket('1 day', timestamp) AS date,
+          COUNT(*) AS count
+        FROM telemetry_raw
+        WHERE machine_id = ${machineId}
+          AND timestamp >= ${from}
+          AND timestamp <= ${to}
+        GROUP BY date
+        ORDER BY date ASC
+      `;
+      return rows.map(r => ({ date: r.date, count: Number(r.count) }));
+    } catch {
+      return [];
+    }
+  }
+
   async getLatestForMachines(machineIds: string[]): Promise<Record<string, { timestamp: Date; data: TelemetryData }>> {
     if (!machineIds.length) return {};
     const rows = await prisma.$queryRaw<Array<{ machineId: string; timestamp: Date; data: any }>>`
@@ -131,6 +153,7 @@ export class TelemetryRepository {
         data
       FROM telemetry_raw
       WHERE machine_id = ANY(${machineIds}::uuid[])
+        AND timestamp <= NOW()
       ORDER BY machine_id, timestamp DESC
     `;
     return Object.fromEntries(rows.map(r => [r.machineId, { timestamp: r.timestamp, data: r.data }]));

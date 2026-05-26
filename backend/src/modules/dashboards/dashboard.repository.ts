@@ -57,7 +57,7 @@ export class DashboardRepository {
         layout: widget.layout as Prisma.InputJsonValue,
         config: widget.config as Prisma.InputJsonValue,
       },
-      include: { machine: { select: { id: true, name: true, type: true } } },
+      include: { machine: { select: { id: true, name: true, type: true, fields: true } } },
     });
   }
 
@@ -79,7 +79,7 @@ export class DashboardRepository {
         ...(data.layout && { layout: data.layout as Prisma.InputJsonValue }),
         ...(data.config && { config: data.config as Prisma.InputJsonValue }),
       },
-      include: { machine: { select: { id: true, name: true, type: true } } },
+      include: { machine: { select: { id: true, name: true, type: true, fields: true } } },
     });
   }
 

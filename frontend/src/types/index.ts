@@ -35,6 +35,9 @@ export interface MachineField {
   dataType: 'number' | 'boolean' | 'string' | 'enum';
   min?: number;
   max?: number;
+  threshold?: number;   // target / nominal value
+  upperLimit?: number;  // threshold + 10%  — data should stay below
+  lowerLimit?: number;  // threshold - 10%  — data should stay above
   precision: number;
   isKey: boolean;
 }
@@ -99,7 +102,7 @@ export interface TelemetrySeries {
 }
 
 // ─── Dashboard ───────────────────────────────────────────────────────────────
-export type WidgetType = 'line-chart' | 'gauge' | 'kpi-card' | 'status-card' | 'table' | 'alarm-panel';
+export type WidgetType = 'line-chart' | 'gauge' | 'kpi-card' | 'status-card' | 'table' | 'alarm-panel' | 'daily-count';
 
 export interface WidgetLayout {
   x: number;

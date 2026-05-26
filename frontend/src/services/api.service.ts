@@ -119,6 +119,15 @@ class ApiService {
     return data.data;
   }
 
+  async getTelemetryDailyCount(machineId: string, days: number) {
+    const { data } = await this.client.get<ApiResponse<{
+      machineId: string;
+      days: number;
+      data: Array<{ date: string; count: number }>;
+    }>>(`/telemetry/${machineId}/daily-count`, { params: { days } });
+    return data.data;
+  }
+
   async getMultiLatestTelemetry(machineIds: string[]) {
     const { data } = await this.client.get<ApiResponse<Record<string, TelemetrySnapshot>>>('/telemetry/latest', {
       params: { ids: machineIds.join(',') },

@@ -29,17 +29,18 @@ watch(() => selectedMachineId.value, () => { selectedField.value = ''; });
 
 const widgetTypeLabel = (type: WidgetType) => {
   const map: Record<WidgetType, string> = {
-    'line-chart': 'Line Chart',
-    'gauge': 'Gauge',
-    'kpi-card': 'KPI Card',
+    'line-chart':  'Line Chart',
+    'gauge':       'Gauge',
+    'kpi-card':    'KPI Card',
     'status-card': 'Status Card',
-    'table': 'Data Table',
+    'table':       'Data Table',
     'alarm-panel': 'Alarm Panel',
+    'daily-count': 'Daily Count',
   };
   return map[type] ?? type;
 };
 
-const needsMachine      = (type: WidgetType) => ['line-chart', 'gauge', 'kpi-card', 'status-card', 'table'].includes(type);
+const needsMachine      = (type: WidgetType) => ['line-chart', 'gauge', 'kpi-card', 'status-card', 'table', 'daily-count'].includes(type);
 const needsField        = (type: WidgetType) => ['line-chart', 'gauge', 'kpi-card'].includes(type);
 const needsTimeRange    = (type: WidgetType) => ['line-chart', 'table'].includes(type);
 const needsMinMax       = (type: WidgetType) => type === 'gauge';
