@@ -88,3 +88,17 @@ const typeIcon = computed(() => {
     </div>
   </div>
 </template>
+
+<style>
+/* จัดการให้ตัว Container หลักของ GridStack ไม่ล้น */
+.grid-stack-item-content {
+  overflow: hidden !important; 
+}
+
+/* บังคับให้พวกกราฟ (SVG/Canvas) หรือ Widget ด้านในหดตัวตามกรอบ */
+.grid-stack-item-content :deep(svg),
+.grid-stack-item-content :deep(canvas) {
+  max-width: 100% !important;
+  max-height: 100% !important;
+}
+</style>

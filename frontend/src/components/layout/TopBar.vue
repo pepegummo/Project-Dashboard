@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { useRoute } from 'vue-router';
-import { Wifi, WifiOff, Bell, RefreshCw } from 'lucide-vue-next';
+import { Wifi, WifiOff, Bell, Menu } from 'lucide-vue-next';
 import { useAlertStore } from '@/stores/alert.store';
 import { useWebSocket } from '@/composables/useWebSocket';
+
+const emit = defineEmits<{ 'toggle-sidebar': [] }>()
 
 const route = useRoute();
 const alertStore = useAlertStore();
@@ -17,11 +19,22 @@ const dateStr = () => now.value.toLocaleDateString('en-US', { weekday: 'short', 
 </script>
 
 <template>
-  <header class="flex items-center justify-between h-14 px-6 bg-surface-100/80 backdrop-blur border-b border-white/5 flex-shrink-0">
-    <!-- Breadcrumb / title -->
-    <div>
-      <h1 class="text-sm font-semibold text-white">{{ route.meta.title ?? 'Dashboard' }}</h1>
-      <p class="text-xs text-gray-500">{{ dateStr() }}</p>
+  <header class="flex items-center justify-between h-14 px-4 md:px-6 bg-surface-100/80 backdrop-blur border-b border-white/5 flex-shrink-0">
+    <!-- Left: hamburger (mobile) + title -->
+    <div class="flex items-center gap-3">
+      <!-- Sidebar toggle button -->
+      <button
+        class="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-surface-200 transition-colors"
+        aria-label="Toggle menu"
+        @click="emit('toggle-sidebar')"
+      >
+        <Menu class="w-5 h-5" />
+      </button>
+
+      <div>
+        <h1 class="text-sm font-semibold text-white">{{ route.meta.title ?? 'Dashboard' }}</h1>
+        <p class="text-xs text-gray-500">{{ dateStr() }}</p>
+      </div>
     </div>
 
     <!-- Right actions -->

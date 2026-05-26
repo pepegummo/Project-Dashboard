@@ -5,8 +5,11 @@ import { useAuthStore } from '@/stores/auth.store';
 import { useAlertStore } from '@/stores/alert.store';
 import {
   LayoutDashboard, MonitorSpeaker, Bell, Bot,
-  Factory, ChevronRight, LogOut, Settings,
+  Factory, ChevronRight, LogOut, Settings, X,
 } from 'lucide-vue-next';
+
+defineProps<{ showClose?: boolean }>()
+const emit = defineEmits<{ close: [] }>()
 
 const route = useRoute();
 const auth = useAuthStore();
@@ -27,13 +30,22 @@ const alertCount = computed(() => alertStore.openCount);
   <aside class="flex flex-col w-64 min-h-screen bg-surface-100 border-r border-white/5 flex-shrink-0">
     <!-- Logo -->
     <div class="flex items-center gap-3 px-5 py-5 border-b border-white/5">
-      <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-accent-cyan flex items-center justify-center">
+      <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-accent-cyan flex items-center justify-center flex-shrink-0">
         <Factory class="w-4 h-4 text-white" />
       </div>
-      <div>
+      <div class="flex-1 min-w-0">
         <div class="text-sm font-bold text-white tracking-tight">IotVision</div>
         <div class="text-[10px] text-gray-500 uppercase tracking-widest">Industrial AI</div>
       </div>
+      <!-- Close button — shown only on mobile overlay -->
+      <button
+        v-if="showClose"
+        class="p-1.5 rounded-lg text-gray-500 hover:text-white hover:bg-surface-200 transition-colors ml-auto"
+        aria-label="Close menu"
+        @click="emit('close')"
+      >
+        <X class="w-4 h-4" />
+      </button>
     </div>
 
     <!-- Navigation -->
@@ -44,6 +56,7 @@ const alertCount = computed(() => alertStore.openCount);
         :to="item.to"
         class="nav-link"
         :class="{ active: isActive(item.to) }"
+        @click="emit('close')"
       >
         <component :is="item.icon" class="w-4 h-4 flex-shrink-0" />
         <span class="flex-1">{{ item.label }}</span>

@@ -6,6 +6,7 @@ import type { DashboardWidget, WidgetLayout } from '@/types';
 import WidgetWrapper from '@/components/widgets/WidgetWrapper.vue';
 import { createApp, type App } from 'vue';
 import { getActivePinia } from 'pinia';
+import 'gridstack/dist/gridstack-extra.min.css';
 
 const props = defineProps<{ widgets: DashboardWidget[] }>();
 const emit = defineEmits<{
@@ -37,13 +38,19 @@ onMounted(async () => {
   if (!gridRef.value) return;
 
   grid = GridStack.init({
-    column: 12,
-    cellHeight: 80,
-    margin: 8,
-    animate: true,
-    resizable: { handles: 'se' },
-    handle: '.gs-drag-handle',
-  }, gridRef.value);
+  column: 12,
+  // ตั้งค่าสำหรับเวอร์ชั่นใหม่
+  columnOpts: { 
+    breakpointForWindow: true, 
+    breakpoints: [{ w: 768, c: 1 }] 
+  },
+  
+  cellHeight: 80,
+  margin: 8,
+  animate: true,
+  resizable: { handles: 'se' },
+  handle: '.gs-drag-handle',
+}, gridRef.value);
 
   for (const widget of props.widgets) {
     addWidgetToGrid(widget);
