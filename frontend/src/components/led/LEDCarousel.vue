@@ -110,15 +110,50 @@ const warningCount  = computed(() => alertStore.warningCount)
 
 // ── Carousel timer ──────────────────────────────────────────────────────────
 let timer: ReturnType<typeof setInterval> | null = null
+const isPaused = ref(false)
 
 function advance() {
+  if (isPaused.value) return
   if (slides.value.length < 2) return
   currentIndex.value = (currentIndex.value + 1) % slides.value.length
 }
 
+function resetTimer() {
+  if (isPaused.value) return
+  if (timer !== null) clearInterval(timer)
+  timer = setInterval(advance, props.interval)
+}
+
+function nextSlide() {
+  if (slides.value.length < 2) return
+  currentIndex.value = (currentIndex.value + 1) % slides.value.length
+  resetTimer()
+}
+
+function prevSlide() {
+  if (slides.value.length < 2) return
+  currentIndex.value = (currentIndex.value - 1 + slides.value.length) % slides.value.length
+  resetTimer()
+}
+
+function toggleLock() {
+  isPaused.value = !isPaused.value
+  if (isPaused.value) {
+    if (timer !== null) { clearInterval(timer); timer = null }
+  } else {
+    resetTimer()
+  }
+}
+
 function goTo(i: number) {
   currentIndex.value = i
-  if (timer !== null) { clearInterval(timer); timer = setInterval(advance, props.interval) }
+  resetTimer()
+}
+
+function handleKeydown(e: KeyboardEvent) {
+  if (e.key === 'ArrowRight' || e.key === 'PageDown') { e.preventDefault(); nextSlide() }
+  if (e.key === 'ArrowLeft'  || e.key === 'PageUp')   { e.preventDefault(); prevSlide() }
+  if (e.key === ' '          || e.key === 'Enter')     { e.preventDefault(); toggleLock() }
 }
 
 watch(slides, (list) => {
@@ -137,10 +172,12 @@ onMounted(async () => {
   if (alertStore.activeEvents.length === 0)    await alertStore.fetchActiveEvents()
 
   if (slides.value.length > 1 && timer === null) timer = setInterval(advance, props.interval)
+  window.addEventListener('keydown', handleKeydown)
 })
 
 onUnmounted(() => {
   if (timer !== null) { clearInterval(timer); timer = null }
+  window.removeEventListener('keydown', handleKeydown)
 })
 </script>
 
@@ -153,36 +190,35 @@ onUnmounted(() => {
         :key="currentIndex"
         class="h-full led-progress"
         :class="progressColorClass"
-        :style="`animation-duration: ${interval}ms`"
+        :style="`animation-duration: ${interval}ms; animation-play-state: ${isPaused ? 'paused' : 'running'}`"
       />
     </div>
 
     <!-- ── Header: machine name + status ────────────────────────────────── -->
-    <div class="flex items-center justify-between px-4 py-2.5 border-b border-white/10 flex-shrink-0 gap-3 min-h-[38px]">
+    <div class="flex items-center justify-between px-4 py-2.5 border-b border-white/15 flex-shrink-0 gap-3 min-h-[42px]">
 
-      <!-- Machine name (left) — only shown when slide has a machine -->
+      <!-- Machine name (left) -->
       <Transition name="led-slide" mode="out-in">
         <p
           v-if="currentMachine"
           :key="currentMachine.id + '-name'"
-          class="font-mono text-[11px] font-bold text-gray-400 uppercase tracking-widest truncate min-w-0"
+          class="font-mono text-sm font-black text-white uppercase tracking-widest truncate min-w-0"
         >
           {{ currentMachine.name }}
         </p>
-        <!-- Alarm panel: show "SYSTEM" as the machine-name area -->
-        <p v-else :key="'alarm-hdr'" class="font-mono text-[11px] font-bold text-gray-600 uppercase tracking-widest">
+        <p v-else :key="'alarm-hdr'" class="font-mono text-sm font-black text-gray-400 uppercase tracking-widest">
           SYSTEM
         </p>
       </Transition>
 
       <!-- Status badge (right) -->
       <div class="flex items-center gap-3 flex-shrink-0">
-        <div v-if="currentMachine" class="flex items-center gap-1.5">
+        <div v-if="currentMachine" class="flex items-center gap-2">
           <span
-            class="w-2 h-2 rounded-full"
+            class="w-2.5 h-2.5 rounded-full"
             :class="[statusCfg.dotClass, currentMachine.status === 'error' ? 'led-blink-fast' : 'animate-pulse']"
           />
-          <span class="font-mono text-[11px] font-bold tracking-[0.25em]" :class="statusCfg.textClass">
+          <span class="font-mono text-xs font-bold tracking-[0.25em]" :class="statusCfg.textClass">
             {{ statusCfg.label }}
           </span>
         </div>
@@ -190,9 +226,9 @@ onUnmounted(() => {
         <!-- Active alert count badge -->
         <div
           v-if="criticalCount > 0 || warningCount > 0"
-          class="flex items-center gap-1 px-2 py-0.5 rounded border border-red-500/30 bg-red-500/10"
+          class="flex items-center gap-1.5 px-2.5 py-1 rounded border border-red-500/40 bg-red-500/15"
         >
-          <span class="font-mono text-[11px] font-black text-red-400 tracking-wide leading-none">
+          <span class="font-mono text-xs font-black text-red-400 tracking-wide leading-none">
             ⚡ {{ criticalCount + warningCount }}
           </span>
         </div>
@@ -206,40 +242,38 @@ onUnmounted(() => {
       <div
         v-if="current?.widgetType === 'alarm-panel'"
         :key="current.id"
-        class="flex-1 flex flex-col items-center justify-center gap-3 px-6"
+        class="flex-1 flex flex-col items-center justify-center gap-4 px-6"
       >
-        <p class="font-mono text-[9px] uppercase tracking-[0.45em] text-gray-600 mb-1">
+        <p class="font-mono text-xs font-bold uppercase tracking-[0.4em] text-gray-400 mb-1">
           {{ current.title ?? 'System Alerts' }}
         </p>
 
         <!-- Critical -->
-        <div class="flex items-center gap-3">
-          <span
-            class="w-2 h-2 rounded-full bg-red-500 led-blink-fast"
-          />
+        <div class="flex items-center gap-4">
+          <span class="w-2.5 h-2.5 rounded-full bg-red-500 led-blink-fast" />
           <p
             class="font-mono font-black tabular-nums leading-none"
             :class="criticalCount > 0 ? 'text-red-400' : 'text-gray-700'"
-            style="font-size: clamp(2rem, 8vw, 3.5rem); text-shadow: 0 0 16px currentColor, 0 0 48px currentColor;"
+            style="font-size: clamp(2.25rem, 9vw, 4rem); text-shadow: 0 0 2px rgba(255,255,255,0.6), 0 0 18px currentColor, 0 0 55px currentColor;"
           >
             {{ criticalCount }}
           </p>
-          <p class="font-mono text-[10px] uppercase tracking-[0.35em]" :class="criticalCount > 0 ? 'text-red-600' : 'text-gray-700'">
+          <p class="font-mono text-sm font-bold uppercase tracking-[0.3em]" :class="criticalCount > 0 ? 'text-red-400' : 'text-gray-700'">
             CRITICAL
           </p>
         </div>
 
         <!-- Warning -->
-        <div class="flex items-center gap-3">
-          <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+        <div class="flex items-center gap-4">
+          <span class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse" />
           <p
             class="font-mono font-black tabular-nums leading-none"
             :class="warningCount > 0 ? 'text-amber-400' : 'text-gray-700'"
-            style="font-size: clamp(2rem, 8vw, 3.5rem); text-shadow: 0 0 16px currentColor, 0 0 48px currentColor;"
+            style="font-size: clamp(2.25rem, 9vw, 4rem); text-shadow: 0 0 2px rgba(255,255,255,0.6), 0 0 18px currentColor, 0 0 55px currentColor;"
           >
             {{ warningCount }}
           </p>
-          <p class="font-mono text-[10px] uppercase tracking-[0.35em]" :class="warningCount > 0 ? 'text-amber-600' : 'text-gray-700'">
+          <p class="font-mono text-sm font-bold uppercase tracking-[0.3em]" :class="warningCount > 0 ? 'text-amber-400' : 'text-gray-700'">
             WARNING
           </p>
         </div>
@@ -249,12 +283,12 @@ onUnmounted(() => {
       <div
         v-else-if="current?.widgetType === 'status-card' && !current.config?.field"
         :key="current.id"
-        class="flex-1 flex flex-col items-center justify-center gap-2 px-6"
+        class="flex-1 flex flex-col items-center justify-center gap-3 px-6"
       >
-        <p class="font-mono text-[9px] uppercase tracking-[0.45em] text-gray-600 mb-2">
+        <p class="font-mono text-xs font-bold uppercase tracking-[0.4em] text-gray-400 mb-2">
           {{ slideTitle }}
         </p>
-        <div class="flex items-center gap-3">
+        <div class="flex items-center gap-4">
           <span
             class="w-3 h-3 rounded-full"
             :class="[statusCfg.dotClass, currentMachine?.status === 'error' ? 'led-blink-fast' : 'animate-pulse']"
@@ -262,7 +296,7 @@ onUnmounted(() => {
           <p
             class="font-mono font-black leading-none tracking-widest"
             :class="statusCfg.textClass"
-            style="font-size: clamp(2.5rem, 10vw, 4rem); text-shadow: 0 0 18px currentColor, 0 0 55px currentColor;"
+            style="font-size: clamp(2.5rem, 10vw, 4.5rem); text-shadow: 0 0 2px rgba(255,255,255,0.6), 0 0 20px currentColor, 0 0 60px currentColor;"
           >
             {{ statusCfg.label }}
           </p>
@@ -276,17 +310,17 @@ onUnmounted(() => {
         class="flex-1 flex flex-col items-center justify-center gap-0 px-6"
       >
         <!-- Widget / field label -->
-        <p class="font-mono text-[9px] uppercase tracking-[0.45em] text-gray-600 mb-3 truncate max-w-full">
+        <p class="font-mono text-xs font-bold uppercase tracking-[0.4em] text-gray-400 mb-3 truncate max-w-full">
           {{ slideTitle }}
         </p>
 
-        <!-- Live value — large, glowing -->
+        <!-- Live value — large, glowing, crisp white halo for sharpness -->
         <p
           class="font-mono font-black leading-none tabular-nums transition-colors duration-500"
           :class="valueColorClass"
           style="
-            font-size: clamp(2.75rem, 11vw, 5rem);
-            text-shadow: 0 0 18px currentColor, 0 0 50px currentColor, 0 0 100px currentColor;
+            font-size: clamp(3rem, 12vw, 5.5rem);
+            text-shadow: 0 0 2px rgba(255,255,255,0.7), 0 0 20px currentColor, 0 0 60px currentColor, 0 0 120px currentColor;
           "
         >
           {{ liveValue }}
@@ -295,19 +329,19 @@ onUnmounted(() => {
         <!-- Unit -->
         <p
           v-if="displayUnit"
-          class="font-mono text-[10px] uppercase tracking-[0.35em] text-gray-600 mt-2"
+          class="font-mono text-sm font-semibold uppercase tracking-[0.3em] text-gray-400 mt-2.5"
         >
           {{ displayUnit }}
         </p>
 
         <!-- Target + achievement % -->
         <div v-if="threshold" class="flex items-center gap-3 mt-3">
-          <span class="font-mono text-[9px] text-gray-700 tracking-wide">
+          <span class="font-mono text-[11px] font-medium text-gray-500 tracking-wide">
             TGT&nbsp;{{ threshold.toFixed(precision) }}
           </span>
           <span
             v-if="achievementPct"
-            class="font-mono text-[10px] font-bold tracking-wide"
+            class="font-mono text-xs font-bold tracking-wide"
             :class="achievementColorClass"
           >
             {{ achievementPct }}
@@ -323,18 +357,46 @@ onUnmounted(() => {
 
     </Transition>
 
-    <!-- ── Footer: one dot per slide ────────────────────────────────────── -->
+    <!-- ── Footer: dot indicators + controls ────────────────────────────── -->
     <div
       v-if="slides.length > 1"
-      class="flex-shrink-0 flex items-center justify-center gap-1.5 py-2 border-t border-white/5"
+      class="flex-shrink-0 flex items-center justify-between px-4 py-2 border-t border-white/5 gap-4"
     >
+      <!-- Prev -->
       <button
-        v-for="(_, i) in slides"
-        :key="i"
-        class="h-1 rounded-full transition-all duration-300 focus:outline-none"
-        :class="i === currentIndex ? ['w-4', progressColorClass] : 'w-1 bg-white/20'"
-        @click="goTo(i)"
-      />
+        class="font-mono text-xs font-bold tracking-widest text-gray-500 hover:text-white transition-colors focus:outline-none cursor-pointer"
+        @click="prevSlide"
+      >
+        ◀ PREV
+      </button>
+
+      <!-- Dot indicators (centre) -->
+      <div class="flex items-center gap-1.5">
+        <button
+          v-for="(_, i) in slides"
+          :key="i"
+          class="h-1 rounded-full transition-all duration-300 focus:outline-none"
+          :class="i === currentIndex ? ['w-4', progressColorClass] : 'w-1 bg-white/20'"
+          @click="goTo(i)"
+        />
+      </div>
+
+      <!-- Lock / Auto toggle -->
+      <button
+        class="font-mono text-xs font-bold tracking-widest transition-colors focus:outline-none cursor-pointer"
+        :class="isPaused ? 'text-amber-400 hover:text-amber-300' : 'text-gray-500 hover:text-white'"
+        @click="toggleLock"
+      >
+        {{ isPaused ? '🔒 LOCKED' : '🔄 AUTO' }}
+      </button>
+
+      <!-- Next -->
+      <button
+        class="font-mono text-xs font-bold tracking-widest text-gray-500 hover:text-white transition-colors focus:outline-none cursor-pointer"
+        @click="nextSlide"
+      >
+        NEXT ▶
+      </button>
     </div>
 
   </div>
