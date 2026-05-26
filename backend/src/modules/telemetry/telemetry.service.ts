@@ -3,28 +3,36 @@ import { MachineRepository } from '../machines/machine.repository';
 import { AppError } from '../../middleware/error';
 import { TelemetryData } from '../../types';
 
+// Data is stored at 1-minute resolution — buckets below 1m are clamped to '1 minute'
 const TIME_RANGE_PRESETS: Record<string, number> = {
-  '5m': 5 * 60 * 1000,
-  '15m': 15 * 60 * 1000,
-  '30m': 30 * 60 * 1000,
-  '1h': 60 * 60 * 1000,
-  '6h': 6 * 60 * 60 * 1000,
-  '24h': 24 * 60 * 60 * 1000,
-  '7d': 7 * 24 * 60 * 60 * 1000,
-  '14d': 14 * 24 * 60 * 60 * 1000,
-  '30d': 30 * 24 * 60 * 60 * 1000,
+  '5m':  5   * 60 * 1000,
+  '15m': 15  * 60 * 1000,
+  '30m': 30  * 60 * 1000,
+  '1h':  60  * 60 * 1000,
+  '6h':  6   * 60 * 60 * 1000,
+  '24h': 24  * 60 * 60 * 1000,
+  '7d':  7   * 24 * 60 * 60 * 1000,
+  '15d': 15  * 24 * 60 * 60 * 1000,
+  '30d': 30  * 24 * 60 * 60 * 1000,
+  '3mo': 90  * 24 * 60 * 60 * 1000,
+  '6mo': 180 * 24 * 60 * 60 * 1000,
+  '1y':  365 * 24 * 60 * 60 * 1000,
 };
 
+// TimescaleDB time_bucket size per range (data is 1-min resolution)
 const BUCKET_FOR_RANGE: Record<string, string> = {
-  '5m': '10 seconds',
-  '15m': '30 seconds',
+  '5m':  '1 minute',
+  '15m': '1 minute',
   '30m': '1 minute',
-  '1h': '1 minute',
-  '6h': '5 minutes',
+  '1h':  '1 minute',
+  '6h':  '5 minutes',
   '24h': '15 minutes',
-  '7d': '30 minutes',
-  '14d': '45 minutes',
-  '30d': '90 minutes',
+  '7d':  '1 hour',
+  '15d': '2 hours',
+  '30d': '4 hours',
+  '3mo': '8 hours',
+  '6mo': '12 hours',
+  '1y':  '1 day',
 };
 
 export class TelemetryService {

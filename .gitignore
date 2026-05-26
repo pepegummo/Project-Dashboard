@@ -68,3 +68,7 @@ coverage/
 .cache/
 tmp/
 temp/
+
+# ─── Claude Code ─────────────────────────────────────────────────────────────
+CLAUDE.md
+.claude/

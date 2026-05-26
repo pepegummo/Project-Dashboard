@@ -123,6 +123,11 @@ export function useAggregatedValue(machineId: string, field: string, period: str
     '6h':  '6 hrs',
     '24h': '24 hrs',
     '7d':  '7 days',
+    '15d': '15 days',
+    '30d': '30 days',
+    '3mo': '3 months',
+    '6mo': '6 months',
+    '1y':  '1 year',
   };
   const periodLabel = PERIOD_LABELS[period] ?? period;
 

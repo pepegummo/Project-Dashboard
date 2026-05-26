@@ -111,7 +111,7 @@ export interface WidgetLayout {
   h: number;
 }
 
-export type AggregationPeriod = 'live' | '5m' | '15m' | '30m' | '1h' | '6h' | '24h' | '7d';
+export type AggregationPeriod = 'live' | '5m' | '15m' | '30m' | '1h' | '6h' | '24h' | '7d' | '15d' | '30d' | '3mo' | '6mo' | '1y';
 
 export interface TelemetryAggregateSummary {
   avg: number;
