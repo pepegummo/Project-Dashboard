@@ -131,7 +131,7 @@ const option = computed<EChartsOption>(() => {
 
   return {
     backgroundColor: 'transparent',
-    grid: { left: 42, right: 60, top: 16, bottom: 30, containLabel: false },
+    grid: { left: 42, right: 60, top: 16, bottom: shouldRotate.value ? 52 : 30, containLabel: false },
 
     // visualMap always targets seriesIndex 0 (the avg line)
     visualMap: hasLimits ? [{

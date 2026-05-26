@@ -53,6 +53,7 @@ export const useAuthStore = defineStore('auth', () => {
   // Restore session on app start
   if (token.value) {
     api.setToken(token.value);
+    wsService.connect(token.value);   // reconnect WebSocket after page refresh
     loadProfile();
   }
 

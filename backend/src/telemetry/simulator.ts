@@ -12,6 +12,35 @@ import { TelemetryData } from '../types';
 const CYCLE_TICKS  = 120; // 1 full pulse = 120 ticks = 2 hours at 1-min/tick
 const TRANS_TICKS  = 5;   // smooth edge over ±5 ticks
 
+// ─── Random PWM — duty cycle changes once per cycle ───────────────────────────
+function makePwm(minDuty: number, maxDuty: number) {
+  let lastCycle = -1;
+  let duty      = (minDuty + maxDuty) / 2;
+  return (tick: number): number => {
+    const cycle = Math.floor(tick / CYCLE_TICKS);
+    if (cycle !== lastCycle) {
+      lastCycle = cycle;
+      duty      = minDuty + Math.random() * (maxDuty - minDuty);
+    }
+    return duty;
+  };
+}
+
+// Per-field PWM instances (same ranges as backfill)
+const cwWeightPwm     = makePwm(0.30, 0.65);
+const cwSpeedPwm      = makePwm(0.30, 0.65);
+const cwThroughputPwm = makePwm(0.30, 0.65);
+const cwRejectsPwm    = makePwm(0.20, 0.50);
+const tsTempPwm       = makePwm(0.35, 0.65);
+const tsHumidityPwm   = makePwm(0.35, 0.60);
+const tsDewPwm        = makePwm(0.35, 0.60);
+const cbSpeedPwm      = makePwm(0.30, 0.65);
+const cbLoadPwm       = makePwm(0.30, 0.65);
+const cbRpmPwm        = makePwm(0.30, 0.65);
+const cbVibrationPwm  = makePwm(0.25, 0.65);
+const vcDefectPwm     = makePwm(0.20, 0.55);
+const vcConfidencePwm = makePwm(0.40, 0.70);
+
 // ─── Pulse wave + layered noise ───────────────────────────────────────────────
 function pulse(
   threshold:   number,
@@ -62,11 +91,11 @@ const vcState = { inspected: 0, passed: 0, failed: 0 };
 
 // ─── Generators ──────────────────────────────────────────────────────────────
 function generateCheckweigher(tick: number): TelemetryData {
-  const rejects = Math.max(0, Math.round(pulse(1.5, tick, 10, 0, 0.30)));
+  const rejects = Math.max(0, Math.round(pulse(1.5, tick, 10, 0, cwRejectsPwm(tick))));
   return {
-    weight:      pulse(500,  tick,  0, 2, 0.45),
-    speed:       pulse(60,   tick,  5, 1, 0.50),
-    throughput:  pulse(60,   tick,  5, 1, 0.50),
+    weight:      pulse(500, tick,  0, 2, cwWeightPwm(tick)),
+    speed:       pulse(60,  tick,  5, 1, cwSpeedPwm(tick)),
+    throughput:  pulse(60,  tick,  5, 1, cwThroughputPwm(tick)),
     rejects,
     status_code: rejects > 0 ? 1 : 0,
   };
@@ -74,24 +103,24 @@ function generateCheckweigher(tick: number): TelemetryData {
 
 function generateTemperatureSensor(tick: number): TelemetryData {
   return {
-    temp:      pulse(22,  tick,  0, 2, 0.55),
-    humidity:  pulse(55,  tick, 20, 1, 0.48),
-    dew_point: pulse(11,  tick, 10, 2, 0.52),
+    temp:      pulse(22, tick,  0, 2, tsTempPwm(tick)),
+    humidity:  pulse(55, tick, 20, 1, tsHumidityPwm(tick)),
+    dew_point: pulse(11, tick, 10, 2, tsDewPwm(tick)),
   };
 }
 
 function generateConveyor(tick: number): TelemetryData {
   return {
-    speed:     pulse(1000, tick,  0, 1, 0.45),
-    load:      pulse(45,   tick, 30, 1, 0.50),
-    rpm:       pulse(750,  tick, 15, 0, 0.45),
-    vibration: pulse(5,    tick,  8, 2, 0.40),
+    speed:     pulse(1000, tick,  0, 1, cbSpeedPwm(tick)),
+    load:      pulse(45,   tick, 30, 1, cbLoadPwm(tick)),
+    rpm:       pulse(750,  tick, 15, 0, cbRpmPwm(tick)),
+    vibration: pulse(5,    tick,  8, 2, cbVibrationPwm(tick)),
   };
 }
 
 function generateVisionCamera(tick: number): TelemetryData {
-  const defect_rate = pulse(1,  tick,  0, 3, 0.35);
-  const confidence  = pulse(97, tick, 25, 1, 0.60);
+  const defect_rate = pulse(1,  tick,  0, 3, vcDefectPwm(tick));
+  const confidence  = pulse(97, tick, 25, 1, vcConfidencePwm(tick));
   const newInspected = Math.floor(Math.random() * 3) + 1;
   vcState.inspected += newInspected;
   const newFailed    = Math.random() < defect_rate / 100 ? 1 : 0;

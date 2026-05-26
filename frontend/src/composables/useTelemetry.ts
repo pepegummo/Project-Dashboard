@@ -1,56 +1,8 @@
 import { ref, computed, onMounted, onUnmounted, watch, isRef } from 'vue';
 import type { Ref } from 'vue';
 import { wsService } from '@/services/ws.service';
-import { useTelemetryStore } from '@/stores/telemetry.store';
 import { api } from '@/services/api.service';
-import type { TelemetryHistory } from '@/stores/telemetry.store';
 
-export function useMachineTelemetry(machineId: string, fields: string[]) {
-  const store = useTelemetryStore();
-  const loading = ref(false);
-
-  // Subscribe WebSocket
-  let offHandlers: Array<() => void> = [];
-
-  onMounted(async () => {
-    wsService.subscribe([machineId]);
-
-    // Load initial historical data for each field
-    loading.value = true;
-    try {
-      for (const field of fields) {
-        const series = await api.getTelemetrySeries(machineId, field, '30m');
-        if (series?.data) {
-          for (const point of series.data) {
-            const ts = point.ts ?? (point as any).bucket;
-            const val = typeof point.value === 'number' ? point.value : (point as any).avg;
-            if (ts && typeof val === 'number') {
-              store.updateSnapshot(machineId, ts, { [field]: val });
-            }
-          }
-        }
-      }
-    } catch { /* ignore if offline */ }
-    loading.value = false;
-  });
-
-  onUnmounted(() => {
-    wsService.unsubscribe([machineId]);
-    offHandlers.forEach(off => off());
-  });
-
-  const snapshot = computed(() => store.getLatest(machineId));
-
-  function getFieldHistory(field: string): TelemetryHistory | undefined {
-    return store.getHistory(machineId, field);
-  }
-
-  function getFieldValue(field: string): number | undefined {
-    return store.getFieldValue(machineId, field);
-  }
-
-  return { snapshot, loading, getFieldHistory, getFieldValue };
-}
 
 /** Composable for a single field series within a chart widget */
 export function useFieldSeries(machineId: string, field: string, timeRange: string | Ref<string> = '1h') {

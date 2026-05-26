@@ -29,6 +29,22 @@ const TRANS_TICKS  = 5;         // smooth edge over ±5 ticks
 const ROWS_PER_MACHINE = Math.floor((END_DATE.getTime() - START_DATE.getTime()) / INTERVAL_MS);
 const TOTAL_ROWS       = ROWS_PER_MACHINE * 4; // 4 machines
 
+// ─── Random PWM — duty cycle changes once per cycle ───────────────────────────
+// Returns a stateful function: call pwm(tick) to get the current duty cycle.
+// The duty is re-randomised at the start of each new CYCLE_TICKS boundary.
+function makePwm(minDuty: number, maxDuty: number) {
+  let lastCycle = -1;
+  let duty      = (minDuty + maxDuty) / 2;   // initialise to midpoint
+  return (tick: number): number => {
+    const cycle = Math.floor(tick / CYCLE_TICKS);
+    if (cycle !== lastCycle) {
+      lastCycle = cycle;
+      duty      = minDuty + Math.random() * (maxDuty - minDuty);
+    }
+    return duty;
+  };
+}
+
 // ─── Pulse wave + layered noise ───────────────────────────────────────────────
 function pulse(
   threshold:   number,
@@ -76,16 +92,35 @@ function pulse(
 }
 
 // ─── Machine + field definitions ─────────────────────────────────────────────
+// Each field has its own PWM state → duty cycles vary independently per field.
+// Range [min, max] is chosen to keep the signal clearly visible in charts.
+const cwWeightPwm     = makePwm(0.30, 0.65);
+const cwSpeedPwm      = makePwm(0.30, 0.65);
+const cwThroughputPwm = makePwm(0.30, 0.65);
+const cwRejectsPwm    = makePwm(0.20, 0.50);
+
+const tsTempPwm       = makePwm(0.35, 0.65);
+const tsHumidityPwm   = makePwm(0.35, 0.60);
+const tsDewPwm        = makePwm(0.35, 0.60);
+
+const cbSpeedPwm      = makePwm(0.30, 0.65);
+const cbLoadPwm       = makePwm(0.30, 0.65);
+const cbRpmPwm        = makePwm(0.30, 0.65);
+const cbVibrationPwm  = makePwm(0.25, 0.65);
+
+const vcDefectPwm     = makePwm(0.20, 0.55);
+const vcConfidencePwm = makePwm(0.40, 0.70);
+
 const MACHINES = [
   {
     id:   '00000000-0000-0000-0000-000000000005',
     name: 'Checkweigher CW-01',
     generate: (tick: number) => {
-      const rejects = Math.max(0, Math.round(pulse(1.5, tick, 10, 0, 0.30)));
+      const rejects = Math.max(0, Math.round(pulse(1.5, tick, 10, 0, cwRejectsPwm(tick))));
       return {
-        weight:      pulse(500,  tick,  0, 2, 0.45),
-        speed:       pulse(60,   tick,  5, 1, 0.50),
-        throughput:  pulse(60,   tick,  5, 1, 0.50),
+        weight:      pulse(500, tick,  0, 2, cwWeightPwm(tick)),
+        speed:       pulse(60,  tick,  5, 1, cwSpeedPwm(tick)),
+        throughput:  pulse(60,  tick,  5, 1, cwThroughputPwm(tick)),
         rejects,
         status_code: rejects > 0 ? 1 : 0,
       };
@@ -95,19 +130,19 @@ const MACHINES = [
     id:   '00000000-0000-0000-0000-000000000006',
     name: 'Temp Sensor TS-01',
     generate: (tick: number) => ({
-      temp:      pulse(22,  tick,  0, 2, 0.55),
-      humidity:  pulse(55,  tick, 20, 1, 0.48),
-      dew_point: pulse(11,  tick, 10, 2, 0.52),
+      temp:      pulse(22, tick,  0, 2, tsTempPwm(tick)),
+      humidity:  pulse(55, tick, 20, 1, tsHumidityPwm(tick)),
+      dew_point: pulse(11, tick, 10, 2, tsDewPwm(tick)),
     }),
   },
   {
     id:   '00000000-0000-0000-0000-000000000007',
     name: 'Conveyor Belt CB-01',
     generate: (tick: number) => ({
-      speed:     pulse(1000, tick,  0, 1, 0.45),
-      load:      pulse(45,   tick, 30, 1, 0.50),
-      rpm:       pulse(750,  tick, 15, 0, 0.45),
-      vibration: pulse(5,    tick,  8, 2, 0.40),
+      speed:     pulse(1000, tick,  0, 1, cbSpeedPwm(tick)),
+      load:      pulse(45,   tick, 30, 1, cbLoadPwm(tick)),
+      rpm:       pulse(750,  tick, 15, 0, cbRpmPwm(tick)),
+      vibration: pulse(5,    tick,  8, 2, cbVibrationPwm(tick)),
     }),
   },
   {
@@ -115,8 +150,8 @@ const MACHINES = [
     name: 'Vision Camera VC-01',
     inspected: 0, passed: 0, failed: 0,
     generate(tick: number) {
-      const defect_rate = pulse(1,  tick,  0, 3, 0.35);
-      const confidence  = pulse(97, tick, 25, 1, 0.60);
+      const defect_rate  = pulse(1,  tick,  0, 3, vcDefectPwm(tick));
+      const confidence   = pulse(97, tick, 25, 1, vcConfidencePwm(tick));
       const newInspected = Math.floor(Math.random() * 3) + 1;
       this.inspected += newInspected;
       const newFailed    = Math.random() < defect_rate / 100 ? 1 : 0;
