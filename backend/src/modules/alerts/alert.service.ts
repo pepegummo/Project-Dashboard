@@ -70,7 +70,7 @@ export class AlertService {
     return this.repo.delete(id);
   }
 
-  async getActiveEvents(organizationId: string) {
+  async getActiveEvents(organizationId: string | null) {
     return this.repo.getActiveAlerts(organizationId);
   }
 

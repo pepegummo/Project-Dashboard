@@ -38,13 +38,15 @@ export class AlertRepository {
     return prisma.alert.delete({ where: { id } });
   }
 
-  async getActiveAlerts(organizationId: string, limit = 50) {
+  async getActiveAlerts(organizationId: string | null, limit = 50) {
     return prisma.alertEvent.findMany({
       where: {
         status: 'open',
         alert: {
           isActive: true,
-          machine: { productionLine: { factory: { organizationId } } },
+          ...(organizationId
+            ? { machine: { productionLine: { factory: { organizationId } } } }
+            : {}),
         },
       },
       include: {

@@ -36,7 +36,7 @@ export class TelemetryController {
 
   getLatest = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const { orgId } = (req as AuthenticatedRequest).user;
+      const orgId = (req as AuthenticatedRequest).user?.orgId ?? null;
       const result = await this.svc.getLatest(req.params.machineId, orgId);
       res.json({ success: true, data: result });
     } catch (err) { next(err); }
@@ -71,7 +71,7 @@ export class TelemetryController {
 
   getMultiLatest = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const { orgId } = (req as AuthenticatedRequest).user;
+      const orgId = (req as AuthenticatedRequest).user?.orgId ?? null;
       const machineIds = (req.query.ids as string ?? '').split(',').filter(Boolean);
       const result = await this.svc.getMultiMachineLatest(machineIds, orgId);
       res.json({ success: true, data: result });

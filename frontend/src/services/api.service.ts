@@ -26,7 +26,10 @@ class ApiService {
       (err: AxiosError<{ success: false; error: { code: string; message: string } }>) => {
         if (err.response?.status === 401) {
           localStorage.removeItem('auth_token');
-          window.location.href = '/login';
+          // Don't redirect to login from public pages (e.g. /led kiosk share link)
+          if (!window.location.pathname.startsWith('/led')) {
+            window.location.href = '/login';
+          }
         }
         const message = err.response?.data?.error?.message ?? err.message;
         return Promise.reject(new Error(message));

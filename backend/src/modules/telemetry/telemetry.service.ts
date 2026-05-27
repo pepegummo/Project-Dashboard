@@ -55,10 +55,12 @@ export class TelemetryService {
     return { machineId, timestamp: new Date(), data };
   }
 
-  async getLatest(machineId: string, organizationId: string) {
-    const machine = await this.machineRepo.findById(machineId);
-    if (!machine || machine.productionLine.factory.organizationId !== organizationId) {
-      throw new AppError(404, 'NOT_FOUND', 'Machine not found');
+  async getLatest(machineId: string, organizationId: string | null) {
+    if (organizationId !== null) {
+      const machine = await this.machineRepo.findById(machineId);
+      if (!machine || machine.productionLine.factory.organizationId !== organizationId) {
+        throw new AppError(404, 'NOT_FOUND', 'Machine not found');
+      }
     }
     return this.repo.getLatest(machineId);
   }
@@ -100,11 +102,15 @@ export class TelemetryService {
     return { machineId, days, data };
   }
 
-  async getMultiMachineLatest(machineIds: string[], organizationId: string) {
-    // Filter to org-owned machines only
-    const allMachines = await this.machineRepo.findAll(organizationId);
-    const ownedIds = new Set(allMachines.map(m => m.id));
-    const filteredIds = machineIds.filter(id => ownedIds.has(id));
-    return this.repo.getLatestForMachines(filteredIds);
+  async getMultiMachineLatest(machineIds: string[], organizationId: string | null) {
+    if (organizationId !== null) {
+      // Authenticated path — filter to org-owned machines only
+      const allMachines = await this.machineRepo.findAll(organizationId);
+      const ownedIds = new Set(allMachines.map(m => m.id));
+      const filteredIds = machineIds.filter(id => ownedIds.has(id));
+      return this.repo.getLatestForMachines(filteredIds);
+    }
+    // Public path (LED kiosk) — return data for all requested IDs directly
+    return this.repo.getLatestForMachines(machineIds);
   }
 }

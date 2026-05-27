@@ -63,7 +63,7 @@ export class AlertController {
 
   getActiveEvents = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const { orgId } = (req as AuthenticatedRequest).user;
+      const orgId = (req as AuthenticatedRequest).user?.orgId ?? null;
       const events = await this.svc.getActiveEvents(orgId);
       res.json({ success: true, data: events });
     } catch (err) { next(err); }
