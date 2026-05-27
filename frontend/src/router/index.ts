@@ -9,6 +9,15 @@ const routes: RouteRecordRaw[] = [
     meta: { public: true, layout: 'blank' },
   },
   {
+    // LED kiosk page — no auth required, no sidebar/topbar
+    // Access via: /led?w=<base64-encoded LedWidget[]>
+    // Generate the URL with useLedExport → exportLedLink()
+    path: '/led',
+    name: 'LedView',
+    component: () => import('@/pages/LedViewPage.vue'),
+    meta: { public: true, layout: 'blank' },
+  },
+  {
     path: '/',
     redirect: '/dashboards',
     meta: { requiresAuth: true },

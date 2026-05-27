@@ -3,7 +3,8 @@ import { ref, onMounted, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useDashboardStore } from '@/stores/dashboard.store';
 import { useMachineStore } from '@/stores/machine.store';
-import { Save, Plus, ArrowLeft, Loader2, LayoutGrid } from 'lucide-vue-next';
+import { useLedExport } from '@/composables/useLedExport';
+import { Save, Plus, ArrowLeft, Loader2, LayoutGrid, Monitor, ExternalLink } from 'lucide-vue-next';
 import GridStackCanvas from '@/components/dashboard/GridStackCanvas.vue';
 import WidgetToolbox from '@/components/dashboard/WidgetToolbox.vue';
 import WidgetConfigModal from '@/components/dashboard/WidgetConfigModal.vue';
@@ -13,6 +14,9 @@ const route = useRoute();
 const router = useRouter();
 const dashboardStore = useDashboardStore();
 const machineStore = useMachineStore();
+
+// ── LED Export ─────────────────────────────────────────────────────────────────
+const { exportLedLink, openLedPreview, exportLabel, copied } = useLedExport();
 
 const showToolbox = ref(false);
 const showConfigModal = ref(false);
@@ -102,6 +106,55 @@ async function onRemoveWidget(widgetId: string) {
           <Plus class="w-4 h-4" />
           Add Widget
         </button>
+
+        <!-- ── LED Export button group ──────────────────────────────────── -->
+        <div class="flex items-center rounded-lg overflow-hidden border border-violet-500/25 bg-violet-500/8">
+
+          <!-- Copy link -->
+          <button
+            class="led-export-btn group"
+            :class="copied ? 'led-export-btn--copied' : 'led-export-btn--default'"
+            :disabled="!dashboardStore.widgets.length"
+            :title="dashboardStore.widgets.length ? 'Copy LED kiosk URL to clipboard' : 'Add widgets first'"
+            @click="exportLedLink(dashboardStore.widgets)"
+          >
+            <!-- Icon: checkmark when copied, monitor otherwise -->
+            <Transition name="icon-swap" mode="out-in">
+              <svg
+                v-if="copied"
+                key="check"
+                class="w-4 h-4 flex-shrink-0 text-emerald-400"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                stroke-width="2.5"
+              >
+                <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+              <Monitor v-else key="monitor" class="w-4 h-4 flex-shrink-0" />
+            </Transition>
+
+            <!-- Label -->
+            <Transition name="label-swap" mode="out-in">
+              <span :key="exportLabel">{{ exportLabel }}</span>
+            </Transition>
+          </button>
+
+          <!-- Divider -->
+          <div class="w-px self-stretch bg-violet-500/20" />
+
+          <!-- Open in new tab (preview) -->
+          <button
+            class="led-export-btn led-export-btn--default px-2"
+            :disabled="!dashboardStore.widgets.length"
+            title="Open LED kiosk in a new tab"
+            @click="openLedPreview(dashboardStore.widgets)"
+          >
+            <ExternalLink class="w-3.5 h-3.5" />
+          </button>
+        </div>
+        <!-- ────────────────────────────────────────────────────────────── -->
+
         <!-- Layout auto-saves on drag; this button just shows status -->
         <button
           class="btn-primary"
@@ -153,3 +206,55 @@ async function onRemoveWidget(widgetId: string) {
     />
   </div>
 </template>
+
+<style scoped>
+/* ── LED Export button ───────────────────────────────────────────────────────── */
+
+.led-export-btn {
+  display:     inline-flex;
+  align-items: center;
+  gap:         0.375rem;       /* gap-1.5 */
+  padding:     0.375rem 0.625rem; /* py-1.5 px-2.5 */
+  font-size:   0.8125rem;      /* text-[13px] */
+  font-weight: 500;
+  cursor:      pointer;
+  transition:  color 180ms ease, background-color 180ms ease;
+  white-space: nowrap;
+  user-select: none;
+  border:      none;
+  background:  transparent;
+}
+
+.led-export-btn:disabled {
+  opacity: 0.38;
+  cursor:  not-allowed;
+}
+
+.led-export-btn--default {
+  color: rgb(196 181 253);  /* violet-300 */
+}
+.led-export-btn--default:not(:disabled):hover {
+  color:            rgb(237 233 254); /* violet-100 */
+  background-color: rgba(139 92 246 / 0.12);
+}
+
+.led-export-btn--copied {
+  color: rgb(52 211 153); /* emerald-400 */
+}
+
+/* ── Icon swap animation ────────────────────────────────────────────────────── */
+.icon-swap-enter-active,
+.icon-swap-leave-active {
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+.icon-swap-enter-from { opacity: 0; transform: scale(0.6) rotate(-15deg); }
+.icon-swap-leave-to   { opacity: 0; transform: scale(0.6) rotate(15deg);  }
+
+/* ── Label swap animation ───────────────────────────────────────────────────── */
+.label-swap-enter-active,
+.label-swap-leave-active {
+  transition: opacity 100ms ease, transform 100ms ease;
+}
+.label-swap-enter-from { opacity: 0; transform: translateY(-4px); }
+.label-swap-leave-to   { opacity: 0; transform: translateY(4px);  }
+</style>
