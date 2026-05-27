@@ -20,7 +20,7 @@ import { wsService }         from '@/services/ws.service'
 import { api }               from '@/services/api.service'
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
-export type LedWidgetType = 'metric' | 'sparkline' | 'status' | 'alarm' | 'daily-count'
+export type LedWidgetType = 'metric' | 'sparkline' | 'status' | 'alarm' | 'gauge'
 
 export interface LedWidget {
   /** Unique identifier for v-for key */
@@ -61,8 +61,12 @@ export interface LedWidget {
   criticalCount?: number
   /** Override the alert-store warning count */
   warningCount?: number
-  /** Days of history to show in a 'daily-count' line chart (default 7) */
-  days?: number
+
+  // ── Gauge widget specific ─────────────────────────────────────────────────
+  /** Minimum value for the gauge arc (default 0) */
+  gaugeMin?: number
+  /** Maximum value for the gauge arc (default 100) */
+  gaugeMax?: number
 }
 
 // ─── Default mock widgets (used when no prop is passed) ────────────────────────
@@ -199,12 +203,40 @@ function resolveWarning(widget: LedWidget): number {
   return widget.warningCount ?? alertStore.warningCount
 }
 
-function resolveSparkData(widget: LedWidget): number[] {
+// ─── Sparkline history (last 30 pts, grouped to 10 for low-res display) ────────
+const SPARK_WINDOW = 30   // minutes of history
+const SPARK_GROUPS = 10   // display points after grouping
+
+function groupSparkHistory(
+  values: number[],
+  timestamps: string[],
+  groups: number,
+): { values: number[]; timestamps: string[] } {
+  if (values.length <= groups) return { values, timestamps }
+  const size  = Math.ceil(values.length / groups)
+  const gv: number[]  = []
+  const gt: string[]  = []
+  for (let i = 0; i < values.length; i += size) {
+    const vChunk = values.slice(i, i + size)
+    const tChunk = timestamps.slice(i, i + size)
+    gv.push(vChunk.reduce((a, b) => a + b, 0) / vChunk.length)
+    gt.push(tChunk[tChunk.length - 1] ?? '')   // last ts of the group
+  }
+  return { values: gv, timestamps: gt }
+}
+
+function resolveSparkHistory(widget: LedWidget): { values: number[]; timestamps: string[] } {
   if (widget.machineId && widget.field) {
     const hist = telemetryStore.getHistory(widget.machineId, widget.field)
-    if (hist?.values.length) return hist.values.slice(-50)
+    if (hist?.values.length) {
+      const raw = {
+        values:     hist.values.slice(-SPARK_WINDOW),
+        timestamps: hist.timestamps.slice(-SPARK_WINDOW),
+      }
+      return groupSparkHistory(raw.values, raw.timestamps, SPARK_GROUPS)
+    }
   }
-  return []
+  return { values: [], timestamps: [] }
 }
 
 // ─── Daily count data ─────────────────────────────────────────────────────────
@@ -225,19 +257,89 @@ async function fetchDailyCountWidgets() {
   }
 }
 
-// ─── Sparkline SVG point string ────────────────────────────────────────────────
-function buildSparkPoints(values: number[], W = 180, H = 22): string {
+// Keep legacy alias (used only for v-if check in sparkline template)
+function resolveSparkData(widget: LedWidget): number[] {
+  return resolveSparkHistory(widget).values
+}
+
+// ─── Sparkline SVG helpers ─────────────────────────────────────────────────────
+// Chart area inside the axes: x 40–198, y 2–40  (W=158, H=38)
+// xOff=40 gives a 38-unit Y-label zone — fits up to 7 monospace chars at font-size=9
+const SPARK = { xOff: 40, yOff: 2, W: 158, H: 38, xEnd: 198, yEnd: 40 } as const
+
+function buildSparkPoints(values: number[]): string {
   if (values.length < 2) return ''
   const min   = Math.min(...values)
   const max   = Math.max(...values)
   const range = max - min || 1
+  const { xOff, yOff, W, H } = SPARK
   return values
     .map((v, i) => {
-      const x = (i / (values.length - 1)) * W
-      const y = H - ((v - min) / range) * (H - 4) - 2
+      const x = xOff + (i / (values.length - 1)) * W
+      const y = yOff + H - ((v - min) / range) * (H - 4) - 2
       return `${x.toFixed(1)},${y.toFixed(1)}`
     })
     .join(' ')
+}
+
+function fmtTime(iso: string): string {
+  try {
+    return new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+  } catch { return '' }
+}
+
+function sparkYLabel(widget: LedWidget, pos: 'max' | 'mid' | 'min'): string {
+  const { values } = resolveSparkHistory(widget)
+  if (!values.length) return ''
+  const lo  = Math.min(...values)
+  const hi  = Math.max(...values)
+  const val = pos === 'max' ? hi : pos === 'min' ? lo : (hi + lo) / 2
+  // Smart precision: fewer decimals for large numbers so label stays short
+  const dec = val >= 100 ? 0 : val >= 10 ? 1 : (widget.precision ?? 1)
+  return val.toFixed(dec)
+}
+
+// X axis always shows a fixed 30-min window anchored to the live clock,
+// independent of how many history points have accumulated.
+function sparkXLabel(_widget: LedWidget, idx: 0 | 1 | 2 | 3): string {
+  const minutesAgo = [30, 20, 10, 0][idx]
+  const t = new Date(now.value.getTime() - minutesAgo * 60_000)
+  return fmtTime(t.toISOString())
+}
+
+// ─── Gauge helpers ─────────────────────────────────────────────────────────────
+
+/** Resolve 0–1 fill ratio for the gauge arc */
+function resolveGaugePercent(widget: LedWidget): number {
+  const raw = (widget.machineId && widget.field)
+    ? telemetryStore.getFieldValue(widget.machineId, widget.field)
+    : (widget.value !== undefined ? parseFloat(String(widget.value)) : NaN)
+  if (raw === undefined || raw === null || isNaN(Number(raw))) return 0
+  const val = Number(raw)
+  const min = widget.gaugeMin ?? 0
+  const max = widget.gaugeMax ?? 100
+  return Math.max(0, Math.min(1, (val - min) / (max - min)))
+}
+
+/**
+ * SVG arc path for a semicircle gauge.
+ * Center=(100,105), radius=80, sweeps from left (−180°) to right (0°).
+ */
+function buildGaugePath(pct: number): string {
+  if (pct <= 0) return 'M 20,105 A 80,80 0 0,1 20.01,105'
+  if (pct >= 1) return 'M 20,105 A 80,80 0 0,1 180,105'
+  const angle = -Math.PI + pct * Math.PI
+  const x = (100 + 80 * Math.cos(angle)).toFixed(2)
+  const y = (105 + 80 * Math.sin(angle)).toFixed(2)
+  const large = pct > 0.5 ? 1 : 0
+  return `M 20,105 A 80,80 0 ${large},1 ${x},${y}`
+}
+
+/** Emerald → amber → red based on how full the gauge is */
+function gaugeColor(pct: number): string {
+  if (pct >= 0.9)  return '#f87171'   // red-400   danger
+  if (pct >= 0.75) return '#f59e0b'   // amber-400 warning
+  return '#10b981'                     // emerald-400 normal
 }
 
 // ─── Status config map ─────────────────────────────────────────────────────────
@@ -366,32 +468,93 @@ const valueSize = computed(() => {
   if (n === 2) return 'clamp(3rem,   9vw, 4.5rem)'     // ~48 – 72 px   (half-width)
   if (n === 3) return 'clamp(2.25rem, 6vw, 3.25rem)'   // ~36 – 52 px   (third-width)
   if (n === 4) return 'clamp(2rem,   5vw, 3rem)'       // ~32 – 48 px   (quarter)
-  return           'clamp(1.375rem, 4vw, 2.25rem)'     // ~22 – 36 px   (small cells)
+  if (n <= 6)  return 'clamp(1.375rem, 4vw, 2.25rem)'  // ~22 – 36 px   (3-col × 2-row)
+  if (n <= 8)  return 'clamp(1.75rem,  5.5vw, 3rem)'    // ~28 – 48 px   (4-col × 2-row)
+  return            'clamp(0.9rem,   2.5vw, 1.4rem)'   // ~14 – 22 px   (9+)
+})
+
+// Smaller value size for sparkline cells — chart is the focus, number can be compact
+const sparkValueSize = computed(() => {
+  const n = count.value
+  if (n === 1) return 'clamp(2.75rem, 8vw,  3.75rem)'  // ~44 – 60 px
+  if (n === 2) return 'clamp(2rem,    5vw,  2.75rem)'   // ~32 – 44 px
+  if (n === 3) return 'clamp(1.5rem,  4vw,  2.25rem)'   // ~24 – 36 px
+  if (n === 4) return 'clamp(1.375rem,3.5vw,2rem)'      // ~22 – 32 px
+  if (n <= 6)  return 'clamp(1rem,    2.5vw, 1.5rem)'   // ~16 – 24 px
+  if (n <= 8)  return 'clamp(1.25rem,  3.5vw,  2rem)'    // ~20 – 32 px
+  return            'clamp(0.75rem,  1.5vw,  1rem)'     // ~12 – 16 px   (9+)
 })
 
 const titleSize = computed(() => {
   const n = count.value
-  if (n <= 2) return '0.6rem'   // 9.6 px
-  if (n <= 4) return '0.55rem'  // 8.8 px
-  return           '0.5rem'    // 8 px
+  if (n <= 2) return '0.75rem'   // 12 px
+  if (n <= 4) return '0.68rem'   // 10.9 px
+  if (n <= 6) return '0.6rem'    // 9.6 px
+  if (n <= 8) return '0.65rem'   // 10.4 px
+  return           '0.5rem'     // 8 px   (9+)
 })
 
 const unitSize = computed(() => {
   const n = count.value
-  if (n <= 2) return '0.7rem'   // 11.2 px
-  if (n <= 4) return '0.625rem' // 10 px
-  return           '0.565rem'  // ~9 px
+  if (n <= 2) return '0.85rem'   // 13.6 px
+  if (n <= 4) return '0.75rem'   // 12 px
+  if (n <= 6) return '0.68rem'   // 10.9 px
+  if (n <= 8) return '0.72rem'   // 11.5 px
+  return           '0.55rem'    // 8.8 px  (9+)
 })
 
 const cellPad = computed(() => {
   const n = count.value
   if (n === 1) return '1.25rem 1.75rem'
-  if (n <= 3) return '0.75rem 1rem'
-  return '0.5rem 0.75rem'
+  if (n <= 3)  return '0.75rem 1rem'
+  if (n <= 6)  return '0.5rem 0.75rem'
+  if (n <= 8)  return '0.2rem 0.25rem'
+  return            '0.25rem 0.4rem'
 })
 
 // Status dot size scales with available space
-const dotSize = computed(() => count.value <= 2 ? '11px' : count.value <= 4 ? '8px' : '6px')
+const dotSize = computed(() => {
+  const n = count.value
+  if (n <= 2) return '11px'
+  if (n <= 4) return '8px'
+  if (n <= 6) return '6px'
+  if (n <= 8) return '5px'
+  return '4px'
+})
+
+// SVG axis font-size (viewBox units) — grows for smaller cells to stay legible
+// At n=7-8 (4-col), X scale ≈ 0.715× so font-size=11 → ~7.9 px screen width per char
+const axisFont = computed(() => {
+  const n = count.value
+  if (n <= 4) return 9
+  if (n <= 6) return 10
+  return 11   // 7-8 widgets
+})
+
+// Gap between unit label and sparkline SVG — reclaim vertical space at high counts
+const svgMarginTop = computed(() => {
+  const n = count.value
+  if (n <= 4) return '0.45em'
+  if (n <= 6) return '0.35em'
+  return '0.2em'   // 7-8 widgets
+})
+
+// SVG display height — grows for large widget counts to fill freed vertical space
+const svgHeight = computed(() => {
+  const n = count.value
+  if (n <= 4) return '50px'
+  if (n <= 6) return '55px'
+  return '68px'   // 7-8: fills ~43px of previously empty top/bottom space
+})
+
+// Gauge SVG height — taller than sparkline since the arc IS the main content
+const gaugeHeight = computed(() => {
+  const n = count.value
+  if (n <= 2) return '120px'
+  if (n <= 4) return '100px'
+  if (n <= 6) return '90px'
+  return '85px'   // 7-8: fills most of the 140px available cell height
+})
 
 // ─── Trend helpers ─────────────────────────────────────────────────────────────
 function trendSymbol(t?: string): string {
@@ -436,12 +599,13 @@ function trendClass(t?: string): string {
     >
       <!-- Live indicator + project label -->
       <div class="flex items-center gap-2">
-        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
+        <div class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" style="transform: translateY(-0.05em);"></div>
+
         <span
-          class="text-gray-500 uppercase font-bold"
-          style="font-size: 0.52rem; letter-spacing: 0.32em;"
+          class="text-gray-400 uppercase font-bold leading-none"
+          style="font-size: 0.65rem; letter-spacing: 0.18em;"
         >
-          CPF &middot; LED View
+          CPF · LED View
         </span>
       </div>
 
@@ -449,15 +613,15 @@ function trendClass(t?: string): string {
       <div class="flex items-center gap-3">
         <span
           v-if="count > 0"
-          class="text-gray-700 font-bold tabular-nums"
-          style="font-size: 0.52rem; letter-spacing: 0.18em;"
+          class="text-gray-500 font-bold tabular-nums"
+          style="font-size: 0.62rem; letter-spacing: 0.12em;"
         >
           {{ count }}&thinsp;WIDGET{{ count !== 1 ? 'S' : '' }}
         </span>
-        <span class="text-gray-700 tabular-nums" style="font-size: 0.58rem;">{{ dateStr }}</span>
+        <span class="text-gray-200 tabular-nums font-semibold" style="font-size: 0.7rem; margin-left: 0.5rem; margin-right: 0.75rem;">{{ dateStr }}</span>
         <span
-          class="text-gray-300 font-bold tabular-nums"
-          style="font-size: 0.62rem; letter-spacing: 0.14em;"
+          class="text-gray-200 font-bold tabular-nums"
+          style="font-size: 0.75rem; letter-spacing: 0.1em;"
         >
           {{ timeStr }}
         </span>
@@ -510,8 +674,8 @@ function trendClass(t?: string): string {
         <template v-if="widget.type === 'metric'">
           <!-- Title label -->
           <p
-            class="text-gray-500 uppercase font-bold tracking-widest truncate max-w-full text-center leading-none"
-            :style="{ fontSize: titleSize, letterSpacing: '0.28em', marginBottom: '0.35em' }"
+            class="text-gray-300 uppercase font-bold truncate max-w-full text-center leading-none"
+            :style="{ fontSize: titleSize, letterSpacing: '0.16em', marginBottom: '0.35em' }"
           >
             {{ widget.title }}
           </p>
@@ -531,8 +695,8 @@ function trendClass(t?: string): string {
           <!-- Unit -->
           <p
             v-if="widget.unit"
-            class="text-gray-500 uppercase font-semibold text-center leading-none"
-            :style="{ fontSize: unitSize, letterSpacing: '0.22em', marginTop: '0.4em' }"
+            class="text-gray-300 uppercase font-semibold text-center leading-none"
+            :style="{ fontSize: unitSize, letterSpacing: '0.14em', marginTop: '0.4em' }"
           >
             {{ widget.unit }}
           </p>
@@ -542,7 +706,7 @@ function trendClass(t?: string): string {
             v-if="widget.trend && trendSymbol(widget.trend)"
             class="font-bold text-center leading-none"
             :class="trendClass(widget.trend)"
-            style="font-size: 0.52rem; letter-spacing: 0.2em; margin-top: 0.45em;"
+            style="font-size: 0.65rem; letter-spacing: 0.14em; margin-top: 0.45em;"
           >
             {{ trendSymbol(widget.trend) }}&thinsp;{{ widget.trend.toUpperCase() }}
           </p>
@@ -554,18 +718,18 @@ function trendClass(t?: string): string {
         <template v-else-if="widget.type === 'sparkline'">
           <!-- Title label -->
           <p
-            class="text-gray-500 uppercase font-bold tracking-widest truncate max-w-full text-center leading-none"
-            :style="{ fontSize: titleSize, letterSpacing: '0.28em', marginBottom: '0.35em' }"
+            class="text-gray-300 uppercase font-bold truncate max-w-full text-center leading-none"
+            :style="{ fontSize: titleSize, letterSpacing: '0.16em', marginBottom: '0.35em' }"
           >
             {{ widget.title }}
           </p>
 
-          <!-- Main value -->
+          <!-- Main value (compact — chart is the focus) -->
           <p
             class="tabular-nums leading-none text-center font-black transition-colors duration-500"
             :class="widget.colorClass ?? 'text-emerald-400'"
             :style="{
-              fontSize: valueSize,
+              fontSize: sparkValueSize,
               textShadow: metricGlow(widget.colorClass ?? 'text-emerald-400'),
             }"
           >
@@ -575,32 +739,50 @@ function trendClass(t?: string): string {
           <!-- Unit -->
           <p
             v-if="widget.unit"
-            class="text-gray-500 uppercase font-semibold text-center leading-none"
-            :style="{ fontSize: unitSize, letterSpacing: '0.22em', marginTop: '0.35em' }"
+            class="text-gray-300 uppercase font-semibold text-center leading-none"
+            :style="{ fontSize: unitSize, letterSpacing: '0.14em', marginTop: '0.35em' }"
           >
             {{ widget.unit }}
           </p>
 
-          <!-- Sparkline SVG — only rendered when live history exists -->
+          <!-- Sparkline SVG with X/Y axes — last 30 min, grouped to 10 pts -->
           <svg
             v-if="resolveSparkData(widget).length >= 2"
             class="w-full flex-shrink-0"
-            style="height: 20px; margin-top: 0.45em;"
-            viewBox="0 0 180 22"
+            :style="{ height: svgHeight, marginTop: svgMarginTop }"
+            viewBox="0 0 200 56"
             preserveAspectRatio="none"
           >
             <defs>
               <linearGradient :id="`sg-${widget.id}`" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%"   stop-color="#10b981" stop-opacity="0.45" />
+                <stop offset="0%"   stop-color="#10b981" stop-opacity="0.35" />
                 <stop offset="100%" stop-color="#10b981" stop-opacity="0"   />
               </linearGradient>
             </defs>
-            <!-- Filled area under the curve -->
+
+            <!-- ── Y axis grid lines (max / mid / min) ──────────────────── -->
+            <line x1="40" :y1="SPARK.yOff"  x2="198" :y2="SPARK.yOff"  stroke="rgba(255,255,255,0.07)" stroke-width="0.5" />
+            <line x1="40" y1="21"            x2="198" y2="21"            stroke="rgba(255,255,255,0.07)" stroke-width="0.5" />
+            <line x1="40" :y1="SPARK.yEnd"  x2="198" :y2="SPARK.yEnd"  stroke="rgba(255,255,255,0.07)" stroke-width="0.5" />
+
+            <!-- ── Y axis labels ─────────────────────────────────────────── -->
+            <text x="38" :y="SPARK.yOff + 7" text-anchor="end" fill="rgba(255,255,255,0.92)" :font-size="axisFont" font-weight="bold" font-family="monospace">{{ sparkYLabel(widget, 'max') }}</text>
+            <text x="38" y="25"              text-anchor="end" fill="rgba(255,255,255,0.92)" :font-size="axisFont" font-weight="bold" font-family="monospace">{{ sparkYLabel(widget, 'mid') }}</text>
+            <text x="38" :y="SPARK.yEnd"     text-anchor="end" fill="rgba(255,255,255,0.92)" :font-size="axisFont" font-weight="bold" font-family="monospace">{{ sparkYLabel(widget, 'min') }}</text>
+
+            <!-- ── Axes ──────────────────────────────────────────────────── -->
+            <!-- Y axis rule -->
+            <line x1="40" :y1="SPARK.yOff" x2="40" :y2="SPARK.yEnd + 1" stroke="rgba(255,255,255,0.18)" stroke-width="0.6" />
+            <!-- X axis rule -->
+            <line x1="39" :y1="SPARK.yEnd + 1" x2="199" :y2="SPARK.yEnd + 1" stroke="rgba(255,255,255,0.18)" stroke-width="0.6" />
+
+            <!-- ── Area fill ──────────────────────────────────────────────── -->
             <polygon
-              :points="`0,22 ${buildSparkPoints(resolveSparkData(widget))} 180,22`"
+              :points="`${SPARK.xOff},${SPARK.yEnd} ${buildSparkPoints(resolveSparkData(widget))} ${SPARK.xEnd},${SPARK.yEnd}`"
               :fill="`url(#sg-${widget.id})`"
             />
-            <!-- Line itself -->
+
+            <!-- ── Line ──────────────────────────────────────────────────── -->
             <polyline
               :points="buildSparkPoints(resolveSparkData(widget))"
               fill="none"
@@ -610,6 +792,14 @@ function trendClass(t?: string): string {
               stroke-linejoin="round"
               opacity="0.9"
             />
+
+            <!-- ── X axis labels (4 evenly spaced time marks) ────────────── -->
+            <!-- chart spans 40–198 (W=158); centres at W/8 intervals = 60,99,139,178 -->
+            <!-- all text-anchor="middle" → visual centres are perfectly equidistant  -->
+            <text x="60"  y="54" text-anchor="middle" fill="rgba(255,255,255,0.92)" :font-size="axisFont" font-weight="bold" font-family="monospace">{{ sparkXLabel(widget, 0) }}</text>
+            <text x="99"  y="54" text-anchor="middle" fill="rgba(255,255,255,0.92)" :font-size="axisFont" font-weight="bold" font-family="monospace">{{ sparkXLabel(widget, 1) }}</text>
+            <text x="139" y="54" text-anchor="middle" fill="rgba(255,255,255,0.92)" :font-size="axisFont" font-weight="bold" font-family="monospace">{{ sparkXLabel(widget, 2) }}</text>
+            <text x="178" y="54" text-anchor="middle" fill="rgba(255,255,255,0.92)" :font-size="axisFont" font-weight="bold" font-family="monospace">{{ sparkXLabel(widget, 3) }}</text>
           </svg>
 
           <!-- Placeholder bar when no history yet -->
@@ -626,21 +816,21 @@ function trendClass(t?: string): string {
         <template v-else-if="widget.type === 'status'">
           <!-- Title label -->
           <p
-            class="text-gray-500 uppercase font-bold tracking-widest truncate max-w-full text-center leading-none"
-            :style="{ fontSize: titleSize, letterSpacing: '0.28em', marginBottom: '0.55em' }"
+            class="text-gray-300 uppercase font-bold truncate max-w-full text-center leading-none"
+            :style="{ fontSize: titleSize, letterSpacing: '0.16em', marginBottom: '0.55em' }"
           >
             {{ widget.title }}
           </p>
 
           <!-- Status row: dot + label -->
-          <div class="flex items-center gap-2.5">
+          <div class="flex gap-2.5" style="align-items: center;">
             <span
               class="rounded-full flex-shrink-0"
               :class="[
                 STATUS_CFG[resolveStatus(widget)].dotClass,
                 resolveStatus(widget) === 'error' ? 'led-blink' : 'animate-pulse',
               ]"
-              :style="{ width: dotSize, height: dotSize }"
+              :style="{ width: dotSize, height: dotSize, display: 'block', lineHeight: '1', transform: 'translateY(-0.05em)' }"
             />
             <p
               class="leading-none font-black tracking-widest"
@@ -654,6 +844,8 @@ function trendClass(t?: string): string {
                   `0 0 18px ${STATUS_CFG[resolveStatus(widget)].glow}`,
                   `0 0 55px ${STATUS_CFG[resolveStatus(widget)].glow}55`,
                 ].join(', '),
+                lineHeight: '1',
+                margin: '0',
               }"
             >
               {{ STATUS_CFG[resolveStatus(widget)].label }}
@@ -667,8 +859,8 @@ function trendClass(t?: string): string {
         <template v-else-if="widget.type === 'alarm'">
           <!-- Title label -->
           <p
-            class="text-gray-500 uppercase font-bold tracking-widest truncate max-w-full text-center leading-none"
-            :style="{ fontSize: titleSize, letterSpacing: '0.28em', marginBottom: '0.6em' }"
+            class="text-gray-300 uppercase font-bold truncate max-w-full text-center leading-none"
+            :style="{ fontSize: titleSize, letterSpacing: '0.16em', marginBottom: '0.6em' }"
           >
             {{ widget.title }}
           </p>
@@ -698,11 +890,12 @@ function trendClass(t?: string): string {
                 <span
                   class="w-1 h-1 rounded-full flex-shrink-0"
                   :class="resolveCritical(widget) > 0 ? 'bg-red-500 led-blink' : 'bg-gray-800'"
+                  style="transform: translateY(-0.05em);"
                 />
                 <span
                   class="font-bold uppercase leading-none"
-                  :class="resolveCritical(widget) > 0 ? 'text-red-700' : 'text-gray-800'"
-                  style="font-size: 0.48rem; letter-spacing: 0.28em;"
+                  :class="resolveCritical(widget) > 0 ? 'text-red-500' : 'text-gray-700'"
+                  style="font-size: 0.65rem; letter-spacing: 0.14em;"
                 >
                   CRIT
                 </span>
@@ -734,11 +927,12 @@ function trendClass(t?: string): string {
                 <span
                   class="w-1 h-1 rounded-full flex-shrink-0 animate-pulse"
                   :class="resolveWarning(widget) > 0 ? 'bg-amber-400' : 'bg-gray-800'"
+                  style="transform: translateY(-0.05em);"
                 />
                 <span
                   class="font-bold uppercase leading-none"
-                  :class="resolveWarning(widget) > 0 ? 'text-amber-700' : 'text-gray-800'"
-                  style="font-size: 0.48rem; letter-spacing: 0.28em;"
+                  :class="resolveWarning(widget) > 0 ? 'text-amber-500' : 'text-gray-700'"
+                  style="font-size: 0.65rem; letter-spacing: 0.14em;"
                 >
                   WARN
                 </span>
@@ -749,29 +943,90 @@ function trendClass(t?: string): string {
         </template>
 
         <!-- ════════════════════════════════════════════════════════════════ -->
-        <!--  DAILY COUNT  ─  MachineDailyCountWidget in LED mode           -->
+        <!--  GAUGE  ─  Semicircle arc with live value and range              -->
         <!-- ════════════════════════════════════════════════════════════════ -->
-        <template v-else-if="widget.type === 'daily-count'">
-          <MachineDailyCountWidget
-            v-if="buildLedDailyData(widget)"
-            :widget="({} as any)"
-            :led-mode="true"
-            :data="buildLedDailyData(widget)!"
-            class="w-full h-full"
-          />
-
-          <!-- Waiting for first fetch -->
-          <div
-            v-else
-            class="w-full h-full flex items-center justify-center bg-[#050f05]"
+        <template v-else-if="widget.type === 'gauge'">
+          <!-- Title label -->
+          <p
+            class="text-gray-300 uppercase font-bold truncate max-w-full text-center leading-none"
+            :style="{ fontSize: titleSize, letterSpacing: '0.16em', marginBottom: '0.25em' }"
           >
-            <span
-              class="uppercase font-bold animate-pulse"
-              style="font-family: 'Share Tech Mono', monospace; font-size: 0.55rem; letter-spacing: 0.35em; color: #00aa55; opacity: 0.4;"
-            >
-              · · ·
-            </span>
-          </div>
+            {{ widget.title }}
+          </p>
+
+          <!-- Semicircle arc gauge — viewBox 200×115 -->
+          <svg
+            class="w-full flex-shrink-0"
+            :style="{ height: gaugeHeight }"
+            viewBox="0 0 200 115"
+            preserveAspectRatio="xMidYMid meet"
+          >
+            <!-- Background track -->
+            <path
+              d="M 20,105 A 80,80 0 0,1 180,105"
+              fill="none"
+              stroke="rgba(255,255,255,0.08)"
+              stroke-width="14"
+              stroke-linecap="round"
+            />
+
+            <!-- Glow layer (wide, faint) -->
+            <path
+              :d="buildGaugePath(resolveGaugePercent(widget))"
+              fill="none"
+              :stroke="gaugeColor(resolveGaugePercent(widget))"
+              stroke-width="22"
+              stroke-linecap="round"
+              opacity="0.12"
+            />
+
+            <!-- Filled arc -->
+            <path
+              :d="buildGaugePath(resolveGaugePercent(widget))"
+              fill="none"
+              :stroke="gaugeColor(resolveGaugePercent(widget))"
+              stroke-width="14"
+              stroke-linecap="round"
+            />
+
+            <!-- Current value — large, centred in the arc hollow -->
+            <text
+              x="100" y="86"
+              text-anchor="middle"
+              font-family="monospace"
+              font-weight="900"
+              :font-size="axisFont + 8"
+              :fill="gaugeColor(resolveGaugePercent(widget))"
+            >{{ resolveValue(widget) }}</text>
+
+            <!-- Unit -->
+            <text
+              x="100" y="99"
+              text-anchor="middle"
+              font-family="monospace"
+              font-weight="bold"
+              font-size="8"
+              fill="rgba(255,255,255,0.55)"
+            >{{ widget.unit ?? '' }}</text>
+
+            <!-- Min label -->
+            <text
+              x="16" y="115"
+              text-anchor="start"
+              font-family="monospace"
+              font-size="7"
+              fill="rgba(255,255,255,0.4)"
+            >{{ widget.gaugeMin ?? 0 }}</text>
+
+            <!-- Max label -->
+            <text
+              x="184" y="115"
+              text-anchor="end"
+              font-family="monospace"
+              font-size="7"
+              fill="rgba(255,255,255,0.4)"
+            >{{ widget.gaugeMax ?? 100 }}</text>
+          </svg>
         </template>
 
       </div><!-- /.widget cell -->

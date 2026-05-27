@@ -24,8 +24,8 @@ import type { LedWidget } from '@/components/led/LedView.vue'
 // DashboardWidget.widgetType  →  LedWidget.type
 // ─────────────────────────────────────────────
 // kpi-card                   →  'metric'
-// gauge                      →  'metric'
-// daily-count                →  'daily-count' (line chart)
+// gauge                      →  'gauge'    (semicircle arc with min/max)
+// daily-count                →  null       (omitted — requires separate API)
 // line-chart                 →  'sparkline'
 // status-card (no field)     →  'status'   (shows machine RUNNING/OFFLINE badge)
 // status-card (with field)   →  'metric'   (shows a specific sensor value)
@@ -33,7 +33,7 @@ import type { LedWidget } from '@/components/led/LedView.vue'
 // table                      →  'metric'   (best-effort: show first field value)
 //
 function mapToLedWidgets(widgets: DashboardWidget[]): LedWidget[] {
-  return widgets.map((w): LedWidget => {
+  return widgets.map((w): LedWidget | null => {
     const field        = w.config?.field as string | undefined
     const machineField = w.machine?.fields?.find(f => f.key === field)
 
@@ -66,19 +66,24 @@ function mapToLedWidgets(widgets: DashboardWidget[]): LedWidget[] {
           title: w.title ?? 'System Alerts',
         }
 
-      case 'daily-count':
-        // Preserve the chart — pass days config so the LED fetches the right range
+      case 'gauge':
+        // Semicircle arc gauge with min/max range from config or machine field limits
         return {
           ...base,
-          type: 'daily-count',
-          days: (w.config?.days as number | undefined) ?? 7,
+          type:     'gauge',
+          gaugeMin: (w.config?.min as number | undefined) ?? machineField?.lowerLimit ?? 0,
+          gaugeMax: (w.config?.max as number | undefined) ?? machineField?.upperLimit ?? 100,
         }
 
-      // kpi-card, gauge, table → best-effort: show the numeric field value
+      case 'daily-count':
+        // Requires a separate daily-count API call — not renderable as a live LED metric
+        return null
+
+      // kpi-card, table → rendered as a metric readout
       default:
         return { ...base, type: 'metric' }
     }
-  })
+  }).filter((w): w is LedWidget => w !== null)
 }
 
 // ─── Encode / decode ───────────────────────────────────────────────────────────
