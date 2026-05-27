@@ -25,7 +25,7 @@ import type { LedWidget } from '@/components/led/LedView.vue'
 // ─────────────────────────────────────────────
 // kpi-card                   →  'metric'
 // gauge                      →  'metric'
-// daily-count                →  'metric'
+// daily-count                →  'daily-count' (line chart)
 // line-chart                 →  'sparkline'
 // status-card (no field)     →  'status'   (shows machine RUNNING/OFFLINE badge)
 // status-card (with field)   →  'metric'   (shows a specific sensor value)
@@ -66,7 +66,15 @@ function mapToLedWidgets(widgets: DashboardWidget[]): LedWidget[] {
           title: w.title ?? 'System Alerts',
         }
 
-      // kpi-card, gauge, daily-count, table → all rendered as a metric readout
+      case 'daily-count':
+        // Preserve the chart — pass days config so the LED fetches the right range
+        return {
+          ...base,
+          type: 'daily-count',
+          days: (w.config?.days as number | undefined) ?? 7,
+        }
+
+      // kpi-card, gauge, table → best-effort: show the numeric field value
       default:
         return { ...base, type: 'metric' }
     }

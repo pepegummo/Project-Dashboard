@@ -7,10 +7,12 @@
  * • Accepts `activeWidgets` prop; falls back to built-in mock data
  * • Smart CSS-Grid layout that scales 1 → 6+ widgets automatically
  * • Live data via Telemetry store + WebSocket polling (optional per widget)
- * • Widget types: 'metric' | 'sparkline' | 'status' | 'alarm'
+ * • Widget types: 'metric' | 'sparkline' | 'status' | 'alarm' | 'daily-count'
  */
 
 import { computed, ref, onMounted, onUnmounted } from 'vue'
+import MachineDailyCountWidget from '@/components/widgets/MachineDailyCountWidget.vue'
+import type { LedDailyData }   from '@/components/widgets/MachineDailyCountWidget.vue'
 import { useTelemetryStore } from '@/stores/telemetry.store'
 import { useMachineStore }   from '@/stores/machine.store'
 import { useAlertStore }     from '@/stores/alert.store'
@@ -18,7 +20,7 @@ import { wsService }         from '@/services/ws.service'
 import { api }               from '@/services/api.service'
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
-export type LedWidgetType = 'metric' | 'sparkline' | 'status' | 'alarm'
+export type LedWidgetType = 'metric' | 'sparkline' | 'status' | 'alarm' | 'daily-count'
 
 export interface LedWidget {
   /** Unique identifier for v-for key */
@@ -59,6 +61,8 @@ export interface LedWidget {
   criticalCount?: number
   /** Override the alert-store warning count */
   warningCount?: number
+  /** Days of history to show in a 'daily-count' line chart (default 7) */
+  days?: number
 }
 
 // ─── Default mock widgets (used when no prop is passed) ────────────────────────
@@ -154,11 +158,18 @@ onMounted(async () => {
   if (alertStore.activeEvents.length === 0) {
     alertStore.fetchActiveEvents().catch(() => {})
   }
+
+  // Fetch daily-count widget data; refresh every 60 s (daily data changes slowly)
+  if (displayWidgets.value.some(w => w.type === 'daily-count')) {
+    await fetchDailyCountWidgets()
+    dailyCountTimer = setInterval(fetchDailyCountWidgets, 60_000)
+  }
 })
 
 onUnmounted(() => {
-  if (clockTimer) { clearInterval(clockTimer); clockTimer = null }
-  if (pollTimer)  { clearInterval(pollTimer);  pollTimer  = null }
+  if (clockTimer)      { clearInterval(clockTimer);      clockTimer      = null }
+  if (pollTimer)       { clearInterval(pollTimer);       pollTimer       = null }
+  if (dailyCountTimer) { clearInterval(dailyCountTimer); dailyCountTimer = null }
   if (liveMachineIds.value.length > 0) {
     wsService.unsubscribe(liveMachineIds.value)
   }
@@ -194,6 +205,24 @@ function resolveSparkData(widget: LedWidget): number[] {
     if (hist?.values.length) return hist.values.slice(-50)
   }
   return []
+}
+
+// ─── Daily count data ─────────────────────────────────────────────────────────
+interface DayPoint { date: string; count: number }
+const dailyCountData = ref<Record<string | number, DayPoint[]>>({})
+let dailyCountTimer: ReturnType<typeof setInterval> | null = null
+
+async function fetchDailyCountWidgets() {
+  const dcWidgets = displayWidgets.value.filter(w => w.type === 'daily-count' && w.machineId)
+  for (const w of dcWidgets) {
+    try {
+      const result = await api.getTelemetryDailyCount(w.machineId!, w.days ?? 7)
+      dailyCountData.value = {
+        ...dailyCountData.value,
+        [w.id]: (result?.data ?? []).map((r: any) => ({ date: r.date, count: r.count })),
+      }
+    } catch { /* silently ignored — non-critical display data */ }
+  }
 }
 
 // ─── Sparkline SVG point string ────────────────────────────────────────────────
@@ -242,6 +271,50 @@ const GLOW_MAP: Record<string, string> = {
 function metricGlow(colorClass?: string): string {
   const hex = (colorClass && GLOW_MAP[colorClass]) ?? '#10b981'
   return `0 0 2px rgba(255,255,255,0.55), 0 0 14px ${hex}, 0 0 45px ${hex}55`
+}
+
+// ─── Daily count → LedDailyData transformer ───────────────────────────────────
+/**
+ * Converts raw DayPoint[] (from getTelemetryDailyCount) into the LedDailyData
+ * shape expected by MachineDailyCountWidget's LED mode.
+ * Returns undefined while data is still loading.
+ */
+function buildLedDailyData(widget: LedWidget): LedDailyData | undefined {
+  const raw = dailyCountData.value[widget.id]
+  if (!raw) return undefined
+
+  const machine     = widget.machineId ? machineStore.machineById(widget.machineId) : undefined
+  const machineName = machine?.name ?? widget.title
+
+  // Midnight of today in local time
+  const todayMidnight = new Date()
+  todayMidnight.setHours(0, 0, 0, 0)
+  const todayIso = todayMidnight.toISOString().slice(0, 10)
+
+  // Index raw data by YYYY-MM-DD key
+  const countByDate = new Map(raw.map(r => [r.date.slice(0, 10), r.count]))
+
+  // Build the last 7 days (oldest → newest), ending on today
+  const DAY_LABELS = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'] as const
+  const weeklyData = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(todayMidnight)
+    d.setDate(d.getDate() - (6 - i))          // i=0 → 6 days ago … i=6 → today
+    const isoDate = d.toISOString().slice(0, 10)
+    return {
+      day:      DAY_LABELS[d.getDay()],
+      count:    countByDate.get(isoDate) ?? 0,
+      isToday:  isoDate === todayIso,
+      isFuture: d > todayMidnight,
+    }
+  })
+
+  const todayCount = weeklyData.find(d => d.isToday)?.count ?? 0
+  const pastDays   = weeklyData.filter(d => !d.isFuture)
+  const avgPerDay  = pastDays.length
+    ? Math.round(pastDays.reduce((s, d) => s + d.count, 0) / pastDays.length)
+    : 0
+
+  return { machineName, todayCount, avgPerDay, weeklyData }
 }
 
 // ─── Layout engine ─────────────────────────────────────────────────────────────
@@ -423,7 +496,7 @@ function trendClass(t?: string): string {
         v-for="widget in displayWidgets"
         :key="widget.id"
         class="bg-black relative flex flex-col items-center justify-center overflow-hidden"
-        :style="{ padding: cellPad }"
+        :style="{ padding: widget.type === 'daily-count' ? '0' : cellPad }"
       >
         <!-- Per-cell pixel-level scanlines (very faint) -->
         <div
@@ -672,6 +745,32 @@ function trendClass(t?: string): string {
               </div>
             </div>
 
+          </div>
+        </template>
+
+        <!-- ════════════════════════════════════════════════════════════════ -->
+        <!--  DAILY COUNT  ─  MachineDailyCountWidget in LED mode           -->
+        <!-- ════════════════════════════════════════════════════════════════ -->
+        <template v-else-if="widget.type === 'daily-count'">
+          <MachineDailyCountWidget
+            v-if="buildLedDailyData(widget)"
+            :widget="({} as any)"
+            :led-mode="true"
+            :data="buildLedDailyData(widget)!"
+            class="w-full h-full"
+          />
+
+          <!-- Waiting for first fetch -->
+          <div
+            v-else
+            class="w-full h-full flex items-center justify-center bg-[#050f05]"
+          >
+            <span
+              class="uppercase font-bold animate-pulse"
+              style="font-family: 'Share Tech Mono', monospace; font-size: 0.55rem; letter-spacing: 0.35em; color: #00aa55; opacity: 0.4;"
+            >
+              · · ·
+            </span>
           </div>
         </template>
 

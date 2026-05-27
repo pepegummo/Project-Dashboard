@@ -5,7 +5,26 @@ import type { EChartsOption } from 'echarts';
 import type { DashboardWidget } from '@/types';
 import { api } from '@/services/api.service';
 
-const props = defineProps<{ widget: DashboardWidget }>();
+// ── LED mode data shape ───────────────────────────────────────────────────────
+export interface LedWeekDay {
+  day:      string   // 'MON' | 'TUE' | 'WED' | 'THU' | 'FRI' | 'SAT' | 'SUN'
+  count:    number
+  isToday:  boolean
+  isFuture: boolean
+}
+
+export interface LedDailyData {
+  machineName: string
+  todayCount:  number
+  avgPerDay:   number
+  weeklyData:  LedWeekDay[]
+}
+
+const props = defineProps<{
+  widget:   DashboardWidget
+  ledMode?: boolean       // defaults to false
+  data?:    LedDailyData  // only required when ledMode = true
+}>();
 
 const machineId   = computed(() => props.widget.machineId ?? '');
 const machineName = computed(() => props.widget.machine?.name ?? '');
@@ -68,11 +87,22 @@ function fmtCount(n: number) {
     : String(n);
 }
 
+// ── LED mode computed values ──────────────────────────────────────────────────
+const formattedCount = computed(() => props.data?.todayCount.toLocaleString() ?? '0')
+const formattedAvg   = computed(() => props.data?.avgPerDay.toLocaleString()  ?? '0')
+const maxCount       = computed(() =>
+  Math.max(...(props.data?.weeklyData ?? []).map(d => d.count), 1)
+)
+
+function barHeight(item: LedWeekDay): number {
+  if (item.isFuture || item.count === 0) return 4
+  return Math.round((item.count / maxCount.value) * 60)
+}
+
 // ── ECharts option ────────────────────────────────────────────────────────────
 const option = computed<EChartsOption>(() => {
   const labels = rows.value.map(r => fmtDate(r.date));
   const counts = rows.value.map(r => r.count);
-  const maxVal = Math.max(...counts, 1);
 
   return {
     backgroundColor: 'transparent',
@@ -116,29 +146,37 @@ const option = computed<EChartsOption>(() => {
       },
     },
 
-    visualMap: [{
-      show: false,
-      type: 'continuous',
-      min: 0,
-      max: maxVal,
-      inRange: {
-        color: ['#1d4ed8', '#3b82f6', '#60a5fa'],
-      },
-      seriesIndex: 0,
-      dimension: 1,
-    }],
-
     series: [{
-      type: 'bar',
+      type: 'line',
       data: counts,
-      barMaxWidth: 32,
+      smooth: true,
+      symbol: 'circle',
+      symbolSize: 5,
+      showSymbol: false,        // only show dots on hover
+      lineStyle: {
+        color: '#3b82f6',
+        width: 2,
+      },
       itemStyle: {
-        borderRadius: [3, 3, 0, 0],
+        color: '#3b82f6',
+        borderColor: '#1e40af',
+        borderWidth: 2,
       },
       emphasis: {
-        itemStyle: { color: '#60a5fa' },
+        showSymbol: true,
+        itemStyle: { color: '#60a5fa', borderColor: '#93c5fd', borderWidth: 2 },
       },
-      // Area-style line overlay for trend
+      areaStyle: {
+        color: {
+          type: 'linear',
+          x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [
+            { offset: 0,   color: 'rgba(59,130,246,0.35)' },
+            { offset: 0.6, color: 'rgba(59,130,246,0.08)' },
+            { offset: 1,   color: 'rgba(59,130,246,0.00)' },
+          ],
+        },
+      },
       markLine: {
         silent: true,
         symbol: 'none',
@@ -160,7 +198,46 @@ const option = computed<EChartsOption>(() => {
 </script>
 
 <template>
-  <div class="flex flex-col h-full">
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!--  LED MODE                                                              -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <div v-if="ledMode" class="led-daily-count">
+    <!-- Left: big number readout -->
+    <div class="led-left">
+      <div class="led-label">{{ data?.machineName }} DAILY OUTPUT</div>
+      <div class="led-value">{{ formattedCount }}</div>
+      <div class="led-unit">PCS TODAY</div>
+      <div class="led-sub">AVG/DAY · {{ formattedAvg }} PCS</div>
+    </div>
+
+    <!-- Right: 7-day bar chart -->
+    <div class="led-right">
+      <div class="led-bars">
+        <div
+          v-for="item in data?.weeklyData"
+          :key="item.day"
+          class="led-bar-col"
+        >
+          <div
+            class="led-bar"
+            :class="{
+              'is-today':  item.isToday,
+              'is-future': item.isFuture,
+            }"
+            :style="{ height: barHeight(item) + 'px' }"
+          />
+          <div class="led-day-label" :class="{ 'is-today': item.isToday }">
+            {{ item.day }}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!--  NORMAL MODE  (unchanged)                                              -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <div v-else class="flex flex-col h-full">
     <!-- Unconfigured state -->
     <div
       v-if="!machineId"
@@ -229,3 +306,117 @@ const option = computed<EChartsOption>(() => {
     </template>
   </div>
 </template>
+
+<style scoped>
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@700&display=swap');
+
+.led-daily-count {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 24px;
+  background: #050f05;
+  border: 1px solid #1a3a1a;
+  border-radius: 2px;
+  padding: 12px 16px;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.led-left {
+  flex: 0 0 40%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.led-label {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 3px;
+  color: #00cc66;
+  opacity: 0.75;
+  text-transform: uppercase;
+}
+
+.led-value {
+  font-family: 'Orbitron', sans-serif;
+  font-weight: 700;
+  font-size: 48px;
+  color: #00ff88;
+  line-height: 1;
+  text-shadow: 0 0 12px rgba(0, 255, 136, 0.5);
+}
+
+.led-unit {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: #00aa55;
+  opacity: 0.7;
+  text-transform: uppercase;
+}
+
+.led-sub {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: #00aa55;
+  opacity: 0.5;
+  margin-top: 6px;
+}
+
+.led-right {
+  flex: 1;
+}
+
+.led-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 76px;
+}
+
+.led-bar-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  height: 100%;
+}
+
+.led-bar {
+  width: 100%;
+  border-radius: 1px 1px 0 0;
+  background: #00ff88;
+  opacity: 0.3;
+  min-height: 4px;
+  transition: height 0.4s ease;
+}
+
+.led-bar.is-today {
+  opacity: 1;
+  box-shadow: 0 0 8px #00ff88;
+}
+
+.led-bar.is-future {
+  background: #0d1a0d;
+  opacity: 1;
+}
+
+.led-day-label {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 1px;
+  color: #00aa55;
+  opacity: 0.5;
+  text-transform: uppercase;
+}
+
+.led-day-label.is-today {
+  color: #00ff88;
+  opacity: 1;
+}
+</style>
