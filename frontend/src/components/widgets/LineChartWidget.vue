@@ -15,6 +15,15 @@ const color     = computed(() => (props.widget.config?.color as string) ?? '#3b8
 const TIME_RANGES = ['5m', '15m', '30m', '1h', '6h', '24h', '7d', '15d', '30d', '3mo', '6mo', '1y'] as const;
 type TimeRange = typeof TIME_RANGES[number];
 
+// Bucket size label for each time range (matches BUCKET_FOR_RANGE in backend)
+const BUCKET_LABEL: Record<TimeRange, string> = {
+  '5m':  '1 min', '15m': '1 min', '30m': '1 min', '1h':  '1 min',
+  '6h':  '5 min', '24h': '15 min',
+  '7d':  '30 min', '15d': '30 min',
+  '30d': '1 hr',  '3mo': '1 hr',
+  '6mo': '1 hr',  '1y':  '1 hr',
+};
+
 // Persist selected range in localStorage so it survives page refresh.
 // Priority: localStorage (user's last choice) → widget config default → '1h'
 const RANGE_KEY = `widget_range_${props.widget.id}`;
@@ -61,6 +70,16 @@ function selectRange(r: TimeRange) {
   selectedRange.value = r;
   localStorage.setItem(RANGE_KEY, r);
   isZoomed.value = false;
+}
+
+// ── Tooltip timestamp (full date + time, all ranges) ─────────────────────────
+function formatTooltipTime(ts: string): string {
+  if (!ts) return '';
+  const d = new Date(ts);
+  return d.toLocaleString('en-US', {
+    year: 'numeric', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  });
 }
 
 // ── X-axis label format ───────────────────────────────────────────────────────
@@ -195,7 +214,7 @@ const option = computed<EChartsOption>(() => {
         const lo  = lowerLimit.value !== null ? `<br/><span style="color:#f59e0b">↓ lower: ${lowerLimit.value}</span>`  : '';
 
         return `<div style="font-family:monospace;line-height:1.6">
-          ${p.name}<br/>
+          <span style="color:#9ca3af;font-size:11px">${formatTooltipTime(pt?.ts ?? '')}</span><span style="color:#6b7280;font-size:10px"> · avg/${BUCKET_LABEL[selectedRange.value]}</span><br/>
           ${field.value}: <b>${val}</b>${statusBadge}${thr}${up}${lo}
         </div>`;
       },
