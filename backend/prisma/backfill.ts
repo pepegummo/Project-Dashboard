@@ -5,9 +5,14 @@
  *          Each field independently alternates between HIGH and LOW state
  *          for a random duration (days). Smooth 5-day linear transitions.
  *          HIGH duration: 45–90 days  |  LOW duration: 14–45 days  (field-specific)
- * Noise  : 1) Gaussian σ=5% of amplitude  (base sensor noise)
- *          2) Random spikes P=3%, up to ±35% of amplitude
- *          3) Monthly sinusoidal drift ±30% of amplitude (30-day period)
+ * Noise  : 1) Gaussian σ=22% of amplitude  (base sensor noise)
+ *          2) Random spikes P=2.5%, up to ±45% of amplitude
+ *          3) Sinusoidal drift ±30% of amplitude (30-day period)
+ *          4) Fast vibration ±8% of amplitude
+ *          5) Micro-vibration ±3% of amplitude
+ *          6) Correlated wobble ±6% of amplitude
+ *          7) Burst oscillation P=1.5%, ±12% of amplitude
+ *          Hard clamp: threshold ×0.90 – ×1.10  (±10% of threshold)
  * Amplitude: ±25% of threshold
  * Dates  : 2025-05-01 → 2026-06-10  (≈ 405 days)
  * Rate   : 1 data point per minute per machine
@@ -274,7 +279,9 @@ async function main() {
   console.log(`   HIGH state : 45–90 days  |  LOW state: 14–45 days  (per field)`);
   console.log(`   Transition : ${TRANS_TICKS.toLocaleString()} min = 5-day smooth edge`);
   console.log(`   Amplitude  : ±25% of threshold`);
-  console.log(`   Noise      : Gaussian σ=5%  +  spike P=3%±35%  +  drift ±30% (30-day period)`);
+  console.log(`   Noise      : ① Gauss σ=22%  ② spike P=2.5% ±45%  ③ drift ±30% (30 days)`);
+  console.log(`                ④ vib ±8%  ⑤ micro ±3%  ⑥ wobble ±6%  ⑦ burst P=1.5% ±12%`);
+  console.log(`   Clamp      : threshold ×0.90 – ×1.10  (±10% of threshold)`);
   console.log(`   Total rows : ${TOTAL_ROWS.toLocaleString()}  (${ROWS_PER_MACHINE.toLocaleString()} per machine × 4)`);
   console.log(`   Batch size : ${BATCH_SIZE.toLocaleString()} rows per INSERT\n`);
 
