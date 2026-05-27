@@ -1,11 +1,14 @@
 /**
- * Backfill Script — Pulse-wave telemetry at 1-minute resolution
+ * Backfill Script — Random Telegraph Pulse telemetry at 1-minute resolution
  *
- * Shape  : pulse wave — 1 complete cycle = 120 min (2 hours)
- *          High plateau for dutyCycle%, smooth linear edges (TRANS_TICKS wide)
+ * Shape  : Random pulse signal — NO fixed cycle.
+ *          Each field independently alternates between HIGH and LOW state
+ *          for a random duration (days). Smooth 5-day linear transitions.
+ *          HIGH duration: 45–90 days  |  LOW duration: 14–45 days  (field-specific)
  * Noise  : 1) Gaussian σ=5% of amplitude  (base sensor noise)
  *          2) Random spikes P=3%, up to ±35% of amplitude
- *          3) Slow sinusoidal drift ±30% of amplitude (8-cycle period)
+ *          3) Monthly sinusoidal drift ±30% of amplitude (30-day period)
+ * Amplitude: ±25% of threshold
  * Dates  : 2025-05-01 → 2026-06-10  (≈ 405 days)
  * Rate   : 1 data point per minute per machine
  * Total  : ~2.3 M rows  (4 machines × ~583 k points)
@@ -23,104 +26,180 @@ const START_DATE   = new Date('2025-05-01T00:00:00.000Z');
 const END_DATE     = new Date('2026-06-10T23:59:00.000Z');
 const INTERVAL_MS  = 60_000;    // 1 minute between each point
 const BATCH_SIZE   = 5_000;
-const CYCLE_TICKS  = 120;       // 1 pulse cycle = 120 minutes = 2 hours
-const TRANS_TICKS  = 5;         // smooth edge over ±5 ticks
+const TRANS_TICKS  = 7_200;     // smooth transition edge = 5 days (5 × 24 × 60)
+const DRIFT_PERIOD = 43_200;    // secondary sinusoidal drift = 30 days
+const MINS_PER_DAY = 1_440;     // 24 × 60
 
 const ROWS_PER_MACHINE = Math.floor((END_DATE.getTime() - START_DATE.getTime()) / INTERVAL_MS);
-const TOTAL_ROWS       = ROWS_PER_MACHINE * 4; // 4 machines
+const TOTAL_ROWS       = ROWS_PER_MACHINE * 4;
 
-// ─── Random PWM — duty cycle changes once per cycle ───────────────────────────
-// Returns a stateful function: call pwm(tick) to get the current duty cycle.
-// The duty is re-randomised at the start of each new CYCLE_TICKS boundary.
-function makePwm(minDuty: number, maxDuty: number) {
-  let lastCycle = -1;
-  let duty      = (minDuty + maxDuty) / 2;   // initialise to midpoint
+// ─── Random Telegraph Pulse Generator ────────────────────────────────────────
+// Creates a stateful generator for one field. Pre-computes the full random
+// segment timeline once; subsequent calls just walk a pointer forward (O(1)).
+//
+// Segment: { start, end, isHigh }
+//   HIGH → value oscillates around threshold + amplitude (upper plateau)
+//   LOW  → value oscillates around threshold - amplitude (lower plateau)
+//
+// Transition: linear blend across ±TRANS_TICKS around each segment boundary.
+
+interface RTPConfig {
+  threshold:   number;
+  precision:   number;
+  highMinDays: number;
+  highMaxDays: number;
+  lowMinDays:  number;
+  lowMaxDays:  number;
+}
+
+function makeRTPGen(config: RTPConfig, totalTicks: number): (tick: number) => number {
+  const { threshold, precision, highMinDays, highMaxDays, lowMinDays, lowMaxDays } = config;
+  const amplitude = threshold * 0.25;
+
+  // ── Pre-generate segment list ──────────────────────────────────────────────
+  const segments: Array<{ start: number; end: number; isHigh: boolean }> = [];
+  let tick = 0;
+  let isHigh = true; // always start in HIGH state
+
+  while (tick < totalTicks) {
+    const days = isHigh
+      ? highMinDays + Math.random() * (highMaxDays - highMinDays)
+      : lowMinDays  + Math.random() * (lowMaxDays  - lowMinDays);
+    const duration = Math.round(days * MINS_PER_DAY);
+    segments.push({ start: tick, end: Math.min(tick + duration, totalTicks), isHigh });
+    tick += duration;
+    isHigh = !isHigh;
+  }
+
+  // ── Walking pointer — ticks are called sequentially 0 → totalTicks-1 ──────
+  let segIdx = 0;
+
   return (tick: number): number => {
-    const cycle = Math.floor(tick / CYCLE_TICKS);
-    if (cycle !== lastCycle) {
-      lastCycle = cycle;
-      duty      = minDuty + Math.random() * (maxDuty - minDuty);
+    // Advance pointer (usually a no-op; max a few steps when crossing boundary)
+    while (segIdx + 1 < segments.length && tick >= segments[segIdx].end) segIdx++;
+
+    const seg     = segments[segIdx];
+    const prevSeg = segIdx > 0 ? segments[segIdx - 1] : null;
+    const nextSeg = segIdx + 1 < segments.length ? segments[segIdx + 1] : null;
+
+    const highVal =  amplitude;
+    const lowVal  = -amplitude;
+
+    // ── Base value with smooth transition at segment boundaries ───────────
+    let base: number;
+    const boundary = seg.end; // boundary between seg and nextSeg
+
+    if (nextSeg && tick >= boundary - TRANS_TICKS) {
+      // Falling or rising INTO next segment (near end of current seg)
+      const t  = (tick - (boundary - TRANS_TICKS)) / (2 * TRANS_TICKS);
+      const t0 = Math.max(0, Math.min(1, t));
+      base = (seg.isHigh ? highVal : lowVal) * (1 - t0) +
+             (nextSeg.isHigh ? highVal : lowVal) * t0;
+    } else if (prevSeg && tick < seg.start + TRANS_TICKS) {
+      // Still in transition from previous segment (near start of current seg)
+      const prevBoundary = seg.start;
+      const t  = (tick - (prevBoundary - TRANS_TICKS)) / (2 * TRANS_TICKS);
+      const t0 = Math.max(0, Math.min(1, t));
+      base = (prevSeg.isHigh ? highVal : lowVal) * (1 - t0) +
+             (seg.isHigh ? highVal : lowVal) * t0;
+    } else {
+      base = seg.isHigh ? highVal : lowVal; // flat plateau
     }
-    return duty;
+
+    // ── Noise layer 1: Strong Gaussian ────────────────────────────────
+    const u1 = Math.random() + 1e-10;
+    const u2 = Math.random();
+
+    const gauss =
+      Math.sqrt(-2 * Math.log(u1)) *
+      Math.cos(2 * Math.PI * u2);
+
+    const gaussNoise = gauss * 0.22 * amplitude;
+
+    // ── Noise layer 2: Frequent spikes ────────────────────────────────
+    const spikeNoise =
+      Math.random() < 0.025
+        ? (Math.random() - 0.5) * 0.90 * amplitude
+        : 0;
+
+    // ── Noise layer 3: Long drift ─────────────────────────────────────
+    const drift =
+      (amplitude * 0.30) *
+      Math.sin((2 * Math.PI * tick) / DRIFT_PERIOD);
+
+    // ── Noise layer 4: Fast vibration ─────────────────────────────────
+    const vibration =
+      amplitude * 0.08 *
+      Math.sin(tick * 1.8);
+
+    // ── Noise layer 5: Micro vibration ────────────────────────────────
+    const microVibration =
+      amplitude * 0.03 *
+      Math.sin(tick * 7);
+
+    // ── Noise layer 6: Correlated wobble ──────────────────────────────
+    const wobble =
+      amplitude * 0.06 *
+      Math.sin(tick * 0.15 + Math.sin(tick * 0.03));
+
+    // ── Noise layer 7: Burst oscillation ──────────────────────────────
+    const burst =
+      Math.random() < 0.015
+        ? amplitude * 0.12 * Math.sin(tick * 5)
+        : 0;
+
+    // ── Final value ───────────────────────────────────────────────────
+    const value =
+      threshold +
+      base +
+      gaussNoise +
+      spikeNoise +
+      drift +
+      vibration +
+      microVibration +
+      wobble +
+      burst;
+
+    // Keep hard clamp
+    return +Math.max(
+      threshold * 0.90,
+      Math.min(threshold * 1.10, value)
+    ).toFixed(precision);
   };
 }
 
-// ─── Pulse wave + layered noise ───────────────────────────────────────────────
-function pulse(
-  threshold:   number,
-  tick:        number,
-  phaseOffset: number,
-  precision:   number,
-  dutyCycle  = 0.45,
-): number {
-  const amplitude = threshold * 0.1;
-  const period    = CYCLE_TICKS;
-  const phase     = ((tick + phaseOffset) % period + period) % period;
-  const highEnd   = dutyCycle * period;
+// ─── Per-field RTP generators ─────────────────────────────────────────────────
+// Each field has its own independent random segment timeline.
+// HIGH duration = 45–90 days, LOW duration = 14–45 days (field-specific ranges).
 
-  // ── Pulse shape ──────────────────────────────────────────────────────────
-  let base: number;
-  if (phase < highEnd - TRANS_TICKS) {
-    base = amplitude;                                                     // high plateau
-  } else if (phase < highEnd + TRANS_TICKS) {
-    const t = (phase - (highEnd - TRANS_TICKS)) / (2 * TRANS_TICKS);
-    base = amplitude * (1 - t) + (-amplitude) * t;                       // falling edge
-  } else if (phase < period - TRANS_TICKS) {
-    base = -amplitude;                                                    // low plateau
-  } else {
-    const t = (phase - (period - TRANS_TICKS)) / TRANS_TICKS;
-    base = -amplitude * (1 - t) + amplitude * t;                         // rising edge
-  }
+const cwWeightGen     = makeRTPGen({ threshold: 500,  precision: 2, highMinDays: 45, highMaxDays: 90, lowMinDays: 14, lowMaxDays: 45 }, ROWS_PER_MACHINE);
+const cwSpeedGen      = makeRTPGen({ threshold: 60,   precision: 1, highMinDays: 40, highMaxDays: 85, lowMinDays: 14, lowMaxDays: 40 }, ROWS_PER_MACHINE);
+const cwThroughputGen = makeRTPGen({ threshold: 60,   precision: 1, highMinDays: 40, highMaxDays: 85, lowMinDays: 14, lowMaxDays: 40 }, ROWS_PER_MACHINE);
+const cwRejectsGen    = makeRTPGen({ threshold: 1.5,  precision: 0, highMinDays: 20, highMaxDays: 60, lowMinDays: 10, lowMaxDays: 30 }, ROWS_PER_MACHINE);
 
-  // ── Noise layer 1: Gaussian (σ = 5% of amplitude) ────────────────────────
-  const u1    = Math.random() + 1e-10;
-  const u2    = Math.random();
-  const gauss = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-  const gaussNoise = gauss * 0.05 * amplitude;
+const tsTempGen       = makeRTPGen({ threshold: 22,   precision: 2, highMinDays: 45, highMaxDays: 90, lowMinDays: 14, lowMaxDays: 45 }, ROWS_PER_MACHINE);
+const tsHumidityGen   = makeRTPGen({ threshold: 55,   precision: 1, highMinDays: 40, highMaxDays: 80, lowMinDays: 14, lowMaxDays: 40 }, ROWS_PER_MACHINE);
+const tsDewGen        = makeRTPGen({ threshold: 11,   precision: 2, highMinDays: 40, highMaxDays: 80, lowMinDays: 14, lowMaxDays: 40 }, ROWS_PER_MACHINE);
 
-  // ── Noise layer 2: Random spike (P=3%, magnitude ±35% of amplitude) ──────
-  const spikeNoise = Math.random() < 0.03
-    ? (Math.random() - 0.5) * 0.70 * amplitude
-    : 0;
+const cbSpeedGen      = makeRTPGen({ threshold: 1000, precision: 1, highMinDays: 45, highMaxDays: 90, lowMinDays: 14, lowMaxDays: 45 }, ROWS_PER_MACHINE);
+const cbLoadGen       = makeRTPGen({ threshold: 45,   precision: 1, highMinDays: 40, highMaxDays: 85, lowMinDays: 14, lowMaxDays: 40 }, ROWS_PER_MACHINE);
+const cbRpmGen        = makeRTPGen({ threshold: 750,  precision: 0, highMinDays: 45, highMaxDays: 90, lowMinDays: 14, lowMaxDays: 45 }, ROWS_PER_MACHINE);
+const cbVibrationGen  = makeRTPGen({ threshold: 5,    precision: 2, highMinDays: 30, highMaxDays: 75, lowMinDays: 14, lowMaxDays: 45 }, ROWS_PER_MACHINE);
 
-  // ── Noise layer 3: Slow sinusoidal drift (period = 8 cycles = 16 hours) ──
-  const drift = (amplitude * 0.30) * Math.sin((2 * Math.PI * tick) / (8 * CYCLE_TICKS));
-
-  const value = threshold + base + gaussNoise + spikeNoise + drift;
-  // Extended clamp ±18% to allow spikes through
-  return +Math.max(threshold * 0.82, Math.min(threshold * 1.18, value)).toFixed(precision);
-}
+const vcDefectGen     = makeRTPGen({ threshold: 1,    precision: 3, highMinDays: 20, highMaxDays: 60, lowMinDays: 14, lowMaxDays: 45 }, ROWS_PER_MACHINE);
+const vcConfidenceGen = makeRTPGen({ threshold: 97,   precision: 1, highMinDays: 45, highMaxDays: 90, lowMinDays: 14, lowMaxDays: 40 }, ROWS_PER_MACHINE);
 
 // ─── Machine + field definitions ─────────────────────────────────────────────
-// Each field has its own PWM state → duty cycles vary independently per field.
-// Range [min, max] is chosen to keep the signal clearly visible in charts.
-const cwWeightPwm     = makePwm(0.30, 0.65);
-const cwSpeedPwm      = makePwm(0.30, 0.65);
-const cwThroughputPwm = makePwm(0.30, 0.65);
-const cwRejectsPwm    = makePwm(0.20, 0.50);
-
-const tsTempPwm       = makePwm(0.35, 0.65);
-const tsHumidityPwm   = makePwm(0.35, 0.60);
-const tsDewPwm        = makePwm(0.35, 0.60);
-
-const cbSpeedPwm      = makePwm(0.30, 0.65);
-const cbLoadPwm       = makePwm(0.30, 0.65);
-const cbRpmPwm        = makePwm(0.30, 0.65);
-const cbVibrationPwm  = makePwm(0.25, 0.65);
-
-const vcDefectPwm     = makePwm(0.20, 0.55);
-const vcConfidencePwm = makePwm(0.40, 0.70);
-
 const MACHINES = [
   {
     id:   '00000000-0000-0000-0000-000000000005',
     name: 'Checkweigher CW-01',
     generate: (tick: number) => {
-      const rejects = Math.max(0, Math.round(pulse(1.5, tick, 10, 0, cwRejectsPwm(tick))));
+      const rejects = Math.max(0, cwRejectsGen(tick));
       return {
-        weight:      pulse(500, tick,  0, 2, cwWeightPwm(tick)),
-        speed:       pulse(60,  tick,  5, 1, cwSpeedPwm(tick)),
-        throughput:  pulse(60,  tick,  5, 1, cwThroughputPwm(tick)),
+        weight:      cwWeightGen(tick),
+        speed:       cwSpeedGen(tick),
+        throughput:  cwThroughputGen(tick),
         rejects,
         status_code: rejects > 0 ? 1 : 0,
       };
@@ -130,19 +209,19 @@ const MACHINES = [
     id:   '00000000-0000-0000-0000-000000000006',
     name: 'Temp Sensor TS-01',
     generate: (tick: number) => ({
-      temp:      pulse(22, tick,  0, 2, tsTempPwm(tick)),
-      humidity:  pulse(55, tick, 20, 1, tsHumidityPwm(tick)),
-      dew_point: pulse(11, tick, 10, 2, tsDewPwm(tick)),
+      temp:      tsTempGen(tick),
+      humidity:  tsHumidityGen(tick),
+      dew_point: tsDewGen(tick),
     }),
   },
   {
     id:   '00000000-0000-0000-0000-000000000007',
     name: 'Conveyor Belt CB-01',
     generate: (tick: number) => ({
-      speed:     pulse(1000, tick,  0, 1, cbSpeedPwm(tick)),
-      load:      pulse(45,   tick, 30, 1, cbLoadPwm(tick)),
-      rpm:       pulse(750,  tick, 15, 0, cbRpmPwm(tick)),
-      vibration: pulse(5,    tick,  8, 2, cbVibrationPwm(tick)),
+      speed:     cbSpeedGen(tick),
+      load:      cbLoadGen(tick),
+      rpm:       cbRpmGen(tick),
+      vibration: cbVibrationGen(tick),
     }),
   },
   {
@@ -150,8 +229,8 @@ const MACHINES = [
     name: 'Vision Camera VC-01',
     inspected: 0, passed: 0, failed: 0,
     generate(tick: number) {
-      const defect_rate  = pulse(1,  tick,  0, 3, vcDefectPwm(tick));
-      const confidence   = pulse(97, tick, 25, 1, vcConfidencePwm(tick));
+      const defect_rate  = vcDefectGen(tick);
+      const confidence   = vcConfidenceGen(tick);
       const newInspected = Math.floor(Math.random() * 3) + 1;
       this.inspected += newInspected;
       const newFailed    = Math.random() < defect_rate / 100 ? 1 : 0;
@@ -188,11 +267,14 @@ function progress(done: number, total: number, label: string) {
 async function main() {
   const spanDays = (END_DATE.getTime() - START_DATE.getTime()) / (1000 * 60 * 60 * 24);
 
-  console.log('⚡ Backfill — Pulse Wave (1 min resolution, 2-hr cycle, layered noise)');
+  console.log('⚡ Backfill — Random Telegraph Pulse (no fixed cycle, 1 min resolution)');
   console.log(`   Date range : ${START_DATE.toISOString().slice(0,10)} → ${END_DATE.toISOString().slice(0,10)}  (${spanDays.toFixed(1)} days)`);
   console.log(`   Interval   : 1 minute per point`);
-  console.log(`   Cycle      : ${CYCLE_TICKS} min = 2 hours per pulse`);
-  console.log(`   Noise      : Gaussian σ=5%  +  spike P=3%±35%  +  drift ±30% (16-hr period)`);
+  console.log(`   Shape      : Random HIGH/LOW state machine, no repeating period`);
+  console.log(`   HIGH state : 45–90 days  |  LOW state: 14–45 days  (per field)`);
+  console.log(`   Transition : ${TRANS_TICKS.toLocaleString()} min = 5-day smooth edge`);
+  console.log(`   Amplitude  : ±25% of threshold`);
+  console.log(`   Noise      : Gaussian σ=5%  +  spike P=3%±35%  +  drift ±30% (30-day period)`);
   console.log(`   Total rows : ${TOTAL_ROWS.toLocaleString()}  (${ROWS_PER_MACHINE.toLocaleString()} per machine × 4)`);
   console.log(`   Batch size : ${BATCH_SIZE.toLocaleString()} rows per INSERT\n`);
 
