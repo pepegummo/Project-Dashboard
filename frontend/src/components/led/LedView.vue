@@ -18,7 +18,7 @@ import { wsService }         from '@/services/ws.service'
 import { api }               from '@/services/api.service'
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
-export type LedWidgetType = 'metric' | 'sparkline' | 'status' | 'alarm'
+export type LedWidgetType = 'metric' | 'sparkline' | 'status' | 'alarm' | 'gauge'
 
 export interface LedWidget {
   /** Unique identifier for v-for key */
@@ -59,6 +59,12 @@ export interface LedWidget {
   criticalCount?: number
   /** Override the alert-store warning count */
   warningCount?: number
+
+  // ── Gauge widget specific ─────────────────────────────────────────────────
+  /** Minimum value for the gauge arc (default 0) */
+  gaugeMin?: number
+  /** Maximum value for the gauge arc (default 100) */
+  gaugeMax?: number
 }
 
 // ─── Default mock widgets (used when no prop is passed) ────────────────────────
@@ -274,6 +280,41 @@ function sparkXLabel(_widget: LedWidget, idx: 0 | 1 | 2 | 3): string {
   return fmtTime(t.toISOString())
 }
 
+// ─── Gauge helpers ─────────────────────────────────────────────────────────────
+
+/** Resolve 0–1 fill ratio for the gauge arc */
+function resolveGaugePercent(widget: LedWidget): number {
+  const raw = (widget.machineId && widget.field)
+    ? telemetryStore.getFieldValue(widget.machineId, widget.field)
+    : (widget.value !== undefined ? parseFloat(String(widget.value)) : NaN)
+  if (raw === undefined || raw === null || isNaN(Number(raw))) return 0
+  const val = Number(raw)
+  const min = widget.gaugeMin ?? 0
+  const max = widget.gaugeMax ?? 100
+  return Math.max(0, Math.min(1, (val - min) / (max - min)))
+}
+
+/**
+ * SVG arc path for a semicircle gauge.
+ * Center=(100,105), radius=80, sweeps from left (−180°) to right (0°).
+ */
+function buildGaugePath(pct: number): string {
+  if (pct <= 0) return 'M 20,105 A 80,80 0 0,1 20.01,105'
+  if (pct >= 1) return 'M 20,105 A 80,80 0 0,1 180,105'
+  const angle = -Math.PI + pct * Math.PI
+  const x = (100 + 80 * Math.cos(angle)).toFixed(2)
+  const y = (105 + 80 * Math.sin(angle)).toFixed(2)
+  const large = pct > 0.5 ? 1 : 0
+  return `M 20,105 A 80,80 0 ${large},1 ${x},${y}`
+}
+
+/** Emerald → amber → red based on how full the gauge is */
+function gaugeColor(pct: number): string {
+  if (pct >= 0.9)  return '#f87171'   // red-400   danger
+  if (pct >= 0.75) return '#f59e0b'   // amber-400 warning
+  return '#10b981'                     // emerald-400 normal
+}
+
 // ─── Status config map ─────────────────────────────────────────────────────────
 type MachineStatus = 'online' | 'offline' | 'maintenance' | 'error'
 
@@ -433,6 +474,15 @@ const svgHeight = computed(() => {
   if (n <= 4) return '50px'
   if (n <= 6) return '55px'
   return '68px'   // 7-8: fills ~43px of previously empty top/bottom space
+})
+
+// Gauge SVG height — taller than sparkline since the arc IS the main content
+const gaugeHeight = computed(() => {
+  const n = count.value
+  if (n <= 2) return '120px'
+  if (n <= 4) return '100px'
+  if (n <= 6) return '90px'
+  return '85px'   // 7-8: fills most of the 140px available cell height
 })
 
 // ─── Trend helpers ─────────────────────────────────────────────────────────────
@@ -819,6 +869,93 @@ function trendClass(t?: string): string {
             </div>
 
           </div>
+        </template>
+
+        <!-- ════════════════════════════════════════════════════════════════ -->
+        <!--  GAUGE  ─  Semicircle arc with live value and range              -->
+        <!-- ════════════════════════════════════════════════════════════════ -->
+        <template v-else-if="widget.type === 'gauge'">
+          <!-- Title label -->
+          <p
+            class="text-gray-300 uppercase font-bold truncate max-w-full text-center leading-none"
+            :style="{ fontSize: titleSize, letterSpacing: '0.16em', marginBottom: '0.25em' }"
+          >
+            {{ widget.title }}
+          </p>
+
+          <!-- Semicircle arc gauge — viewBox 200×115 -->
+          <svg
+            class="w-full flex-shrink-0"
+            :style="{ height: gaugeHeight }"
+            viewBox="0 0 200 115"
+            preserveAspectRatio="xMidYMid meet"
+          >
+            <!-- Background track -->
+            <path
+              d="M 20,105 A 80,80 0 0,1 180,105"
+              fill="none"
+              stroke="rgba(255,255,255,0.08)"
+              stroke-width="14"
+              stroke-linecap="round"
+            />
+
+            <!-- Glow layer (wide, faint) -->
+            <path
+              :d="buildGaugePath(resolveGaugePercent(widget))"
+              fill="none"
+              :stroke="gaugeColor(resolveGaugePercent(widget))"
+              stroke-width="22"
+              stroke-linecap="round"
+              opacity="0.12"
+            />
+
+            <!-- Filled arc -->
+            <path
+              :d="buildGaugePath(resolveGaugePercent(widget))"
+              fill="none"
+              :stroke="gaugeColor(resolveGaugePercent(widget))"
+              stroke-width="14"
+              stroke-linecap="round"
+            />
+
+            <!-- Current value — large, centred in the arc hollow -->
+            <text
+              x="100" y="86"
+              text-anchor="middle"
+              font-family="monospace"
+              font-weight="900"
+              :font-size="axisFont + 8"
+              :fill="gaugeColor(resolveGaugePercent(widget))"
+            >{{ resolveValue(widget) }}</text>
+
+            <!-- Unit -->
+            <text
+              x="100" y="99"
+              text-anchor="middle"
+              font-family="monospace"
+              font-weight="bold"
+              font-size="8"
+              fill="rgba(255,255,255,0.55)"
+            >{{ widget.unit ?? '' }}</text>
+
+            <!-- Min label -->
+            <text
+              x="16" y="115"
+              text-anchor="start"
+              font-family="monospace"
+              font-size="7"
+              fill="rgba(255,255,255,0.4)"
+            >{{ widget.gaugeMin ?? 0 }}</text>
+
+            <!-- Max label -->
+            <text
+              x="184" y="115"
+              text-anchor="end"
+              font-family="monospace"
+              font-size="7"
+              fill="rgba(255,255,255,0.4)"
+            >{{ widget.gaugeMax ?? 100 }}</text>
+          </svg>
         </template>
 
       </div><!-- /.widget cell -->
