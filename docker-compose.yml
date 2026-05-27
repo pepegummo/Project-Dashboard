@@ -1,112 +1,216 @@
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  CPF Industrial IoT Dashboard — Docker Compose                          ║
+# ╠══════════════════════════════════════════════════════════════════════════╣
+# ║  Services                                                               ║
+# ║    db        TimescaleDB  (PostgreSQL 16 + time-series ext.)  :5432     ║
+# ║    redis     Redis 7      (rate-limit, pub/sub)               :6379     ║
+# ║    backend   Express API  (REST :4000 · WebSocket :4001)                ║
+# ║    frontend  Nginx        (SPA + reverse-proxy → backend)     :5173     ║
+# ║    pgadmin   pgAdmin 4    (DB GUI, opt-in via profile)         :5050    ║
+# ╠══════════════════════════════════════════════════════════════════════════╣
+# ║  Quick start                                                            ║
+# ║    cp .env.example .env          # edit secrets                         ║
+# ║    docker compose up -d          # all services                         ║
+# ║    open http://localhost:5173     # dashboard                            ║
+# ║                                                                         ║
+# ║  With pgAdmin                                                           ║
+# ║    docker compose --profile tools up -d                                 ║
+# ║    open http://localhost:5050     # pgAdmin                             ║
+# ║                                                                         ║
+# ║  Backend + DB only (run frontend locally via npm run dev)               ║
+# ║    docker compose up -d db redis backend                                ║
+# ║                                                                         ║
+# ║  Full reset (WARNING: deletes all data)                                 ║
+# ║    docker compose down -v && docker compose up -d                       ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
 
+# ─── Internal network ─────────────────────────────────────────────────────────
+# All containers talk to each other on this isolated bridge.
+# Only explicitly published ports are reachable from the host machine.
+networks:
+  cpf_net:
+    driver: bridge
 
+# ─── Named volumes ────────────────────────────────────────────────────────────
+volumes:
+  timescale_data:   # PostgreSQL / TimescaleDB data files
+  redis_data:       # Redis AOF / RDB persistence
+  backend_logs:     # Application log files
+  pgadmin_data:     # pgAdmin sessions & server configs
+
+# ══════════════════════════════════════════════════════════════════════════════
 services:
-  # ─────────────────────────────────────────────────────────────
-  #  PostgreSQL + TimescaleDB
-  # ─────────────────────────────────────────────────────────────
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # TimescaleDB  (PostgreSQL 16 + TimescaleDB extension)
+  # ────────────────────────────────────────────────────────────────────────────
   db:
     image: timescale/timescaledb:latest-pg16
     container_name: iot_timescaledb
     restart: unless-stopped
+    networks:
+      - cpf_net
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-iot_user}
+      POSTGRES_USER:     ${POSTGRES_USER:-iot_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-iot_password}
-      POSTGRES_DB: ${POSTGRES_DB:-iot_dashboard}
+      POSTGRES_DB:       ${POSTGRES_DB:-iot_dashboard}
     ports:
-      - "5432:5432"
+      # Expose for DBeaver / pgAdmin / prisma studio on your host machine
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - timescale_data:/var/lib/postgresql/data
-      - ./scripts/init-timescale.sql:/docker-entrypoint-initdb.d/01-init-timescale.sql
+      # Runs once on first boot: enables timescaledb + uuid-ossp extensions
+      - ./scripts/init-timescale.sql:/docker-entrypoint-initdb.d/01-init-timescale.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-iot_user} -d ${POSTGRES_DB:-iot_dashboard}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      test:
+        - "CMD-SHELL"
+        - "pg_isready -U ${POSTGRES_USER:-iot_user} -d ${POSTGRES_DB:-iot_dashboard}"
+      interval:     10s
+      timeout:      5s
+      retries:      10
+      start_period: 30s   # TimescaleDB loads its shared library — give it time
 
-  # ─────────────────────────────────────────────────────────────
-  #  Redis (session / pub-sub / caching)
-  # ─────────────────────────────────────────────────────────────
+  # ────────────────────────────────────────────────────────────────────────────
+  # Redis  (rate-limiting, pub/sub, future session cache)
+  # ────────────────────────────────────────────────────────────────────────────
   redis:
     image: redis:7-alpine
     container_name: iot_redis
     restart: unless-stopped
+    networks:
+      - cpf_net
+    command: >
+      redis-server
+      --save 60 1
+      --loglevel warning
+      --maxmemory 128mb
+      --maxmemory-policy allkeys-lru
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:     ["CMD", "redis-cli", "ping"]
       interval: 10s
-      timeout: 5s
-      retries: 5
+      timeout:  3s
+      retries:  5
 
-  # ─────────────────────────────────────────────────────────────
-  #  Backend API + WebSocket server
-  # ─────────────────────────────────────────────────────────────
+  # ────────────────────────────────────────────────────────────────────────────
+  # Backend  (Express REST API :4000 + standalone WebSocket gateway :4001)
+  #
+  # entrypoint.sh runs automatically before the server starts:
+  #   1. prisma db push      — apply schema
+  #   2. create_hypertable   — TimescaleDB time-series table
+  #   3. seed (if empty)     — default org / users / machines
+  # ────────────────────────────────────────────────────────────────────────────
   backend:
     build:
-      context: ./backend
+      context:    ./backend
       dockerfile: Dockerfile
+    image: cpf-backend:local
     container_name: iot_backend
     restart: unless-stopped
+    networks:
+      - cpf_net
+    # ⚠  env_file is loaded first; explicit environment keys override it.
+    # This guarantees Docker-internal hostnames (db, redis) are always used,
+    # even if .env still contains localhost URLs for local-only development.
+    env_file: .env
+    environment:
+      NODE_ENV:          production
+      # Internal Docker hostnames — always override whatever is in .env
+      DATABASE_URL:      "postgresql://${POSTGRES_USER:-iot_user}:${POSTGRES_PASSWORD:-iot_password}@db:5432/${POSTGRES_DB:-iot_dashboard}"
+      REDIS_URL:         "redis://redis:6379"
+      PORT:              "4000"
+      WS_PORT:           "4001"
+      # CORS: allow requests from the Nginx frontend container.
+      # Change to your domain in production (e.g. https://dashboard.example.com)
+      CORS_ORIGIN:       "${CORS_ORIGIN:-http://localhost:5173}"
+      JWT_SECRET:        "${JWT_SECRET:?err - JWT_SECRET must be set in .env}"
+      JWT_EXPIRES_IN:    "${JWT_EXPIRES_IN:-24h}"
+      SIMULATOR_ENABLED: "${SIMULATOR_ENABLED:-true}"
+    ports:
+      - "${BACKEND_PORT:-4000}:4000"   # REST API  — for Postman / curl in dev
+      - "${WS_PORT:-4001}:4001"        # WebSocket — direct connection in dev
+      # Uncomment to expose Prisma Studio:
+      # - "5555:5555"
+    volumes:
+      - backend_logs:/app/logs
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
-    environment:
-      NODE_ENV: production
-      DATABASE_URL: postgresql://${POSTGRES_USER:-iot_user}:${POSTGRES_PASSWORD:-iot_password}@db:5432/${POSTGRES_DB:-iot_dashboard}
-      REDIS_URL: redis://redis:6379
-      JWT_SECRET: ${JWT_SECRET:-change-this-super-secret-key-in-production}
-      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-24h}
-      PORT: 4000
-      WS_PORT: 4001
-      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
-      SIMULATOR_ENABLED: ${SIMULATOR_ENABLED:-false}
-    ports:
-      - "4000:4000"   # REST API
-      - "4001:4001"   # WebSocket
-      - "5555:5555"   # Prisma Studio
-    volumes:
-      - backend_logs:/app/logs
+    healthcheck:
+      # Health endpoint is at /health (not /api/health) — see backend/src/app.ts
+      test:
+        - "CMD-SHELL"
+        - >
+          wget -qO- http://localhost:4000/health 2>/dev/null
+          | grep -q '"status"' || exit 1
+      interval:     15s
+      timeout:      5s
+      retries:      8
+      start_period: 50s   # entrypoint runs migrations + optional seed
 
-  # ─────────────────────────────────────────────────────────────
-  #  Frontend Dev Server (override for prod with nginx)
-  # ─────────────────────────────────────────────────────────────
+  # ────────────────────────────────────────────────────────────────────────────
+  # Frontend  (Nginx serving the Vue.js SPA + reverse-proxying the backend)
+  #
+  # Nginx routing:
+  #   /api/*  →  proxy → http://backend:4000   (REST, same-origin — no CORS)
+  #   /ws     →  proxy → http://backend:4001   (WebSocket upgrade)
+  #   /*      →  serve  /usr/share/nginx/html  (SPA, index.html fallback)
+  #
+  # ⚠  VITE_* variables are BAKED INTO the JS bundle at `npm run build`.
+  #    They must be passed as Docker build ARGs — runtime env vars have NO
+  #    effect on an already-built static bundle served by Nginx.
+  #
+  #  VITE_API_URL  — empty string ("") means axios uses a relative base
+  #                  URL (/api/...) which works on any host automatically.
+  #  VITE_WS_URL   — must be absolute. Nginx proxies /ws → backend:4001,
+  #                  so ws://localhost:5173/ws reaches the WS server.
+  #                  Change the host part if deploying to a real domain.
+  # ────────────────────────────────────────────────────────────────────────────
   frontend:
     build:
-      context: ./frontend
+      context:    ./frontend
       dockerfile: Dockerfile
+      args:
+        # Relative base URL — works on any host without rebuilding
+        VITE_API_URL: "${VITE_API_URL:-}"
+        # WebSocket routed through Nginx on the same port as the SPA
+        VITE_WS_URL:  "${VITE_WS_URL:-ws://localhost:5173/ws}"
+    image: cpf-frontend:local
     container_name: iot_frontend
     restart: unless-stopped
-    depends_on:
-      - backend
-    environment:
-      VITE_API_URL: ${VITE_API_URL:-http://localhost:4000}
-      VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:4001}
+    networks:
+      - cpf_net
     ports:
-      - "5173:80"
+      - "${FRONTEND_PORT:-5173}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
 
-  # ─────────────────────────────────────────────────────────────
-  #  pgAdmin 4 — DB browser + ER diagram
-  # ─────────────────────────────────────────────────────────────
+  # ────────────────────────────────────────────────────────────────────────────
+  # pgAdmin 4  (DB browser + ER diagram viewer)
+  # Only starts when you explicitly request the "tools" profile:
+  #   docker compose --profile tools up -d
+  # ────────────────────────────────────────────────────────────────────────────
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: iot_pgadmin
     restart: unless-stopped
+    profiles:
+      - tools
+    networks:
+      - cpf_net
     depends_on:
       - db
     environment:
-      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@admin.com}
+      PGADMIN_DEFAULT_EMAIL:    ${PGADMIN_EMAIL:-admin@cpf.local}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: "False"
     ports:
-      - "5050:80"
+      - "${PGADMIN_PORT:-5050}:80"
     volumes:
       - pgadmin_data:/var/lib/pgadmin
-
-volumes:
-  timescale_data:
-  redis_data:
-  backend_logs:
-  pgadmin_data:
