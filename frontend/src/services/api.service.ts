@@ -107,10 +107,19 @@ class ApiService {
     return data.data;
   }
 
-  async getTelemetrySeries(machineId: string, field: string, timeRange = '1h') {
-    const { data } = await this.client.get<ApiResponse<TelemetrySeries>>(`/telemetry/${machineId}/series`, {
-      params: { field, timeRange },
-    });
+  async getTelemetrySeries(
+    machineId: string,
+    field: string,
+    options: { timeRange?: string; startTime?: string; endTime?: string } = {},
+  ) {
+    const params: Record<string, string> = { field };
+    if (options.startTime && options.endTime) {
+      params.startTime = options.startTime;
+      params.endTime   = options.endTime;
+    } else {
+      params.timeRange = options.timeRange ?? '1h';
+    }
+    const { data } = await this.client.get<ApiResponse<TelemetrySeries>>(`/telemetry/${machineId}/series`, { params });
     return data.data;
   }
 

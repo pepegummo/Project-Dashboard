@@ -4,7 +4,7 @@
 # ║  Services                                                               ║
 # ║    db        TimescaleDB  (PostgreSQL 16 + time-series ext.)  :5432     ║
 # ║    redis     Redis 7      (rate-limit, pub/sub)               :6379     ║
-# ║    backend   Express API  (REST :4000 · WebSocket :4001)                ║
+# ║    backend   Go API       (REST :4000 · WebSocket :4001)                ║
 # ║    frontend  Nginx        (SPA + reverse-proxy → backend)     :5173     ║
 # ║    pgadmin   pgAdmin 4    (DB GUI, opt-in via profile)         :5050    ║
 # ╠══════════════════════════════════════════════════════════════════════════╣
@@ -94,15 +94,6 @@ services:
       interval: 10s
       timeout:  3s
       retries:  5
-
-  # ────────────────────────────────────────────────────────────────────────────
-  # Backend  (Express REST API :4000 + standalone WebSocket gateway :4001)
-  #
-  # entrypoint.sh runs automatically before the server starts:
-  #   1. prisma db push      — apply schema
-  #   2. create_hypertable   — TimescaleDB time-series table
-  #   3. seed (if empty)     — default org / users / machines
-  # ────────────────────────────────────────────────────────────────────────────
   backend:
     build:
       context:    ./backend
@@ -132,8 +123,6 @@ services:
     ports:
       - "${BACKEND_PORT:-4000}:4000"   # REST API  — for Postman / curl in dev
       - "${WS_PORT:-4001}:4001"        # WebSocket — direct connection in dev
-      # Uncomment to expose Prisma Studio:
-      # - "5555:5555"
     volumes:
       - backend_logs:/app/logs
     depends_on:
@@ -142,7 +131,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      # Health endpoint is at /health (not /api/health) — see backend/src/app.ts
+      # Health endpoint is at /health (not /api/health) — see backend/cmd/server/main.go
       test:
         - "CMD-SHELL"
         - >

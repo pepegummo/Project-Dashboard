@@ -1,21 +1,27 @@
-import { ref, computed, onMounted, onUnmounted, watch, isRef } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import type { Ref } from 'vue';
 import { wsService } from '@/services/ws.service';
 import { api } from '@/services/api.service';
 
 
 /** Composable for a single field series within a chart widget */
-export function useFieldSeries(machineId: string, field: string, timeRange: string | Ref<string> = '1h') {
+export function useFieldSeries(
+  machineId: string,
+  field: string,
+  startTime: Ref<string>,
+  endTime: Ref<string>,
+) {
   const apiData = ref<Array<{ ts: string; value: number; min?: number; max?: number }>>([]);
   const loading = ref(false);
 
-  // Support both plain strings and reactive refs
-  const timeRangeRef = isRef(timeRange) ? timeRange : ref(timeRange);
-
   async function loadFromApi() {
+    if (!startTime.value || !endTime.value) return;
     loading.value = true;
     try {
-      const series = await api.getTelemetrySeries(machineId, field, timeRangeRef.value);
+      const series = await api.getTelemetrySeries(machineId, field, {
+        startTime: new Date(startTime.value).toISOString(),
+        endTime:   new Date(endTime.value).toISOString(),
+      });
       apiData.value = (series?.data ?? []).map(p => {
         const raw = p as any;
         return {
@@ -47,9 +53,9 @@ export function useFieldSeries(machineId: string, field: string, timeRange: stri
     if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
   });
 
-  // Reload whenever timeRange changes — clear stale data first so the old
+  // Reload whenever the date range changes — clear stale data first so the old
   // range never bleeds through while the new request is in-flight.
-  watch(timeRangeRef, () => {
+  watch([startTime, endTime], () => {
     apiData.value = [];
     loadFromApi();
   });

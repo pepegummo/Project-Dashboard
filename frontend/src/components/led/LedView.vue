@@ -20,7 +20,7 @@ import { wsService }         from '@/services/ws.service'
 import { api }               from '@/services/api.service'
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
-export type LedWidgetType = 'metric' | 'sparkline' | 'status' | 'alarm' | 'gauge'
+export type LedWidgetType = 'metric' | 'sparkline' | 'status' | 'alarm' | 'gauge' | 'daily-count'
 
 export interface LedWidget {
   /** Unique identifier for v-for key */
@@ -67,6 +67,10 @@ export interface LedWidget {
   gaugeMin?: number
   /** Maximum value for the gauge arc (default 100) */
   gaugeMax?: number
+
+  // ── Daily-count widget specific ───────────────────────────────────────────
+  /** Number of days to fetch for daily-count bar chart (default 7) */
+  days?: number
 }
 
 // ─── Default mock widgets (used when no prop is passed) ────────────────────────

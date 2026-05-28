@@ -11,29 +11,32 @@ const machineId = computed(() => props.widget.machineId ?? '');
 const field     = computed(() => (props.widget.config?.field as string) ?? '');
 const color     = computed(() => (props.widget.config?.color as string) ?? '#3b82f6');
 
-// ── All available time ranges ─────────────────────────────────────────────────
-const TIME_RANGES = ['5m', '15m', '30m', '1h', '6h', '24h', '7d', '15d', '30d', '3mo', '6mo', '1y'] as const;
-type TimeRange = typeof TIME_RANGES[number];
+// ── Date/time range state ─────────────────────────────────────────────────────
+function toDatetimeLocal(iso: string): string {
+  const d = new Date(iso);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 
-// Bucket size label for each time range (matches BUCKET_FOR_RANGE in backend)
-const BUCKET_LABEL: Record<TimeRange, string> = {
-  '5m':  '1 min', '15m': '1 min', '30m': '1 min', '1h':  '1 min',
-  '6h':  '5 min', '24h': '15 min',
-  '7d':  '30 min', '15d': '30 min',
-  '30d': '1 hr',  '3mo': '1 hr',
-  '6mo': '1 hr',  '1y':  '1 hr',
-};
+const startDateTime = ref(toDatetimeLocal(new Date(Date.now() - 86_400_000).toISOString())); // 24h ago
+const endDateTime   = ref(toDatetimeLocal(new Date().toISOString()));                         // now
 
-// Persist selected range in localStorage so it survives page refresh.
-// Priority: localStorage (user's last choice) → widget config default → '1h'
-const RANGE_KEY = `widget_range_${props.widget.id}`;
-const selectedRange = ref<TimeRange>(
-  (localStorage.getItem(RANGE_KEY) as TimeRange | null)
-    ?? (props.widget.config?.timeRange as TimeRange)
-    ?? '1h',
+// Duration in ms — drives label format, shouldRotate, bucket label in tooltip
+const rangeDurationMs = computed(() =>
+  new Date(endDateTime.value).getTime() - new Date(startDateTime.value).getTime(),
 );
 
-const { mergedData, loading } = useFieldSeries(machineId.value, field.value, selectedRange);
+// Bucket label shown in tooltip (mirrors backend calculateBucketForDuration)
+const bucketLabel = computed(() => {
+  const ms = rangeDurationMs.value;
+  if (ms <=  1 * 60 * 60 * 1000) return '1 min';
+  if (ms <=  6 * 60 * 60 * 1000) return '5 min';
+  if (ms <= 24 * 60 * 60 * 1000) return '15 min';
+  if (ms <= 15 * 24 * 60 * 60 * 1000) return '30 min';
+  return '1 hr';
+});
+
+const { mergedData, loading } = useFieldSeries(machineId.value, field.value, startDateTime, endDateTime);
 
 // ── Threshold / limits ────────────────────────────────────────────────────────
 const machineField = computed(() => props.widget.machine?.fields?.find(f => f.key === field.value));
@@ -50,26 +53,44 @@ const hasProblems = computed(() => {
   });
 });
 
-// ── Zoom state ────────────────────────────────────────────────────────────────
+// ── Zoom state + Y-axis auto-scale ────────────────────────────────────────────
 const chartRef = ref<InstanceType<typeof VChart> | null>(null);
 const isZoomed = ref(false);
+
+// Visible Y range — set when zoomed, cleared when not
+const visibleYMin = ref<number | undefined>(undefined);
+const visibleYMax = ref<number | undefined>(undefined);
 
 function onDataZoom(e: any) {
   const batch = e?.batch?.[0] ?? e;
   const start = batch?.start ?? 0;
   const end   = batch?.end   ?? 100;
   isZoomed.value = !(start === 0 && end === 100);
+
+  if (isZoomed.value) {
+    const total    = mergedData.value.length;
+    const startIdx = Math.floor(start / 100 * total);
+    const endIdx   = Math.ceil(end   / 100 * total);
+    const visible  = mergedData.value.slice(startIdx, endIdx);
+    const values   = visible.map(p => p.value).filter(v => v != null);
+    if (values.length) {
+      const lo  = Math.min(...values);
+      const hi  = Math.max(...values);
+      const pad = Math.max((hi - lo) * 0.1, hi * 0.05, 10); // ≥10% of span, ≥5% of hi, ≥10 units
+      visibleYMin.value = Math.floor(lo - pad);
+      visibleYMax.value = Math.ceil(hi + pad);
+    }
+  } else {
+    visibleYMin.value = undefined;
+    visibleYMax.value = undefined;
+  }
 }
 
 function resetZoom() {
   chartRef.value?.chart?.dispatchAction({ type: 'dataZoom', start: 0, end: 100 });
-  isZoomed.value = false;
-}
-
-function selectRange(r: TimeRange) {
-  selectedRange.value = r;
-  localStorage.setItem(RANGE_KEY, r);
-  isZoomed.value = false;
+  isZoomed.value    = false;
+  visibleYMin.value = undefined;
+  visibleYMax.value = undefined;
 }
 
 // ── Tooltip timestamp (full date + time, all ranges) ─────────────────────────
@@ -84,18 +105,17 @@ function formatTooltipTime(ts: string): string {
 
 // ── X-axis label format ───────────────────────────────────────────────────────
 function formatLabel(ts: string): string {
-  const d = new Date(ts);
-  if (['3mo', '6mo', '1y'].includes(selectedRange.value))
+  const d  = new Date(ts);
+  const ms = rangeDurationMs.value;
+  if (ms >= 90 * 24 * 60 * 60 * 1000) // ≥3 months
     return d.toLocaleDateString('en-US', { year: '2-digit', month: 'short', day: 'numeric' });
-  if (['7d', '15d', '30d'].includes(selectedRange.value))
+  if (ms >= 7 * 24 * 60 * 60 * 1000) // ≥7 days
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
       + ' ' + d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
   return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
-const shouldRotate = computed(() =>
-  ['7d', '15d', '30d', '3mo', '6mo', '1y'].includes(selectedRange.value),
-);
+const shouldRotate = computed(() => rangeDurationMs.value >= 7 * 24 * 60 * 60 * 1000);
 
 // ── ECharts option ────────────────────────────────────────────────────────────
 const option = computed<EChartsOption>(() => {
@@ -184,7 +204,17 @@ const option = computed<EChartsOption>(() => {
 
     yAxis: {
       type: 'value',
-      axisLabel: { color: '#6b7280', fontSize: 10 },
+      scale: true,                   // don't force axis to start from 0
+      min: visibleYMin.value,        // undefined = ECharts auto; set when zoomed
+      max: visibleYMax.value,
+      axisLabel: {
+        color: '#6b7280',
+        fontSize: 10,
+        formatter: (val: number) => {
+          const prec = machineField.value?.precision ?? 0;
+          return prec > 0 ? val.toFixed(prec) : Math.round(val).toString();
+        },
+      },
       splitLine: { lineStyle: { color: '#1f2937', type: 'dashed' } },
     },
 
@@ -214,7 +244,7 @@ const option = computed<EChartsOption>(() => {
         const lo  = lowerLimit.value !== null ? `<br/><span style="color:#f59e0b">↓ lower: ${lowerLimit.value}</span>`  : '';
 
         return `<div style="font-family:monospace;line-height:1.6">
-          <span style="color:#9ca3af;font-size:11px">${formatTooltipTime(pt?.ts ?? '')}</span><span style="color:#6b7280;font-size:10px"> · avg/${BUCKET_LABEL[selectedRange.value]}</span><br/>
+          <span style="color:#9ca3af;font-size:11px">${formatTooltipTime(pt?.ts ?? '')}</span><span style="color:#6b7280;font-size:10px"> · avg/${bucketLabel.value}</span><br/>
           ${field.value}: <b>${val}</b>${statusBadge}${thr}${up}${lo}
         </div>`;
       },
@@ -226,9 +256,9 @@ const option = computed<EChartsOption>(() => {
       type: 'inside',
       xAxisIndex: 0,
       filterMode: 'filter',
-      zoomOnMouseWheel: true,
-      moveOnMouseMove: false,
-      moveOnMouseWheel: false,
+      zoomOnMouseWheel: true,   // scroll = zoom
+      moveOnMouseMove: true,    // drag on chart = pan (safe — GridStack only drags from .gs-drag-handle)
+      moveOnMouseWheel: false,  // scroll does not pan
     }],
   };
 });
@@ -256,7 +286,7 @@ const option = computed<EChartsOption>(() => {
 
         <!-- Zoom hints -->
         <div class="flex items-center gap-1.5 ml-auto">
-          <span class="text-[9px] text-gray-600 hidden sm:block">scroll to zoom</span>
+          <span class="text-[9px] text-gray-600 hidden sm:block">scroll: zoom · drag: pan</span>
           <button
             v-if="isZoomed"
             class="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-medium bg-blue-600/20 text-blue-400 border border-blue-500/30 hover:bg-blue-600/40 transition-colors"
@@ -265,21 +295,27 @@ const option = computed<EChartsOption>(() => {
         </div>
       </div>
 
-      <!-- ── Time range buttons ────────────────────────────────────────────── -->
-      <div class="flex items-center gap-0.5 px-1 pb-0.5 flex-shrink-0 flex-wrap">
-        <button
-          v-for="r in TIME_RANGES"
-          :key="r"
-          class="px-1.5 py-0.5 rounded text-[9px] font-medium transition-all"
-          :class="selectedRange === r
-            ? 'bg-blue-600 text-white shadow-sm shadow-blue-600/40 ring-1 ring-blue-500'
-            : 'bg-surface-300 text-gray-400 hover:bg-surface-200 hover:text-gray-200'"
-          @click="selectRange(r)"
-        >{{ r }}</button>
+      <!-- ── Date/time range pickers ──────────────────────────────────────── -->
+      <div class="flex items-center gap-1 px-1 pb-0.5 flex-shrink-0 flex-wrap text-[9px] text-gray-400">
+        <span>From</span>
+        <input
+          v-model="startDateTime"
+          type="datetime-local"
+          class="bg-surface-300 text-gray-200 rounded px-1 py-0.5 border border-gray-700 focus:outline-none focus:border-blue-500 text-[9px]"
+          style="color-scheme: dark"
+        />
+        <span>To</span>
+        <input
+          v-model="endDateTime"
+          type="datetime-local"
+          class="bg-surface-300 text-gray-200 rounded px-1 py-0.5 border border-gray-700 focus:outline-none focus:border-blue-500 text-[9px]"
+          style="color-scheme: dark"
+        />
       </div>
 
       <!-- ── Chart ─────────────────────────────────────────────────────────── -->
-      <div class="relative flex-1 min-h-0">
+      <!-- @mousedown.stop prevents mousedown from bubbling to GridStack's drag handler -->
+      <div class="relative flex-1 min-h-0" @mousedown.stop>
         <div
           v-if="loading"
           class="absolute inset-0 z-10 flex items-center justify-center bg-surface-100/60 backdrop-blur-[1px]"

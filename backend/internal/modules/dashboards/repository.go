@@ -1,0 +1,197 @@
+package dashboards
+
+import (
+	"context"
+	"encoding/json"
+	"iot-dashboard/internal/database"
+	"time"
+)
+
+type Dashboard struct {
+	ID             string          `json:"id"`
+	Name           string          `json:"name"`
+	Description    *string         `json:"description"`
+	OrganizationID string          `json:"organizationId"`
+	UserID         string          `json:"userId"`
+	IsPublic       bool            `json:"isPublic"`
+	Tags           []string        `json:"tags"`
+	CreatedAt      time.Time       `json:"createdAt"`
+	Widgets        []Widget        `json:"widgets,omitempty"`
+}
+
+type Widget struct {
+	ID          string          `json:"id"`
+	DashboardID string          `json:"dashboardId"`
+	MachineID   *string         `json:"machineId"`
+	WidgetType  string          `json:"widgetType"`
+	Title       *string         `json:"title"`
+	Layout      json.RawMessage `json:"layout"`
+	Config      json.RawMessage `json:"config"`
+	CreatedAt   time.Time       `json:"createdAt"`
+}
+
+type Repository struct{}
+
+func (r *Repository) FindAll(ctx context.Context, orgID, userID string) ([]Dashboard, error) {
+	rows, err := database.Pool.Query(ctx, `
+		SELECT id, name, description, organization_id, user_id, is_public, tags, created_at
+		FROM dashboards WHERE organization_id = $1 ORDER BY created_at DESC
+	`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var dashboards []Dashboard
+	for rows.Next() {
+		var d Dashboard
+		var tags []string
+		if err := rows.Scan(&d.ID, &d.Name, &d.Description, &d.OrganizationID, &d.UserID, &d.IsPublic, &tags, &d.CreatedAt); err != nil {
+			return nil, err
+		}
+		if tags != nil {
+			d.Tags = tags
+		} else {
+			d.Tags = []string{}
+		}
+		dashboards = append(dashboards, d)
+	}
+	return dashboards, nil
+}
+
+func (r *Repository) FindByID(ctx context.Context, id string) (*Dashboard, error) {
+	row := database.Pool.QueryRow(ctx, `
+		SELECT id, name, description, organization_id, user_id, is_public, tags, created_at
+		FROM dashboards WHERE id = $1
+	`, id)
+
+	var d Dashboard
+	var tags []string
+	if err := row.Scan(&d.ID, &d.Name, &d.Description, &d.OrganizationID, &d.UserID, &d.IsPublic, &tags, &d.CreatedAt); err != nil {
+		return nil, err
+	}
+	if tags != nil {
+		d.Tags = tags
+	} else {
+		d.Tags = []string{}
+	}
+
+	widgets, _ := r.GetWidgets(ctx, d.ID)
+	d.Widgets = widgets
+	return &d, nil
+}
+
+func (r *Repository) Create(ctx context.Context, orgID, userID, name string, description *string, isPublic bool, tags []string) (*Dashboard, error) {
+	if tags == nil {
+		tags = []string{}
+	}
+	row := database.Pool.QueryRow(ctx, `
+		INSERT INTO dashboards (id, organization_id, user_id, name, description, is_public, tags, created_at, updated_at)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, NOW(), NOW())
+		RETURNING id
+	`, orgID, userID, name, description, isPublic, tags)
+	var id string
+	if err := row.Scan(&id); err != nil {
+		return nil, err
+	}
+	return r.FindByID(ctx, id)
+}
+
+func (r *Repository) Update(ctx context.Context, id string, data map[string]interface{}) (*Dashboard, error) {
+	if name, ok := data["name"].(string); ok {
+		_, _ = database.Pool.Exec(ctx, `UPDATE dashboards SET name=$1, updated_at=NOW() WHERE id=$2`, name, id)
+	}
+	if desc, ok := data["description"].(string); ok {
+		_, _ = database.Pool.Exec(ctx, `UPDATE dashboards SET description=$1, updated_at=NOW() WHERE id=$2`, desc, id)
+	}
+	return r.FindByID(ctx, id)
+}
+
+func (r *Repository) Delete(ctx context.Context, id string) error {
+	_, err := database.Pool.Exec(ctx, `DELETE FROM dashboards WHERE id=$1`, id)
+	return err
+}
+
+func (r *Repository) GetWidgets(ctx context.Context, dashboardID string) ([]Widget, error) {
+	rows, err := database.Pool.Query(ctx, `
+		SELECT id, dashboard_id, machine_id, widget_type, title, layout, config, created_at
+		FROM dashboard_widgets WHERE dashboard_id=$1 ORDER BY created_at ASC
+	`, dashboardID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var widgets []Widget
+	for rows.Next() {
+		var w Widget
+		if err := rows.Scan(&w.ID, &w.DashboardID, &w.MachineID, &w.WidgetType, &w.Title, &w.Layout, &w.Config, &w.CreatedAt); err != nil {
+			return nil, err
+		}
+		widgets = append(widgets, w)
+	}
+	return widgets, nil
+}
+
+func (r *Repository) AddWidget(ctx context.Context, dashboardID string, w Widget) (*Widget, error) {
+	if w.Layout == nil {
+		w.Layout = json.RawMessage("{}")
+	}
+	if w.Config == nil {
+		w.Config = json.RawMessage("{}")
+	}
+	row := database.Pool.QueryRow(ctx, `
+		INSERT INTO dashboard_widgets (id, dashboard_id, machine_id, widget_type, title, layout, config, created_at, updated_at)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, NOW(), NOW())
+		RETURNING id, dashboard_id, machine_id, widget_type, title, layout, config, created_at
+	`, dashboardID, w.MachineID, w.WidgetType, w.Title, w.Layout, w.Config)
+
+	var out Widget
+	err := row.Scan(&out.ID, &out.DashboardID, &out.MachineID, &out.WidgetType, &out.Title, &out.Layout, &out.Config, &out.CreatedAt)
+	return &out, err
+}
+
+func (r *Repository) UpdateWidget(ctx context.Context, widgetID string, data map[string]interface{}) error {
+	if layout, ok := data["layout"]; ok {
+		b, _ := json.Marshal(layout)
+		_, _ = database.Pool.Exec(ctx, `UPDATE dashboard_widgets SET layout=$1, updated_at=NOW() WHERE id=$2`, string(b), widgetID)
+	}
+	if config, ok := data["config"]; ok {
+		b, _ := json.Marshal(config)
+		_, _ = database.Pool.Exec(ctx, `UPDATE dashboard_widgets SET config=$1, updated_at=NOW() WHERE id=$2`, string(b), widgetID)
+	}
+	if title, ok := data["title"].(string); ok {
+		_, _ = database.Pool.Exec(ctx, `UPDATE dashboard_widgets SET title=$1, updated_at=NOW() WHERE id=$2`, title, widgetID)
+	}
+	return nil
+}
+
+func (r *Repository) BulkUpdateLayout(ctx context.Context, widgets []map[string]interface{}) error {
+	for _, w := range widgets {
+		id, _ := w["id"].(string)
+		if layout, ok := w["layout"]; ok {
+			b, _ := json.Marshal(layout)
+			_, _ = database.Pool.Exec(ctx, `UPDATE dashboard_widgets SET layout=$1, updated_at=NOW() WHERE id=$2`, string(b), id)
+		}
+	}
+	return nil
+}
+
+func (r *Repository) FindWidget(ctx context.Context, widgetID string) (*Widget, string, error) {
+	row := database.Pool.QueryRow(ctx, `
+		SELECT dw.id, dw.dashboard_id, dw.machine_id, dw.widget_type, dw.title, dw.layout, dw.config, dw.created_at, d.organization_id
+		FROM dashboard_widgets dw
+		JOIN dashboards d ON d.id = dw.dashboard_id
+		WHERE dw.id = $1
+	`, widgetID)
+
+	var w Widget
+	var orgID string
+	err := row.Scan(&w.ID, &w.DashboardID, &w.MachineID, &w.WidgetType, &w.Title, &w.Layout, &w.Config, &w.CreatedAt, &orgID)
+	return &w, orgID, err
+}
+
+func (r *Repository) DeleteWidget(ctx context.Context, widgetID string) error {
+	_, err := database.Pool.Exec(ctx, `DELETE FROM dashboard_widgets WHERE id=$1`, widgetID)
+	return err
+}
