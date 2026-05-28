@@ -105,6 +105,16 @@ function addWidgetToGrid(widget: DashboardWidget) {
   mountedApps.set(widget.id, app);
 }
 
+function getCurrentLayouts() {
+  if (!grid) return [];
+  const items = grid.save(false) as Array<{ id?: string; x: number; y: number; w: number; h: number }>;
+  return items
+    .filter(item => item.id)
+    .map(item => ({ id: item.id!, layout: { x: item.x, y: item.y, w: item.w, h: item.h } }));
+}
+
+defineExpose({ getCurrentLayouts });
+
 function removeWidgetFromGrid(widgetId: string) {
   // 1. Unmount Vue app first (while DOM still exists)
   const app = mountedApps.get(widgetId);

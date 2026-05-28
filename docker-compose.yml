@@ -1,28 +1,24 @@
-# ╔══════════════════════════════════════════════════════════════════════════╗
+# ╔═════════════════════════════════════════════════════════════════════════╗
 # ║  CPF Industrial IoT Dashboard — Docker Compose                          ║
-# ╠══════════════════════════════════════════════════════════════════════════╣
+# ╠═════════════════════════════════════════════════════════════════════════╣
 # ║  Services                                                               ║
 # ║    db        TimescaleDB  (PostgreSQL 16 + time-series ext.)  :5432     ║
 # ║    redis     Redis 7      (rate-limit, pub/sub)               :6379     ║
 # ║    backend   Go API       (REST :4000 · WebSocket :4001)                ║
 # ║    frontend  Nginx        (SPA + reverse-proxy → backend)     :5173     ║
-# ║    pgadmin   pgAdmin 4    (DB GUI, opt-in via profile)         :5050    ║
-# ╠══════════════════════════════════════════════════════════════════════════╣
+# ╠═════════════════════════════════════════════════════════════════════════╣
 # ║  Quick start                                                            ║
 # ║    cp .env.example .env          # edit secrets                         ║
 # ║    docker compose up -d          # all services                         ║
-# ║    open http://localhost:5173     # dashboard                            ║
+# ║    open http://localhost:5173     # dashboard                           ║
 # ║                                                                         ║
-# ║  With pgAdmin                                                           ║
-# ║    docker compose --profile tools up -d                                 ║
-# ║    open http://localhost:5050     # pgAdmin                             ║
 # ║                                                                         ║
 # ║  Backend + DB only (run frontend locally via npm run dev)               ║
 # ║    docker compose up -d db redis backend                                ║
 # ║                                                                         ║
 # ║  Full reset (WARNING: deletes all data)                                 ║
 # ║    docker compose down -v && docker compose up -d                       ║
-# ╚══════════════════════════════════════════════════════════════════════════╝
+# ╚═════════════════════════════════════════════════════════════════════════╝
 
 # ─── Internal network ─────────────────────────────────────────────────────────
 # All containers talk to each other on this isolated bridge.
@@ -36,7 +32,6 @@ volumes:
   timescale_data:   # PostgreSQL / TimescaleDB data files
   redis_data:       # Redis AOF / RDB persistence
   backend_logs:     # Application log files
-  pgadmin_data:     # pgAdmin sessions & server configs
 
 # ══════════════════════════════════════════════════════════════════════════════
 services:
@@ -179,27 +174,3 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-
-  # ────────────────────────────────────────────────────────────────────────────
-  # pgAdmin 4  (DB browser + ER diagram viewer)
-  # Only starts when you explicitly request the "tools" profile:
-  #   docker compose --profile tools up -d
-  # ────────────────────────────────────────────────────────────────────────────
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    container_name: iot_pgadmin
-    restart: unless-stopped
-    profiles:
-      - tools
-    networks:
-      - cpf_net
-    depends_on:
-      - db
-    environment:
-      PGADMIN_DEFAULT_EMAIL:    ${PGADMIN_EMAIL:-admin@cpf.local}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
-      PGADMIN_CONFIG_SERVER_MODE: "False"
-    ports:
-      - "${PGADMIN_PORT:-5050}:80"
-    volumes:
-      - pgadmin_data:/var/lib/pgadmin

@@ -3,7 +3,9 @@ import { ref, onMounted, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useDashboardStore } from '@/stores/dashboard.store';
 import { useMachineStore } from '@/stores/machine.store';
+import { useWidgetViewStateStore } from '@/stores/widget-view-state.store';
 import { useLedExport } from '@/composables/useLedExport';
+import { useToast } from '@/composables/useToast';
 import { Save, Plus, ArrowLeft, Loader2, LayoutGrid, Monitor, ExternalLink } from 'lucide-vue-next';
 import GridStackCanvas from '@/components/dashboard/GridStackCanvas.vue';
 import WidgetToolbox from '@/components/dashboard/WidgetToolbox.vue';
@@ -14,14 +16,17 @@ const route = useRoute();
 const router = useRouter();
 const dashboardStore = useDashboardStore();
 const machineStore = useMachineStore();
+const widgetViewStateStore = useWidgetViewStateStore();
 
 // ── LED Export ─────────────────────────────────────────────────────────────────
 const { exportLedLink, openLedPreview, exportLabel, copied } = useLedExport();
+const toast = useToast();
 
 const showToolbox = ref(false);
 const showConfigModal = ref(false);
 const editingWidget = ref<DashboardWidget | null>(null);
 const saving = ref(false);
+const gridCanvasRef = ref<InstanceType<typeof GridStackCanvas> | null>(null);
 
 const dashboardId = computed(() => route.params.id as string);
 
@@ -32,10 +37,27 @@ onMounted(async () => {
   ]);
 });
 
-async function saveLayout(layouts: Array<{ id: string; layout: WidgetLayout }>) {
+async function onSave() {
   saving.value = true;
   try {
-    await dashboardStore.saveLayout(layouts);
+    // Save current widget positions
+    const layouts = gridCanvasRef.value?.getCurrentLayouts() ?? [];
+    if (layouts.length) await dashboardStore.saveLayout(layouts);
+
+    // Save datetime ranges for all mounted line-chart widgets
+    const dtStates = widgetViewStateStore.datetimeStates;
+    await Promise.all(
+      Object.entries(dtStates).map(([widgetId, { startDateTime, endDateTime }]) => {
+        const widget = dashboardStore.widgets.find(w => w.id === widgetId);
+        if (!widget) return;
+        return dashboardStore.updateWidget(widgetId, {
+          config: { ...widget.config, startDateTime, endDateTime },
+        });
+      }),
+    );
+    toast.show('Dashboard saved');
+  } catch {
+    toast.show('Failed to save', 'error');
   } finally {
     saving.value = false;
   }
@@ -155,14 +177,14 @@ async function onRemoveWidget(widgetId: string) {
         </div>
         <!-- ────────────────────────────────────────────────────────────── -->
 
-        <!-- Layout auto-saves on drag; this button just shows status -->
         <button
           class="btn-primary"
           :disabled="saving"
+          @click="onSave"
         >
           <Loader2 v-if="saving" class="w-4 h-4 animate-spin" />
           <Save v-else class="w-4 h-4" />
-          {{ saving ? 'Saving…' : 'Saved' }}
+          {{ saving ? 'Saving…' : 'Save' }}
         </button>
       </div>
     </div>
@@ -188,8 +210,8 @@ async function onRemoveWidget(widgetId: string) {
         </div>
         <GridStackCanvas
           v-else
+          ref="gridCanvasRef"
           :widgets="dashboardStore.widgets"
-          @layout-change="saveLayout"
           @edit-widget="onEditWidget"
           @remove-widget="onRemoveWidget"
         />

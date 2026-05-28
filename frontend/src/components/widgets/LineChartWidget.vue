@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import VChart from 'vue-echarts';
 import type { EChartsOption } from 'echarts';
 import type { DashboardWidget } from '@/types';
 import { useFieldSeries } from '@/composables/useTelemetry';
+import { useWidgetViewStateStore } from '@/stores/widget-view-state.store';
 
 const props = defineProps<{ widget: DashboardWidget }>();
 
@@ -11,22 +12,57 @@ const machineId = computed(() => props.widget.machineId ?? '');
 const field     = computed(() => (props.widget.config?.field as string) ?? '');
 const color     = computed(() => (props.widget.config?.color as string) ?? '#3b82f6');
 
-// ── Date/time range state ─────────────────────────────────────────────────────
+const widgetViewStateStore = useWidgetViewStateStore();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Date/time helpers
+// ─────────────────────────────────────────────────────────────────────────────
 function toDatetimeLocal(iso: string): string {
   const d = new Date(iso);
   const p = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-const startDateTime = ref(toDatetimeLocal(new Date(Date.now() - 86_400_000).toISOString())); // 24h ago
-const endDateTime   = ref(toDatetimeLocal(new Date().toISOString()));                         // now
+const storageKeyStart = `widget_dt_start_${props.widget.id}`;
+const storageKeyEnd   = `widget_dt_end_${props.widget.id}`;
 
-// Duration in ms — drives label format, shouldRotate, bucket label in tooltip
+const startDateTime = ref(
+  props.widget.config?.startDateTime
+    ?? localStorage.getItem(storageKeyStart)
+    ?? toDatetimeLocal(new Date(Date.now() - 86_400_000).toISOString()),
+);
+
+const endDateTime = ref(
+  props.widget.config?.endDateTime
+    ?? localStorage.getItem(storageKeyEnd)
+    ?? toDatetimeLocal(new Date().toISOString()),
+);
+
+watch(startDateTime, v => {
+  localStorage.setItem(storageKeyStart, v);
+  widgetViewStateStore.setDatetime(props.widget.id, v, endDateTime.value);
+});
+
+watch(endDateTime, v => {
+  localStorage.setItem(storageKeyEnd, v);
+  widgetViewStateStore.setDatetime(props.widget.id, startDateTime.value, v);
+});
+
+onMounted(() => {
+  widgetViewStateStore.setDatetime(props.widget.id, startDateTime.value, endDateTime.value);
+});
+
+onUnmounted(() => {
+  widgetViewStateStore.remove(props.widget.id);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Duration
+// ─────────────────────────────────────────────────────────────────────────────
 const rangeDurationMs = computed(() =>
   new Date(endDateTime.value).getTime() - new Date(startDateTime.value).getTime(),
 );
 
-// Bucket label shown in tooltip (mirrors backend calculateBucketForDuration)
 const bucketLabel = computed(() => {
   const ms = rangeDurationMs.value;
   if (ms <=  1 * 60 * 60 * 1000) return '1 min';
@@ -36,13 +72,26 @@ const bucketLabel = computed(() => {
   return '1 hr';
 });
 
-const { mergedData, loading } = useFieldSeries(machineId.value, field.value, startDateTime, endDateTime);
+// ─────────────────────────────────────────────────────────────────────────────
+// Data
+// ─────────────────────────────────────────────────────────────────────────────
+const { mergedData, loading } = useFieldSeries(
+  machineId.value,
+  field.value,
+  startDateTime,
+  endDateTime,
+);
 
-// ── Threshold / limits ────────────────────────────────────────────────────────
-const machineField = computed(() => props.widget.machine?.fields?.find(f => f.key === field.value));
-const threshold    = computed(() => machineField.value?.threshold  ?? null);
-const upperLimit   = computed(() => machineField.value?.upperLimit ?? null);
-const lowerLimit   = computed(() => machineField.value?.lowerLimit ?? null);
+// ─────────────────────────────────────────────────────────────────────────────
+// Limits / Thresholds
+// ─────────────────────────────────────────────────────────────────────────────
+const machineField = computed(() =>
+  props.widget.machine?.fields?.find(f => f.key === field.value),
+);
+
+const threshold  = computed(() => machineField.value?.threshold  ?? null);
+const upperLimit = computed(() => machineField.value?.upperLimit ?? null);
+const lowerLimit = computed(() => machineField.value?.lowerLimit ?? null);
 
 const hasProblems = computed(() => {
   if (lowerLimit.value === null && upperLimit.value === null) return false;
@@ -53,37 +102,55 @@ const hasProblems = computed(() => {
   });
 });
 
-// ── Zoom state + Y-axis auto-scale ────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Chart refs / zoom state
+// ─────────────────────────────────────────────────────────────────────────────
 const chartRef = ref<InstanceType<typeof VChart> | null>(null);
 const isZoomed = ref(false);
 
-// Visible Y range — set when zoomed, cleared when not
 const visibleYMin = ref<number | undefined>(undefined);
 const visibleYMax = ref<number | undefined>(undefined);
 
-function onDataZoom(e: any) {
+// ─────────────────────────────────────────────────────────────────────────────
+// Zoom handling (THROTTLED)
+// ─────────────────────────────────────────────────────────────────────────────
+let zoomTimer: number | null = null;
+
+function handleZoom(e: any) {
   const batch = e?.batch?.[0] ?? e;
   const start = batch?.start ?? 0;
   const end   = batch?.end   ?? 100;
   isZoomed.value = !(start === 0 && end === 100);
 
-  if (isZoomed.value) {
-    const total    = mergedData.value.length;
-    const startIdx = Math.floor(start / 100 * total);
-    const endIdx   = Math.ceil(end   / 100 * total);
-    const visible  = mergedData.value.slice(startIdx, endIdx);
-    const values   = visible.map(p => p.value).filter(v => v != null);
-    if (values.length) {
-      const lo  = Math.min(...values);
-      const hi  = Math.max(...values);
-      const pad = Math.max((hi - lo) * 0.1, hi * 0.05, 10); // ≥10% of span, ≥5% of hi, ≥10 units
-      visibleYMin.value = Math.floor(lo - pad);
-      visibleYMax.value = Math.ceil(hi + pad);
-    }
-  } else {
+  if (!isZoomed.value) {
     visibleYMin.value = undefined;
     visibleYMax.value = undefined;
+    chartRef.value?.chart?.setOption({ yAxis: { min: null, max: null } });
+    return;
   }
+
+  const total    = mergedData.value.length;
+  const startIdx = Math.floor(start / 100 * total);
+  const endIdx   = Math.ceil(end   / 100 * total);
+  const visible  = mergedData.value.slice(startIdx, endIdx);
+  const values   = visible.map(p => p.value).filter(v => v != null);
+  if (!values.length) return;
+
+  const lo  = Math.min(...values);
+  const hi  = Math.max(...values);
+  const pad = Math.max((hi - lo) * 0.1, hi * 0.05, 10);
+
+  visibleYMin.value = Math.floor(lo - pad);
+  visibleYMax.value = Math.ceil(hi + pad);
+
+  chartRef.value?.chart?.setOption({
+    yAxis: { min: visibleYMin.value, max: visibleYMax.value },
+  });
+}
+
+function onDataZoom(e: any) {
+  if (zoomTimer) clearTimeout(zoomTimer);
+  zoomTimer = window.setTimeout(() => handleZoom(e), 16);
 }
 
 function resetZoom() {
@@ -91,9 +158,12 @@ function resetZoom() {
   isZoomed.value    = false;
   visibleYMin.value = undefined;
   visibleYMax.value = undefined;
+  chartRef.value?.chart?.setOption({ yAxis: { min: null, max: null } });
 }
 
-// ── Tooltip timestamp (full date + time, all ranges) ─────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Time formatting
+// ─────────────────────────────────────────────────────────────────────────────
 function formatTooltipTime(ts: string): string {
   if (!ts) return '';
   const d = new Date(ts);
@@ -103,13 +173,12 @@ function formatTooltipTime(ts: string): string {
   });
 }
 
-// ── X-axis label format ───────────────────────────────────────────────────────
 function formatLabel(ts: string): string {
   const d  = new Date(ts);
   const ms = rangeDurationMs.value;
-  if (ms >= 90 * 24 * 60 * 60 * 1000) // ≥3 months
+  if (ms >= 90 * 24 * 60 * 60 * 1000)
     return d.toLocaleDateString('en-US', { year: '2-digit', month: 'short', day: 'numeric' });
-  if (ms >= 7 * 24 * 60 * 60 * 1000) // ≥7 days
+  if (ms >= 7 * 24 * 60 * 60 * 1000)
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
       + ' ' + d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
   return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
@@ -117,11 +186,12 @@ function formatLabel(ts: string): string {
 
 const shouldRotate = computed(() => rangeDurationMs.value >= 7 * 24 * 60 * 60 * 1000);
 
-// ── ECharts option ────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// ECharts option
+// ─────────────────────────────────────────────────────────────────────────────
 const option = computed<EChartsOption>(() => {
   const hasLimits = lowerLimit.value !== null || upperLimit.value !== null;
 
-  // ── Avg / main series ────────────────────────────────────────────────────
   const avgSeries: any = {
     type: 'line',
     name: field.value,
@@ -141,10 +211,9 @@ const option = computed<EChartsOption>(() => {
         { yAxis: upperLimit.value },
       ]],
     } : undefined,
-
   };
 
-  // Reference lines on a separate series so visualMap (seriesIndex:0) cannot override their colours.
+  // Separate series for markLine so visualMap on seriesIndex:0 never overrides line colours.
   const refSeries: any = {
     type: 'line',
     data: new Array(mergedData.value.length).fill(null),
@@ -160,7 +229,7 @@ const option = computed<EChartsOption>(() => {
       data: [
         ...(upperLimit.value !== null ? [{
           yAxis: upperLimit.value,
-          lineStyle: { color: '#f59e0b', type: 'solid' as const, width: 2, opacity: 0.85 },
+          lineStyle: { color: '#f59e0b', type: 'solid' as const, width: 2, opacity: 0.4 },
           label: { formatter: `↑ ${upperLimit.value}`, color: '#f59e0b', fontSize: 10, fontWeight: 'bold' as const, position: 'end' as const },
         }] : []),
         ...(threshold.value !== null ? [{
@@ -170,20 +239,17 @@ const option = computed<EChartsOption>(() => {
         }] : []),
         ...(lowerLimit.value !== null ? [{
           yAxis: lowerLimit.value,
-          lineStyle: { color: '#f59e0b', type: 'solid' as const, width: 2, opacity: 0.85 },
+          lineStyle: { color: '#f59e0b', type: 'solid' as const, width: 2, opacity: 0.4 },
           label: { formatter: `↓ ${lowerLimit.value}`, color: '#f59e0b', fontSize: 10, fontWeight: 'bold' as const, position: 'end' as const },
         }] : []),
       ],
     },
   };
 
-  const seriesList = [avgSeries, refSeries];
-
   return {
     backgroundColor: 'transparent',
     grid: { left: 42, right: 60, top: 16, bottom: shouldRotate.value ? 52 : 30, containLabel: false },
 
-    // visualMap always targets seriesIndex 0 (the avg line)
     visualMap: hasLimits ? [{
       show: false,
       type: 'piecewise',
@@ -243,7 +309,6 @@ const option = computed<EChartsOption>(() => {
       borderColor: '#374151',
       textStyle: { color: '#e5e7eb', fontSize: 12 },
       formatter: (params: any) => {
-        // params[0] = avg series (index 0); band series are silent so excluded
         const p = Array.isArray(params) ? params[0] : params;
         const idx = p.dataIndex as number;
         const val = p.value as number;
@@ -269,15 +334,15 @@ const option = computed<EChartsOption>(() => {
       },
     },
 
-    series: seriesList,
+    series: [avgSeries, refSeries],
 
     dataZoom: [{
       type: 'inside',
       xAxisIndex: 0,
       filterMode: 'filter',
-      zoomOnMouseWheel: true,   // scroll = zoom
-      moveOnMouseMove: true,    // drag on chart = pan (safe — GridStack only drags from .gs-drag-handle)
-      moveOnMouseWheel: false,  // scroll does not pan
+      zoomOnMouseWheel: true,
+      moveOnMouseMove: true,
+      moveOnMouseWheel: false,
     }],
   };
 });
@@ -290,9 +355,8 @@ const option = computed<EChartsOption>(() => {
     </div>
 
     <template v-else>
-      <!-- ── Header ─────────────────────────────────────────────────────────── -->
+      <!-- Header -->
       <div class="flex items-center justify-between px-1 pt-0.5 flex-shrink-0 gap-1">
-        <!-- Status badge -->
         <span
           v-if="hasProblems"
           class="flex-shrink-0 flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-red-500/20 text-red-400 border border-red-500/30 animate-pulse"
@@ -303,7 +367,6 @@ const option = computed<EChartsOption>(() => {
         >✓ IN RANGE</span>
         <span v-else class="flex-shrink-0" />
 
-        <!-- Zoom hints -->
         <div class="flex items-center gap-1.5 ml-auto">
           <span class="text-[9px] text-gray-600 hidden sm:block">scroll: zoom · drag: pan</span>
           <button
@@ -314,7 +377,7 @@ const option = computed<EChartsOption>(() => {
         </div>
       </div>
 
-      <!-- ── Date/time range pickers ──────────────────────────────────────── -->
+      <!-- Date range -->
       <div class="flex items-center gap-1 px-1 pb-0.5 flex-shrink-0 flex-wrap text-[9px] text-gray-400">
         <span>From</span>
         <input
@@ -332,8 +395,7 @@ const option = computed<EChartsOption>(() => {
         />
       </div>
 
-      <!-- ── Chart ─────────────────────────────────────────────────────────── -->
-      <!-- @mousedown.stop prevents mousedown from bubbling to GridStack's drag handler -->
+      <!-- Chart -->
       <div class="relative flex-1 min-h-0" @mousedown.stop>
         <div
           v-if="loading"
