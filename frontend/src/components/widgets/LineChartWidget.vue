@@ -1,15 +1,18 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import VChart from 'vue-echarts';
 import type { EChartsOption } from 'echarts';
 import type { DashboardWidget } from '@/types';
 import { useFieldSeries } from '@/composables/useTelemetry';
+import { useWidgetViewStateStore } from '@/stores/widget-view-state.store';
 
 const props = defineProps<{ widget: DashboardWidget }>();
 
 const machineId = computed(() => props.widget.machineId ?? '');
 const field     = computed(() => (props.widget.config?.field as string) ?? '');
 const color     = computed(() => (props.widget.config?.color as string) ?? '#3b82f6');
+
+const widgetViewStateStore = useWidgetViewStateStore();
 
 // ── Date/time range state ─────────────────────────────────────────────────────
 function toDatetimeLocal(iso: string): string {
@@ -18,8 +21,35 @@ function toDatetimeLocal(iso: string): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-const startDateTime = ref(toDatetimeLocal(new Date(Date.now() - 86_400_000).toISOString())); // 24h ago
-const endDateTime   = ref(toDatetimeLocal(new Date().toISOString()));                         // now
+const storageKeyStart = `widget_dt_start_${props.widget.id}`;
+const storageKeyEnd   = `widget_dt_end_${props.widget.id}`;
+
+const startDateTime = ref(
+  props.widget.config?.startDateTime
+    ?? localStorage.getItem(storageKeyStart)
+    ?? toDatetimeLocal(new Date(Date.now() - 86_400_000).toISOString()),
+);
+const endDateTime = ref(
+  props.widget.config?.endDateTime
+    ?? localStorage.getItem(storageKeyEnd)
+    ?? toDatetimeLocal(new Date().toISOString()),
+);
+
+watch(startDateTime, v => {
+  localStorage.setItem(storageKeyStart, v);
+  widgetViewStateStore.setDatetime(props.widget.id, v, endDateTime.value);
+});
+watch(endDateTime, v => {
+  localStorage.setItem(storageKeyEnd, v);
+  widgetViewStateStore.setDatetime(props.widget.id, startDateTime.value, v);
+});
+
+onMounted(() => {
+  widgetViewStateStore.setDatetime(props.widget.id, startDateTime.value, endDateTime.value);
+});
+onUnmounted(() => {
+  widgetViewStateStore.remove(props.widget.id);
+});
 
 // Duration in ms — drives label format, shouldRotate, bucket label in tooltip
 const rangeDurationMs = computed(() =>

@@ -142,6 +142,8 @@ export interface WidgetConfig {
   thresholds?: Array<{ value: number; color: string }>;
   maxItems?: number;
   severities?: string[];
+  startDateTime?: string;
+  endDateTime?: string;
   [key: string]: unknown;
 }
 

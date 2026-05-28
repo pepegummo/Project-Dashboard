@@ -189,7 +189,7 @@ class ApiService {
   }
 
   async bulkUpdateLayout(dashboardId: string, widgets: Array<{ id: string; layout: any }>) {
-    await this.client.patch(`/dashboards/${dashboardId}/layout`, { widgets });
+    await this.client.patch(`/dashboards/${dashboardId}/layout`, widgets);
   }
 
   async deleteWidget(dashboardId: string, widgetId: string) {
