@@ -136,7 +136,7 @@ const option = computed<EChartsOption>(() => {
       data: [[
         {
           yAxis: lowerLimit.value,
-          itemStyle: { color: 'rgba(16,185,129,0.07)', borderColor: 'rgba(16,185,129,0.25)', borderWidth: 1 },
+          itemStyle: { color: 'rgba(16,185,129,0.12)', borderColor: 'rgba(16,185,129,0.4)', borderWidth: 1 },
         },
         { yAxis: upperLimit.value },
       ]],
@@ -149,18 +149,18 @@ const option = computed<EChartsOption>(() => {
       data: [
         ...(upperLimit.value !== null ? [{
           yAxis: upperLimit.value,
-          lineStyle: { color: '#f59e0b', type: 'dashed' as const, width: 1 },
-          label: { formatter: `↑ ${upperLimit.value}`, color: '#f59e0b', fontSize: 9, position: 'end' as const },
+          lineStyle: { color: '#f59e0b', type: 'solid' as const, width: 2, opacity: 0.8 },
+          label: { formatter: `↑ ${upperLimit.value}`, color: '#f59e0b', fontSize: 10, fontWeight: 'bold' as const, position: 'end' as const },
         }] : []),
         ...(threshold.value !== null ? [{
           yAxis: threshold.value,
-          lineStyle: { color: '#6366f1', type: 'dashed' as const, width: 1 },
+          lineStyle: { color: '#6366f1', type: 'dashed' as const, width: 1.5 },
           label: { formatter: `◎ ${threshold.value}`, color: '#6366f1', fontSize: 9, position: 'end' as const },
         }] : []),
         ...(lowerLimit.value !== null ? [{
           yAxis: lowerLimit.value,
-          lineStyle: { color: '#f59e0b', type: 'dashed' as const, width: 1 },
-          label: { formatter: `↓ ${lowerLimit.value}`, color: '#f59e0b', fontSize: 9, position: 'end' as const },
+          lineStyle: { color: '#f59e0b', type: 'solid' as const, width: 2, opacity: 0.8 },
+          label: { formatter: `↓ ${lowerLimit.value}`, color: '#f59e0b', fontSize: 10, fontWeight: 'bold' as const, position: 'end' as const },
         }] : []),
       ],
     },

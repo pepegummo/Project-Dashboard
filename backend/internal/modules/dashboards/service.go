@@ -22,7 +22,12 @@ func (s *Service) GetDashboardByID(ctx context.Context, id, orgID string) (*Dash
 }
 
 func (s *Service) CreateDashboard(ctx context.Context, orgID, userID, name string, description *string, isPublic bool, tags []string) (*Dashboard, error) {
-	return s.repo.Create(ctx, orgID, userID, name, description, isPublic, tags)
+	d, err := s.repo.Create(ctx, orgID, userID, name, description, isPublic, tags)
+	if err != nil {
+		return nil, err
+	}
+	_ = s.repo.CopyWidgetsFromDefault(ctx, orgID, d.ID)
+	return s.repo.FindByID(ctx, d.ID)
 }
 
 func (s *Service) UpdateDashboard(ctx context.Context, id, orgID string, data map[string]interface{}) (*Dashboard, error) {

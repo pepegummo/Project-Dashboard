@@ -64,11 +64,11 @@ services:
     healthcheck:
       test:
         - "CMD-SHELL"
-        - "pg_isready -U ${POSTGRES_USER:-iot_user} -d ${POSTGRES_DB:-iot_dashboard}"
+        - "pg_isready -U ${POSTGRES_USER:-iot_user} -d ${POSTGRES_DB:-iot_dashboard} -h 127.0.0.1"
       interval:     10s
       timeout:      5s
-      retries:      10
-      start_period: 30s   # TimescaleDB loads its shared library — give it time
+      retries:      15
+      start_period: 45s   # TimescaleDB loads its shared library — give it time
 
   # ────────────────────────────────────────────────────────────────────────────
   # Redis  (rate-limiting, pub/sub, future session cache)

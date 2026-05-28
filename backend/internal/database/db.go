@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iot-dashboard/internal/config"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -11,18 +12,28 @@ import (
 var Pool *pgxpool.Pool
 
 func Connect(ctx context.Context) error {
-	pool, err := pgxpool.New(ctx, config.Env.DatabaseURL)
-	if err != nil {
-		return fmt.Errorf("failed to create connection pool: %w", err)
-	}
+	const maxAttempts = 15
+	const retryDelay = 3 * time.Second
 
-	if err := pool.Ping(ctx); err != nil {
-		return fmt.Errorf("failed to ping database: %w", err)
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		pool, err := pgxpool.New(ctx, config.Env.DatabaseURL)
+		if err == nil {
+			if pingErr := pool.Ping(ctx); pingErr == nil {
+				Pool = pool
+				fmt.Println("✅ Database connected")
+				return nil
+			} else {
+				pool.Close()
+				lastErr = fmt.Errorf("failed to ping database: %w", pingErr)
+			}
+		} else {
+			lastErr = fmt.Errorf("failed to create connection pool: %w", err)
+		}
+		fmt.Printf("⏳ DB not ready (attempt %d/%d): %v — retrying in %v\n", attempt, maxAttempts, lastErr, retryDelay)
+		time.Sleep(retryDelay)
 	}
-
-	Pool = pool
-	fmt.Println("✅ Database connected")
-	return nil
+	return lastErr
 }
 
 func Close() {

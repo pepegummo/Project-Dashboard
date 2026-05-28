@@ -1,7 +1,7 @@
 # IotVision — Technical Documentation & Onboarding Guide
 
 > **Role:** Senior Software Engineer / Tech Lead  
-> **Last Updated:** 2026-05-26  
+> **Last Updated:** 2026-05-28  
 > **Project Status:** Active MVP
 
 ---
@@ -28,7 +28,7 @@ The core objectives are:
 - **Configurable dashboards** — operators can build their own dashboards by dragging and dropping widget types (KPI cards, gauges, line charts, status cards, alarm panels) onto a grid.
 - **Alert management** — define threshold-based rules per machine field; get notified in real-time when a rule is violated.
 - **LED screen mode** — when the browser runs on a 640×320 display, automatically switch to a full-screen KPI carousel optimised for reading from a distance.
-- **AI assistant** — an integrated chat interface backed by an LLM tool-execution layer.
+- **AI assistant** — an integrated chat interface backed by an LLM tool-execution layer (frontend only; backend tables exist but routes are not yet exposed in Go).
 
 ---
 
@@ -40,36 +40,35 @@ The core objectives are:
 |---|---|---|
 | **Vue 3** (Composition API) | `^3.4` | Reactive, component-based UI. Composition API enables clean, reusable logic extraction into composables — critical for complex telemetry wiring. |
 | **TypeScript** | `^5.5` | Full type safety across stores, API responses, and component props. Catches data-shape mismatches early (especially important for dynamic telemetry payloads). |
-| **Vite** | `^5.3` | Near-instant dev server HMR and tree-shaking build — much faster than Webpack/CRA for a project with many lazy-loaded pages. |
-| **Pinia** | `^2.1` | Official Vue state management. Setup-store style (`defineStore(() => {...})`) reads like a composable, making the stores easy to test and reason about. |
-| **Vue Router 4** | `^4.3` | SPA routing with navigation guards for auth. All page components are lazy-loaded (`import()`). |
+| **Vite** | `^5.3` | Near-instant dev server HMR and tree-shaking build. |
+| **Pinia** | `^2.1` | Official Vue state management. Setup-store style (`defineStore(() => {...})`) reads like a composable. |
+| **Vue Router 4** | `^4.3` | SPA routing with navigation guards for auth. All page components are lazy-loaded. |
 | **Axios** | `^1.7` | HTTP client wrapped in a singleton `ApiService` class with request/response interceptors for token injection and 401 redirect. |
-| **ECharts + vue-echarts** | `^5.5 / ^6.7` | Industrial-grade charting library — handles large time-series datasets, supports canvas rendering, and provides gauge + line + bar charts needed for the dashboard widgets. Only required chart types are registered to keep bundle size small. |
-| **GridStack.js** | `^10.3` | Drag-and-drop, resize-enabled grid layout used for the dashboard editor. The key challenge: GridStack controls the DOM directly, so each widget is mounted as its own `createApp()` instance and manually injected into the grid cell. |
-| **Tailwind CSS** | `^3.4` | Utility-first CSS with a custom dark-theme colour palette (`surface-100`, `primary-500`, `accent-cyan`). No runtime CSS — all purged at build time. |
+| **ECharts + vue-echarts** | `^5.5 / ^6.7` | Industrial-grade charting library — handles large time-series datasets, supports canvas rendering. Only required chart types are registered to keep bundle size small. |
+| **GridStack.js** | `^10.3` | Drag-and-drop, resize-enabled grid layout for the dashboard editor. GridStack controls the DOM directly, so each widget is mounted as its own `createApp()` instance injected into the grid cell. |
+| **Tailwind CSS** | `^3.4` | Utility-first CSS with a custom dark-theme colour palette. All purged at build time. |
 | **Lucide Vue Next** | `^0.395` | Consistent, tree-shakeable icon set. |
-| **@vueuse/core** | `^10.11` | Used for browser utility composables. |
+| **@vueuse/core** | `^10.11` | Browser utility composables. |
 
 #### Backend
 
 | Technology | Version | Why It Was Chosen |
 |---|---|---|
-| **Node.js + Express** | `^4.19` | Lightweight, well-understood HTTP server. The app is I/O bound (DB + WebSocket), so Node's event loop is a natural fit. |
-| **TypeScript** | `^5.5` | Shared type definitions between backend modules. Prisma client is fully typed. |
-| **Prisma ORM** | `^5.14` | Type-safe database client generated from the schema. Handles migrations, DB push, and seeding. The Prisma Studio UI is exposed on port 5555 for direct DB inspection. |
-| **ws** | `^8.17` | Raw, low-overhead WebSocket server — chosen over Socket.IO to avoid the long-polling fallback overhead and keep the protocol simple for machine-subscription messages. |
-| **jsonwebtoken + bcryptjs** | — | Standard JWT auth with bcrypt password hashing. |
-| **Zod** | `^3.23` | Runtime schema validation for incoming request bodies — provides typed, safe parsing at API boundaries. |
-| **helmet + express-rate-limit** | — | Security hardening: HTTP security headers and rate limiting on API routes. |
-| **tsx** | `^4.16` | Runs TypeScript directly without a build step in development (`tsx watch`). |
+| **Go** | `1.26` | Compiled, statically typed, low memory overhead — well-suited for long-running IoT telemetry services. |
+| **Fiber v2** | `v2.52` | Fast HTTP framework built on fasthttp. Provides middleware (cors, helmet, compress, limiter, logger) out of the box with minimal boilerplate. |
+| **pgx/v5** | `v5.9` | High-performance PostgreSQL driver. **No ORM** — all queries are raw SQL. The connection pool (`pgxpool`) is a package-level singleton in `internal/database`. |
+| **gorilla/websocket** | `v1.5` | Low-level WebSocket server on a separate `:4001` port. Chosen over Fiber's built-in WS to keep the WS server fully independent from the HTTP lifecycle. |
+| **golang-jwt/jwt v5** | `v5.3` | JWT signing and verification with HMAC-SHA256. |
+| **golang.org/x/crypto** | `v0.52` | bcrypt for password hashing. |
+| **godotenv** | `v1.5` | Loads `.env` on startup (ignored if not present — Docker uses real env vars). |
 
 #### Database & Infrastructure
 
 | Technology | Why It Was Chosen |
 |---|---|
-| **PostgreSQL 16 + TimescaleDB** | Relational DB for all entity data (users, machines, dashboards, alerts) + the TimescaleDB extension converts the `telemetry_readings` table into a **hypertable**, enabling automatic time-based partitioning, and compression of time-series data at scale. |
-| **Redis 7** | Provisioned for sessions, pub/sub, and caching. Currently reserved for future horizontal scaling (e.g., sharing WebSocket subscriptions across multiple backend instances). |
-| **Docker + Docker Compose** | All five services (DB, Redis, Backend, Frontend, pgAdmin) are defined in a single `docker-compose.yml` for one-command local setup and consistent production deployments. |
+| **PostgreSQL 16 + TimescaleDB** | Relational DB for all entity data + the TimescaleDB extension converts `telemetry_raw` into a **hypertable**, enabling automatic time-based partitioning and compression of time-series data at scale. |
+| **Redis 7** | Provisioned; currently unused by application code. Reserved for future horizontal scaling (e.g., sharing WebSocket subscriptions across backend instances). |
+| **Docker + Docker Compose** | All five services (DB, Redis, Backend, Frontend, pgAdmin) are defined in a single `docker-compose.yml` for one-command local setup. |
 
 ---
 
@@ -97,15 +96,15 @@ Each field is described by a `MachineField` record which carries:
 The data flow for live sensor readings:
 
 ```
-[Simulator / Real Sensor]
-       │ (1 tick / second)
+[Simulator (Go)]
+       │ (1 tick / 60 seconds)
        ▼
-[Backend: TelemetrySimulator.processMachine()]
-       │  1. generates sine-wave value
-       │  2. persists to TimescaleDB hypertable (every N ticks)
+[simulator.run() → fieldState.nextValue()]
+       │  1. generates pulse-wave + noise value per field
+       │  2. broadcasts via WebSocket immediately
        │  3. evaluates alert rules
        ▼
-[WsGateway.broadcastTelemetry()]
+[WsGateway.BroadcastTelemetry()]
        │  sends JSON to all subscribed WebSocket clients
        ▼
 [Frontend: wsService.onTelemetry('*', handler)]
@@ -120,14 +119,17 @@ The data flow for live sensor readings:
 [User sees the updated number on screen]
 ```
 
+> **Note:** The simulator ticks every **60 seconds** (not 1 second). The `telemetry_raw` table stores these ticks. Historical chart data is loaded from the DB via REST, not synthesised from WebSocket traffic.
+
 ### 2.3 Alert Rule Evaluation
 
-Alert rules are stored per-machine in the `alerts` table. Each rule defines a `field`, `condition` (gt/lt/eq/between/outside), and `threshold`. The `AlertService.evaluateTelemetry()` method runs on every simulator tick:
+Alert rules are stored per-machine in the `alerts` table. Each rule defines a `field`, `condition` (gt/lt/eq/between/outside), and `threshold`. `AlertService.EvaluateTelemetry()` runs on every simulator tick:
 
-- It loads all active rules for the machine.
+- It loads all active rules for the machine from the DB.
 - Evaluates each rule's condition against the current field value.
-- If triggered **and** not in cooldown (`cooldownSec`), it creates an `AlertEvent` in the DB and calls `WsGateway.broadcastAlert()` — which immediately pushes the alert to all connected clients.
+- If triggered **and** not in cooldown (`cooldownSec`, default 300s), it creates an `AlertEvent` in the DB and calls `WsGateway.BroadcastAlert()` — which immediately pushes the alert to all connected clients.
 - On the frontend, `useWebSocket` catches the alert message and calls `alertStore.addLiveAlert()`.
+- Cooldown state is kept **in-process** in `Service.lastFiredAt` — a map keyed by alert ID. This resets on backend restart.
 
 ### 2.4 GridStack + Vue Integration (Key Technical Challenge)
 
@@ -148,7 +150,7 @@ A subtle but important design decision in `useTelemetry.ts`:
 - **`useMachineTelemetry`** (for KPI cards, gauges): subscribes to WebSocket, writes every incoming data point into the Pinia store's rolling history (up to 300 points). Optimised for live values.
 - **`useFieldSeries`** (for line charts): intentionally uses **only API bucket data** and refreshes every 60 seconds. It does **not** merge raw WebSocket points into the chart.
 
-**Why?** KPI/gauge widgets poll at ~1 Hz and write raw 1-second points into the shared store. If a line chart tried to merge these raw points with 30-minute-bucketed API data, it would create hundreds of clustered raw points at the right edge of the chart, distorting its shape. The two-track approach keeps the chart clean.
+**Why?** If a line chart tried to merge raw WebSocket points with 30-minute-bucketed API data, it would create clustered raw points at the right edge of the chart, distorting its shape. The two-track approach keeps the chart clean.
 
 ### 2.6 LED Screen Mode
 
@@ -165,6 +167,21 @@ When `isLED` is true, `AppLayout.vue` replaces the entire layout with `<LEDCarou
 - Displays one metric per slide with large glowing text, a status indicator, and a target achievement %.
 - Supports keyboard/presenter remote controls (`ArrowLeft/Right`, `PageUp/Down`, `Space` to lock/unlock auto-advance).
 - Pauses the progress bar CSS animation when locked (`animation-play-state: paused`).
+
+The `/led` route is also accessible as a public shareable kiosk URL (`/led?w=<base64-encoded LedWidget[]>`), generated by `useLedExport → exportLedLink()`. This route bypasses JWT auth entirely — the 401 interceptor in `api.service.ts` skips the redirect for `/led` paths.
+
+### 2.7 Schema Management (No Migration Files)
+
+The backend has **no migration files**. All DDL lives in `backend/internal/migrate/migrate.go`. On every startup, `migrate.RunAll()` runs before the HTTP server starts:
+
+1. `EnsureSchema()` — `CREATE TABLE IF NOT EXISTS` for all 14 tables, creates the TimescaleDB hypertable, sets compression policy, and creates all indexes.
+2. `EnsureSeed()` — checks `COUNT(*) FROM organizations`; if zero, inserts the default org, factory, production lines, machines, fields, users, dashboard, widgets, and alert rules.
+
+Both functions are fully idempotent — safe to run on every restart.
+
+### 2.8 Dashboard Widget Inheritance
+
+When a new dashboard is created (`POST /api/dashboards`), the backend automatically copies all widgets from the organisation's `is_default = TRUE` dashboard into the new dashboard. This is done via a single `INSERT ... SELECT` in `repository.CopyWidgetsFromDefault()`. Each widget gets a fresh `gen_random_uuid()` — they are independent copies, not references.
 
 ---
 
@@ -187,46 +204,47 @@ When `isLED` is true, `AppLayout.vue` replaces the entire layout with `<LEDCarou
 │  └──────────────┬─────────────────────────────────────────────────────┘  │
 │                 │                                                         │
 │  ┌──────────────▼──────────────┐  ┌──────────────────────────────────┐  │
-│  │   ApiService (axios)         │  │  WebSocketService (ws)           │  │
+│  │   ApiService (axios)         │  │  WebSocketService                │  │
 │  │   REST: :4000/api/*          │  │  WS:  :4001                      │  │
 │  └──────────────┬──────────────┘  └──────────────┬───────────────────┘  │
-└─────────────────┼───────────────────────────────────────────────────────┘
+└─────────────────┼─────────────────────────────────┼─────────────────────┘
                   │ HTTP                             │ WebSocket
 ┌─────────────────▼─────────────────────────────────▼───────────────────┐
-│                        BACKEND  (Express + ws)                         │
+│                     BACKEND  (Go / Fiber + gorilla/websocket)          │
 │                                                                        │
-│  ┌───────────────────────────────────────────────────────────────┐    │
-│  │  Express REST API  (:4000)                                    │    │
-│  │  /api/auth  /api/machines  /api/telemetry                     │    │
-│  │  /api/dashboards  /api/alerts  /api/ai                        │    │
-│  └─────────────────────────────┬─────────────────────────────────┘    │
-│                                 │                                      │
-│  ┌──────────────────────────────▼──────────────────────────────────┐  │
-│  │  Module Structure: controller → service → repository → Prisma   │  │
-│  └──────────────────────────────┬──────────────────────────────────┘  │
-│                                 │                                      │
-│  ┌──────────────────────────────▼──────────────────────────────────┐  │
-│  │  WsGateway  (:4001)                                             │  │
-│  │  - Manages connected clients (Map<id, ExtendedWebSocket>)       │  │
+│  ┌────────────────────────────────────────────────────────────────┐   │
+│  │  Fiber REST API  (:4000)                                       │   │
+│  │  /health  /api/auth  /api/machines  /api/telemetry             │   │
+│  │  /api/dashboards  /api/alerts                                  │   │
+│  └──────────────────────────┬─────────────────────────────────────┘   │
+│                              │                                         │
+│  ┌───────────────────────────▼─────────────────────────────────────┐  │
+│  │  Module structure: controller → service → repository → pgxpool  │  │
+│  └───────────────────────────┬─────────────────────────────────────┘  │
+│                              │                                         │
+│  ┌───────────────────────────▼─────────────────────────────────────┐  │
+│  │  WsGateway  (:4001, gorilla/websocket)                          │  │
+│  │  - Manages connected clients (map[*client]struct{})             │  │
 │  │  - Handles subscribe/unsubscribe per machineId                  │  │
 │  │  - Broadcasts telemetry/alert/machine_status messages           │  │
 │  │  - Ping/pong heartbeat every 30s to detect dead connections     │  │
-│  └──────────────────────────────┬──────────────────────────────────┘  │
-│                                 │                                      │
-│  ┌──────────────────────────────▼──────────────────────────────────┐  │
-│  │  TelemetrySimulator                                             │  │
-│  │  - Generates sine-wave data per machine type (1 tick/sec)       │  │
-│  │  - Persists to TimescaleDB every N ticks                        │  │
+│  └───────────────────────────┬─────────────────────────────────────┘  │
+│                              │                                         │
+│  ┌───────────────────────────▼─────────────────────────────────────┐  │
+│  │  Simulator (in-process goroutine)                               │  │
+│  │  - Generates pulse-wave + noise data per machine (1 tick/60s)   │  │
+│  │  - Broadcasts via WsGateway                                     │  │
 │  │  - Evaluates alert rules → broadcasts triggered alerts          │  │
-│  └──────────────────────────────┬──────────────────────────────────┘  │
-└─────────────────────────────────┼──────────────────────────────────────┘
-                                  │ Prisma ORM
-┌─────────────────────────────────▼──────────────────────────────────────┐
+│  └───────────────────────────┬─────────────────────────────────────┘  │
+└─────────────────────────────┼──────────────────────────────────────────┘
+                              │ pgx/v5 (raw SQL)
+┌─────────────────────────────▼──────────────────────────────────────────┐
 │                  PostgreSQL 16 + TimescaleDB                            │
 │  Tables: users, organizations, machines, machine_fields                 │
 │          production_lines, factories, dashboards, dashboard_widgets     │
-│          alerts, alert_events                                           │
-│  Hypertable: telemetry_readings (time-partitioned, compressed)          │
+│          alerts, alert_events, ai_conversations, ai_messages            │
+│          audit_logs, telemetry_aggregates                               │
+│  Hypertable: telemetry_raw (time-partitioned, 7-day chunks, compressed) │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -242,11 +260,9 @@ dashboard.store.ts →  dashboards[], currentDashboard, widget CRUD, layout pers
 alert.store.ts     →  alerts[], activeEvents[], liveAlerts[] (capped at 50)
 ```
 
-**Key invariant:** `telemetryStore` is the only store that is **never fetched from REST** directly by components. It is always populated by:
-1. `useMachineTelemetry` composable pre-loading 30 minutes of history from API on mount.
+**Key invariant:** `telemetryStore` is never fetched from REST directly by components. It is always populated by:
+1. `useMachineTelemetry` composable pre-loading recent history from API on mount.
 2. `useWebSocket` composable writing every incoming WebSocket message into the store.
-
-This means any component that reads `telemetryStore.getFieldValue()` is automatically reactive to live data.
 
 ### 3.3 Authentication & Session Flow
 
@@ -255,13 +271,24 @@ This means any component that reads `telemetryStore.getFieldValue()` is automati
 2. auth.store → api.login() → POST /api/auth/login
 3. Server returns { token, user }
 4. auth.store stores token in localStorage AND calls wsService.connect(token)
-5. WsGateway verifies JWT from query string on WebSocket connection
+5. WsGateway accepts connection (token validation is optional — unauthenticated WS is allowed)
 6. api.service.ts interceptor reads localStorage token on every request
-7. On 401 response → localStorage cleared → redirect to /login
+7. On 401 response → localStorage cleared → redirect to /login (except /led paths)
 8. On app reload → auth.store reads token from localStorage → calls loadProfile()
 ```
 
-### 3.4 Component Communication Patterns
+### 3.4 Public vs Protected Endpoints
+
+| Endpoint | Auth Required |
+|---|---|
+| `GET /health` | No |
+| `GET /api/telemetry/latest` | No (for LED kiosk) |
+| `GET /api/telemetry/:id/latest` | No (for LED kiosk) |
+| All other `/api/*` | Yes — JWT Bearer |
+| `PATCH/DELETE /api/machines` | Role: `admin` or `editor` |
+| `DELETE /api/machines/:id` | Role: `admin` only |
+
+### 3.5 Component Communication Patterns
 
 | Pattern | Used For |
 |---|---|
@@ -280,145 +307,128 @@ This means any component that reads `telemetryStore.getFieldValue()` is automati
 
 ```
 Project-Dashboard-CPF/
-├── docker-compose.yml          # All 5 services: DB, Redis, Backend, Frontend, pgAdmin
+├── docker-compose.yml              # 5 services: TimescaleDB, Redis, Backend, Frontend, pgAdmin
+├── .env / .env.example             # Environment variables
+├── scripts/
+│   ├── init-timescale.sql          # Enables timescaledb + uuid-ossp on first DB boot
+│   └── create-indexes.sql          # Supplementary index definitions
 │
 ├── frontend/
 │   ├── package.json
-│   ├── src/
-│   │   ├── main.ts                         # App bootstrap: Vue, Pinia, ECharts registration
-│   │   ├── App.vue                         # Root component: router-view + AppLayout selector
-│   │   │
-│   │   ├── router/
-│   │   │   └── index.ts                    # Route definitions + auth navigation guard
-│   │   │
-│   │   ├── layouts/
-│   │   │   └── AppLayout.vue               # Shell: sidebar + topbar + LED mode gate
-│   │   │
-│   │   ├── pages/
-│   │   │   ├── LoginPage.vue               # JWT login form
-│   │   │   ├── DashboardListPage.vue       # Dashboard CRUD list
-│   │   │   ├── DashboardEditorPage.vue     # Main grid editor with widget toolbox
-│   │   │   ├── MachineManagementPage.vue   # Machine + field configuration
-│   │   │   ├── AlertsPage.vue              # Alert rules + active events
-│   │   │   └── AIAssistantPage.vue         # LLM chat with tool execution
-│   │   │
-│   │   ├── components/
-│   │   │   ├── layout/
-│   │   │   │   ├── Sidebar.vue             # Nav links, user info, sign out
-│   │   │   │   └── TopBar.vue              # Sidebar toggle, clock, WS status, alert bell
-│   │   │   │
-│   │   │   ├── dashboard/
-│   │   │   │   ├── GridStackCanvas.vue     # GridStack + Vue mini-app bridge
-│   │   │   │   ├── WidgetToolbox.vue       # Drag-source palette of widget types
-│   │   │   │   └── WidgetConfigModal.vue   # Edit widget: machine, field, time range, etc.
-│   │   │   │
-│   │   │   ├── widgets/
-│   │   │   │   ├── WidgetWrapper.vue       # Container: title bar, edit/remove buttons
-│   │   │   │   ├── KpiCardWidget.vue       # Single large metric with sparkline
-│   │   │   │   ├── GaugeWidget.vue         # ECharts gauge with min/max/threshold
-│   │   │   │   ├── LineChartWidget.vue     # ECharts line chart with time range selector
-│   │   │   │   ├── StatusCardWidget.vue    # Machine online/offline/error status
-│   │   │   │   ├── AlarmPanelWidget.vue    # Live alert event feed
-│   │   │   │   ├── TableWidget.vue         # Tabular telemetry display
-│   │   │   │   └── MachineDailyCountWidget.vue  # Bar chart of daily production count
-│   │   │   │
-│   │   │   └── led/
-│   │   │       └── LEDCarousel.vue         # Full-screen KPI carousel for 640×320 displays
-│   │   │
-│   │   ├── stores/
-│   │   │   ├── auth.store.ts               # Session, JWT, WS lifecycle
-│   │   │   ├── machine.store.ts            # Machine list + status updates
-│   │   │   ├── telemetry.store.ts          # Live snapshots + rolling history (300pts)
-│   │   │   ├── dashboard.store.ts          # Dashboards + widget CRUD
-│   │   │   └── alert.store.ts              # Alert rules, active events, live stream
-│   │   │
-│   │   ├── composables/
-│   │   │   ├── useWebSocket.ts             # Global WS listener → writes to all stores
-│   │   │   ├── useTelemetry.ts             # Three composables: machine telemetry, field series, aggregated value
-│   │   │   └── useScreenMode.ts            # Detects led / mobile / desktop based on window size
-│   │   │
-│   │   ├── services/
-│   │   │   ├── api.service.ts              # Axios singleton: all REST endpoints + interceptors
-│   │   │   └── ws.service.ts               # WebSocket singleton: connect/subscribe/dispatch/reconnect
-│   │   │
-│   │   └── types/
-│   │       └── index.ts                    # All TypeScript interfaces (shared frontend contracts)
-│   │
-└── backend/
-    ├── package.json
-    ├── prisma/
-    │   ├── schema.prisma                   # DB schema: all models + relations
-    │   ├── seed.ts                         # Seed: org, users, machines, fields, alerts, dashboard
-    │   └── backfill.ts                     # Backfill historical telemetry for charts
-    │
-    └── src/
-        ├── index.ts                        # Bootstrap: DB connect, HTTP server, WsGateway, Simulator
-        ├── app.ts                          # Express app factory: middleware, routes
-        │
-        ├── config/
-        │   ├── database.ts                 # Prisma client + ensureHypertable()
-        │   └── env.ts                      # Zod-validated environment variables
-        │
-        ├── middleware/
-        │   ├── auth.ts                     # JWT verify middleware (requireAuth)
-        │   └── error.ts                    # Global error handler → { success: false, error: {...} }
-        │
-        ├── modules/
-        │   ├── auth/                       # login, /me endpoint, bcrypt compare
-        │   ├── machines/                   # CRUD machines, production lines, factories, fields
-        │   ├── telemetry/                  # latest, series, aggregate, daily-count endpoints
-        │   ├── dashboards/                 # Dashboard + widget CRUD, bulk layout update
-        │   └── alerts/                     # Alert rules CRUD, event acknowledge/resolve
-        │
-        ├── ai-tools/
-        │   ├── ai-tools.service.ts         # Registers tools, executes them against real DB data
-        │   ├── ai-tools.controller.ts
-        │   └── ai-tools.routes.ts
-        │
-        ├── websocket/
-        │   ├── ws.gateway.ts               # WebSocket server: client registry, pub/sub, heartbeat
-        │   └── ws.types.ts                 # ExtendedWebSocket interface (adds id, subscribedMachines)
-        │
-        └── telemetry/
-            └── simulator.ts               # Sine-wave data generator per machine type
+│   ├── nginx.conf                  # Nginx: /api/* → backend:4000, /ws → backend:4001
+│   └── src/
+│       ├── main.ts                 # App bootstrap: Vue, Pinia, ECharts registration
+│       ├── App.vue                 # Root: router-view + AppLayout selector
+│       │
+│       ├── router/index.ts         # Route definitions + auth navigation guard
+│       ├── layouts/AppLayout.vue   # Shell: sidebar + topbar + LED mode gate
+│       │
+│       ├── pages/
+│       │   ├── LoginPage.vue
+│       │   ├── DashboardListPage.vue
+│       │   ├── DashboardEditorPage.vue     # Main grid editor with widget toolbox
+│       │   ├── MachineManagementPage.vue
+│       │   ├── AlertsPage.vue
+│       │   ├── AIAssistantPage.vue         # LLM chat UI (backend routes not yet in Go)
+│       │   └── LedViewPage.vue             # Public kiosk — no auth, no layout shell
+│       │
+│       ├── components/
+│       │   ├── layout/
+│       │   │   ├── Sidebar.vue             # Nav links, user info, sign out
+│       │   │   └── TopBar.vue              # Clock, WS status indicator, alert bell
+│       │   ├── dashboard/
+│       │   │   ├── GridStackCanvas.vue     # GridStack ↔ Vue mini-app bridge (most complex)
+│       │   │   ├── WidgetToolbox.vue       # Drag-source palette of widget types
+│       │   │   └── WidgetConfigModal.vue   # Edit widget: machine, field, time range, etc.
+│       │   ├── widgets/
+│       │   │   ├── WidgetWrapper.vue       # Container: title bar, edit/remove buttons
+│       │   │   ├── KpiCardWidget.vue       # Single large metric with sparkline
+│       │   │   ├── GaugeWidget.vue         # ECharts gauge with min/max/threshold
+│       │   │   ├── LineChartWidget.vue     # ECharts line chart with time range selector
+│       │   │   ├── StatusCardWidget.vue    # Machine online/offline/error status
+│       │   │   ├── AlarmPanelWidget.vue    # Live alert event feed
+│       │   │   ├── TableWidget.vue         # Tabular telemetry display
+│       │   │   └── MachineDailyCountWidget.vue  # Line chart of daily production count
+│       │   └── led/
+│       │       ├── LEDCarousel.vue         # Full-screen KPI carousel for 640×320 displays
+│       │       └── LedView.vue             # LED layout shell
+│       │
+│       ├── stores/
+│       │   ├── auth.store.ts
+│       │   ├── machine.store.ts
+│       │   ├── telemetry.store.ts          # Live snapshots + rolling history (300 pts/field)
+│       │   ├── dashboard.store.ts
+│       │   └── alert.store.ts              # liveAlerts[] capped at 50 entries
+│       │
+│       ├── composables/
+│       │   ├── useWebSocket.ts             # Global WS listener → writes to all stores
+│       │   ├── useTelemetry.ts             # useMachineTelemetry + useFieldSeries + useAggregatedValue
+│       │   ├── useScreenMode.ts            # Detects led / mobile / desktop
+│       │   └── useLedExport.ts             # Generates shareable /led?w=<base64> URL
+│       │
+│       ├── services/
+│       │   ├── api.service.ts              # Axios singleton: all REST endpoints + interceptors
+│       │   └── ws.service.ts               # WS singleton: connect/subscribe/dispatch/reconnect
+│       │
+│       └── types/index.ts                  # All TypeScript interfaces (shared contracts)
+│
+├── backend/
+│   ├── go.mod / go.sum
+│   └── cmd/
+│   │   ├── server/main.go          # Entry point: config → DB (with retry) → migrate → WS → simulator → Fiber
+│   │   └── backfill/main.go        # Standalone utility to backfill historical telemetry
+│   └── internal/
+│       ├── config/env.go           # Reads env vars; DATABASE_URL is required (panics if missing)
+│       ├── database/db.go          # pgxpool singleton; Connect() retries up to 15× with 3s delay
+│       ├── migrate/migrate.go      # ALL DDL + seed data — runs on every startup, idempotent
+│       ├── middleware/
+│       │   ├── auth.go             # Authenticate (JWT verify), RequireRole, GetUser helpers
+│       │   └── error.go            # AppError type + global Fiber ErrorHandler
+│       ├── modules/
+│       │   ├── auth/               # login endpoint, bcrypt compare, JWT sign
+│       │   ├── machines/           # Machine CRUD, production lines, factories, field upsert
+│       │   ├── telemetry/          # latest (public), series, aggregate, daily-count, ingest
+│       │   ├── dashboards/         # Dashboard + widget CRUD; Create auto-copies default widgets
+│       │   └── alerts/             # Alert rules CRUD, event acknowledge/resolve, EvaluateTelemetry
+│       ├── simulator/simulator.go  # Pulse-wave generator per machine type; ticks every 60s
+│       └── websocket/ws_gateway.go # gorilla/websocket hub: client map, subscription filter, ping/pong
+│
+└── loadtest/                       # Vegeta-based load test tool (separate Go module)
+    ├── main.go                     # Attack runner + SSE dashboard server
+    ├── dashboard.html              # Live browser dashboard for test metrics
+    ├── setup.ps1                   # Logs in, creates test dashboards, writes targets.json
+    └── targets.json                # Endpoint definitions with weights (auto-generated by setup.ps1)
 ```
 
-### Key File Responsibilities (Detail)
+### Key File Responsibilities
 
-#### `frontend/src/services/ws.service.ts`
-A singleton `WebSocketService` class. Responsibilities:
-- Connects to the WS server with the JWT token in the query string.
-- Implements **exponential backoff reconnection** (starts at 2s, max 30s) — critical for maintaining live data after network interruptions.
-- Maintains separate `Map`/`Set` collections of handler callbacks for telemetry (per `machineId`), alerts, status changes, connect, and disconnect events.
-- Supports wildcard `'*'` subscription: `onTelemetry('*', handler)` receives messages for all machines.
-- Returns an `off()` unsubscribe function from each `on*` method for clean teardown.
+#### `backend/internal/migrate/migrate.go`
+The single source of truth for DB schema. Contains two functions:
+- `EnsureSchema()` — creates all tables with `IF NOT EXISTS`, sets up the TimescaleDB hypertable with 7-day chunks, enables compression after 14 days, and creates all performance indexes.
+- `EnsureSeed()` — inserts the default org → factory → production lines → machines → fields → admin user → dashboard → widgets → alert rules. Uses fixed UUIDs (`00000000-0000-0000-0000-00000000000X`) so it is safe to re-run.
 
-#### `frontend/src/services/api.service.ts`
-A singleton `ApiService` class wrapping Axios. Responsibilities:
-- Injects `Authorization: Bearer <token>` on every request via a request interceptor.
-- On 401 response, clears the token and hard-redirects to `/login` — no infinite loop risk.
-- Unwraps the `ApiResponse<T>` envelope, returning `data.data` directly so callers receive typed objects.
-- All 30+ API methods are defined here, grouped by domain (auth, machines, telemetry, dashboards, alerts, AI).
+**To add a new table:** add it to `EnsureSchema()`. **To add seed data:** add it to `EnsureSeed()`.
+
+#### `backend/cmd/server/main.go`
+Wires the entire application in order:
+1. `config.Load()` — reads env vars
+2. `database.Connect(ctx)` — connects with retry loop; exits on failure
+3. `migrate.RunAll(ctx, pool)` — schema + seed (non-fatal warning on error)
+4. `ws.NewGateway().Start(wsPort)` — starts WebSocket server
+5. `simulator.NewSimulator(gateway, 60_000).Start()` — starts data generation
+6. Fiber app with middleware stack → route registration → `app.Listen(":4000")`
+
+#### `backend/internal/database/db.go`
+Holds the package-level `Pool *pgxpool.Pool`. `Connect()` retries up to 15 times with 3-second delays — this prevents crashes during Docker startup when TimescaleDB is still loading its shared library even after reporting healthy via `pg_isready`.
 
 #### `frontend/src/components/dashboard/GridStackCanvas.vue`
-The most technically complex component in the frontend. It bridges GridStack's imperative DOM API with Vue's declarative component model:
-- On mount: initialises a 12-column GridStack grid and mounts a `WidgetWrapper` Vue app into each cell.
-- On `props.widgets` change (deep watch): diffs old vs new widget arrays, removes stale apps, adds new ones, and fingerprint-checks existing ones for config-only changes.
-- On unmount: calls `app.unmount()` for every child app and `grid.destroy()` to prevent leaks.
+Most technically complex frontend component. Bridges GridStack's imperative DOM API with Vue's declarative model. See Section 2.4 for the full explanation.
 
-#### `backend/src/websocket/ws.gateway.ts`
-The real-time broadcast hub. Key design details:
-- Each connected client is stored as an `ExtendedWebSocket` with a UUID, a `subscribedMachines` Set, and an `isAlive` flag.
-- `broadcastTelemetry()` filters by subscription — a client only receives data for machines it has subscribed to (or all machines if its set is empty).
-- `broadcastAlert()` and `broadcastMachineStatus()` broadcast to **all** connected clients (no filtering).
-- A 30-second ping/pong loop detects and terminates zombie connections.
-
-#### `backend/src/telemetry/simulator.ts`
-The development data engine. Key design details:
-- Generates sine-wave values: `threshold ± 10% amplitude` with a small noise term.
-- Each machine type has its own generator function. Vision camera also maintains cumulative counters (`vcState`) for `inspected/passed/failed`.
-- Controlled by `SIMULATOR_ENABLED=true` env var — disabled in production.
-- Runs `AlertService.evaluateTelemetry()` on every tick, so alert events are triggered by simulated out-of-range values.
+#### `frontend/src/services/ws.service.ts`
+Singleton `WebSocketService`. Key behaviours:
+- Exponential backoff reconnection (2s → max 30s).
+- Per-`machineId` handler sets plus `'*'` wildcard for all-machine listeners.
+- Returns an unsubscribe `() => void` from every `on*` method for clean teardown in `onUnmounted`.
 
 ---
 
@@ -426,19 +436,20 @@ The development data engine. Key design details:
 
 ### 5.1 Redis is Provisioned but Unused
 
-**Current state:** Redis is in `docker-compose.yml` and `backend` reads `REDIS_URL`, but no backend code actually connects to it.
+**Current state:** Redis is in `docker-compose.yml` and `REDIS_URL` is wired through, but the Go backend never connects to it. The Fiber rate limiter uses **in-process memory storage** by default.
 
-**Technical debt:** If the backend is ever horizontally scaled (multiple instances), WebSocket subscriptions are stored in-process (`Map<string, ExtendedWebSocket>`). Two clients connecting to different instances would not receive each other's broadcasts.
+**Technical debt (two separate concerns):**
 
-**Recommendation:** Implement a Redis pub/sub adapter for `WsGateway`. When `broadcastTelemetry()` is called on instance A, it publishes to a Redis channel; all instances subscribe to that channel and forward to their local clients. This is the standard pattern for scaling stateful WebSocket servers.
+1. **Rate limiter state is not shared** across backend restarts or multiple instances. A restart resets all counters.
+2. **WebSocket subscriptions are in-process** (`map[*client]struct{}`). Horizontally scaling to multiple backend instances would break fan-out — a client on instance A would not receive telemetry broadcast by instance B.
+
+**Recommendation:** Implement a Redis pub/sub adapter for `WsGateway`. When `BroadcastTelemetry()` is called on instance A, publish to a Redis channel; all instances subscribe and forward to local clients.
 
 ---
 
 ### 5.2 Widget Config is a Loose `Record<string, unknown>`
 
-**Current state:** `WidgetConfig` in `types/index.ts` has a typed subset of known fields (`field`, `timeRange`, `color`, etc.) but ends with `[key: string]: unknown`. This means unknown or misspelled config keys silently pass through to the DB.
-
-**Technical debt:** There is no runtime validation when a widget is saved. A typo in `config.timeRange` (e.g., `"1Hour"` instead of `"1h"`) would be stored silently and only fail at render time.
+**Current state:** `WidgetConfig` in `types/index.ts` has a typed subset of known fields but ends with `[key: string]: unknown`. Unknown or misspelled config keys silently pass through to the DB.
 
 **Recommendation:** Define a discriminated union type per widget type:
 ```ts
@@ -448,14 +459,20 @@ type WidgetConfig =
   | { widgetType: 'alarm-panel'; severities: AlertSeverity[] }
   // ...
 ```
-Add a Zod schema on the backend `addWidget` / `updateWidget` endpoints to validate the config shape at the API boundary.
+Validate at the Go `AddWidget` / `UpdateWidget` endpoints by checking known keys before persisting.
 
 ---
 
 ### 5.3 Telemetry Store Has No Eviction for Disconnected Machines
 
-**Current state:** `telemetryStore.history` stores up to 300 data points per field per machine (`MAX_HISTORY = 300`). However, if a machine goes offline or is deleted, its history and snapshot entries are never removed from the store.
+**Current state:** `telemetryStore.history` stores up to 300 data points per field per machine. If a machine goes offline or is deleted, its entries are never removed from the store.
 
-**Technical debt:** In a long-running session with many machines cycling online/offline, the store gradually accumulates stale entries. On a low-memory device (like the 640×320 LED panel), this could become a problem.
+**Recommendation:** Subscribe to `machine_status` events in `machineStore`. When a machine transitions to `offline` and no widget is currently subscribed to it, call `telemetryStore.clearHistory(machineId)` after a grace period (e.g., 5 minutes).
 
-**Recommendation:** Subscribe to `machine_status` events in `useMachineStore`. When a machine transitions to `offline` and no widget is currently subscribed to it, call `telemetryStore.clearHistory(machineId)` after a grace period (e.g., 5 minutes). This keeps the store bounded to actively monitored machines.
+---
+
+### 5.4 AI Assistant Backend Routes Not Implemented in Go
+
+**Current state:** The frontend `AIAssistantPage.vue` calls `/api/ai/conversations` and `/api/ai/tools`, but these routes do not exist in the Go backend. The DB tables (`ai_conversations`, `ai_messages`) are created by the schema migration, but no Go module handles them. Calls to these endpoints currently return 404.
+
+**Recommendation:** Implement `internal/modules/ai/` with conversation CRUD and a tool-execution layer that wraps the existing service methods (machines, telemetry, alerts) as structured tools for an LLM API.

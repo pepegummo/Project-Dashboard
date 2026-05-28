@@ -112,6 +112,24 @@ func (r *Repository) Delete(ctx context.Context, id string) error {
 	return err
 }
 
+func (r *Repository) CopyWidgetsFromDefault(ctx context.Context, orgID, newDashboardID string) error {
+	var defaultDashID string
+	err := database.Pool.QueryRow(ctx, `
+		SELECT id FROM dashboards WHERE organization_id = $1 AND is_default = TRUE LIMIT 1
+	`, orgID).Scan(&defaultDashID)
+	if err != nil {
+		return nil // no default dashboard — skip silently
+	}
+	_, err = database.Pool.Exec(ctx, `
+		INSERT INTO dashboard_widgets
+			(id, dashboard_id, machine_id, widget_type, title, layout, config, "order", created_at, updated_at)
+		SELECT gen_random_uuid(), $1, machine_id, widget_type, title, layout, config, "order", NOW(), NOW()
+		FROM dashboard_widgets
+		WHERE dashboard_id = $2
+	`, newDashboardID, defaultDashID)
+	return err
+}
+
 func (r *Repository) GetWidgets(ctx context.Context, dashboardID string) ([]Widget, error) {
 	rows, err := database.Pool.Query(ctx, `
 		SELECT id, dashboard_id, machine_id, widget_type, title, layout, config, created_at
