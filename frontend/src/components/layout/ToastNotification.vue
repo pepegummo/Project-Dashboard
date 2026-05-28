@@ -8,15 +8,15 @@ const { visible, message, type, hide } = useToast();
 <template>
   <Transition
     enter-active-class="transition duration-300 ease-out"
-    enter-from-class="opacity-0 translate-y-[-12px]"
+    enter-from-class="opacity-0 -translate-y-3"
     enter-to-class="opacity-100 translate-y-0"
     leave-active-class="transition duration-200 ease-in"
     leave-from-class="opacity-100 translate-y-0"
-    leave-to-class="opacity-0 translate-y-[-12px]"
+    leave-to-class="opacity-0 -translate-y-3"
   >
     <div
       v-if="visible"
-      class="fixed top-4 right-4 z-[9999] flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-lg text-sm font-medium border"
+      class="fixed top-8 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-2.5 px-5 py-3.5 rounded-xl shadow-2xl text-sm font-medium border"
       :class="type === 'success'
         ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
         : 'bg-red-500/15 border-red-500/30 text-red-300'"
