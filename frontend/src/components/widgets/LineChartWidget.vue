@@ -142,6 +142,17 @@ const option = computed<EChartsOption>(() => {
       ]],
     } : undefined,
 
+  };
+
+  // Reference lines on a separate series so visualMap (seriesIndex:0) cannot override their colours.
+  const refSeries: any = {
+    type: 'line',
+    data: new Array(mergedData.value.length).fill(null),
+    lineStyle: { width: 0 },
+    symbol: 'none',
+    silent: true,
+    tooltip: { show: false },
+    z: 10,
     markLine: {
       silent: true,
       symbol: 'none',
@@ -149,7 +160,7 @@ const option = computed<EChartsOption>(() => {
       data: [
         ...(upperLimit.value !== null ? [{
           yAxis: upperLimit.value,
-          lineStyle: { color: '#f59e0b', type: 'solid' as const, width: 2, opacity: 0.8 },
+          lineStyle: { color: '#f59e0b', type: 'solid' as const, width: 2, opacity: 0.85 },
           label: { formatter: `↑ ${upperLimit.value}`, color: '#f59e0b', fontSize: 10, fontWeight: 'bold' as const, position: 'end' as const },
         }] : []),
         ...(threshold.value !== null ? [{
@@ -159,14 +170,14 @@ const option = computed<EChartsOption>(() => {
         }] : []),
         ...(lowerLimit.value !== null ? [{
           yAxis: lowerLimit.value,
-          lineStyle: { color: '#f59e0b', type: 'solid' as const, width: 2, opacity: 0.8 },
+          lineStyle: { color: '#f59e0b', type: 'solid' as const, width: 2, opacity: 0.85 },
           label: { formatter: `↓ ${lowerLimit.value}`, color: '#f59e0b', fontSize: 10, fontWeight: 'bold' as const, position: 'end' as const },
         }] : []),
       ],
     },
   };
 
-  const seriesList = [avgSeries];
+  const seriesList = [avgSeries, refSeries];
 
   return {
     backgroundColor: 'transparent',
@@ -204,9 +215,17 @@ const option = computed<EChartsOption>(() => {
 
     yAxis: {
       type: 'value',
-      scale: true,                   // don't force axis to start from 0
-      min: visibleYMin.value,        // undefined = ECharts auto; set when zoomed
-      max: visibleYMax.value,
+      scale: true,
+      min: isZoomed.value
+        ? visibleYMin.value
+        : (hasLimits && lowerLimit.value !== null)
+          ? (v: { min: number }) => Math.floor(Math.min(v.min, lowerLimit.value!) * 0.98)
+          : undefined,
+      max: isZoomed.value
+        ? visibleYMax.value
+        : (hasLimits && upperLimit.value !== null)
+          ? (v: { max: number }) => Math.ceil(Math.max(v.max, upperLimit.value!) * 1.02)
+          : undefined,
       axisLabel: {
         color: '#6b7280',
         fontSize: 10,
