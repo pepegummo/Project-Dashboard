@@ -19,6 +19,24 @@ type Dashboard struct {
 	Widgets        []Widget        `json:"widgets,omitempty"`
 }
 
+type WidgetMachineField struct {
+	Key        string   `json:"key"`
+	Label      string   `json:"label"`
+	Unit       *string  `json:"unit"`
+	Threshold  *float64 `json:"threshold"`
+	UpperLimit *float64 `json:"upperLimit"`
+	LowerLimit *float64 `json:"lowerLimit"`
+	Precision  int      `json:"precision"`
+	IsKey      bool     `json:"isKey"`
+}
+
+type WidgetMachine struct {
+	ID     string               `json:"id"`
+	Name   string               `json:"name"`
+	Type   string               `json:"type"`
+	Fields []WidgetMachineField `json:"fields"`
+}
+
 type Widget struct {
 	ID          string          `json:"id"`
 	DashboardID string          `json:"dashboardId"`
@@ -28,6 +46,7 @@ type Widget struct {
 	Layout      json.RawMessage `json:"layout"`
 	Config      json.RawMessage `json:"config"`
 	CreatedAt   time.Time       `json:"createdAt"`
+	Machine     *WidgetMachine  `json:"machine,omitempty"`
 }
 
 type Repository struct{}
@@ -141,14 +160,76 @@ func (r *Repository) GetWidgets(ctx context.Context, dashboardID string) ([]Widg
 	defer rows.Close()
 
 	var widgets []Widget
+	machineIDs := make(map[string]struct{})
 	for rows.Next() {
 		var w Widget
 		if err := rows.Scan(&w.ID, &w.DashboardID, &w.MachineID, &w.WidgetType, &w.Title, &w.Layout, &w.Config, &w.CreatedAt); err != nil {
 			return nil, err
 		}
+		if w.MachineID != nil && *w.MachineID != "" {
+			machineIDs[*w.MachineID] = struct{}{}
+		}
 		widgets = append(widgets, w)
 	}
+
+	// Fetch machine + fields for each unique machineID and attach to widgets.
+	if len(machineIDs) > 0 {
+		machines, _ := r.fetchMachinesWithFields(ctx, machineIDs)
+		for i := range widgets {
+			if widgets[i].MachineID != nil {
+				if m, ok := machines[*widgets[i].MachineID]; ok {
+					widgets[i].Machine = m
+				}
+			}
+		}
+	}
+
 	return widgets, nil
+}
+
+func (r *Repository) fetchMachinesWithFields(ctx context.Context, ids map[string]struct{}) (map[string]*WidgetMachine, error) {
+	idList := make([]string, 0, len(ids))
+	for id := range ids {
+		idList = append(idList, id)
+	}
+
+	mRows, err := database.Pool.Query(ctx, `SELECT id, name, type FROM machines WHERE id = ANY($1::uuid[])`, idList)
+	if err != nil {
+		return nil, err
+	}
+	defer mRows.Close()
+
+	machines := make(map[string]*WidgetMachine)
+	for mRows.Next() {
+		var m WidgetMachine
+		if err := mRows.Scan(&m.ID, &m.Name, &m.Type); err != nil {
+			continue
+		}
+		m.Fields = []WidgetMachineField{}
+		machines[m.ID] = &m
+	}
+
+	fRows, err := database.Pool.Query(ctx, `
+		SELECT machine_id, key, label, unit, threshold, upper_limit, lower_limit, precision, is_key
+		FROM machine_fields WHERE machine_id = ANY($1::uuid[])
+	`, idList)
+	if err != nil {
+		return machines, nil
+	}
+	defer fRows.Close()
+
+	for fRows.Next() {
+		var machineID string
+		var f WidgetMachineField
+		if err := fRows.Scan(&machineID, &f.Key, &f.Label, &f.Unit, &f.Threshold, &f.UpperLimit, &f.LowerLimit, &f.Precision, &f.IsKey); err != nil {
+			continue
+		}
+		if m, ok := machines[machineID]; ok {
+			m.Fields = append(m.Fields, f)
+		}
+	}
+
+	return machines, nil
 }
 
 func (r *Repository) AddWidget(ctx context.Context, dashboardID string, w Widget) (*Widget, error) {
