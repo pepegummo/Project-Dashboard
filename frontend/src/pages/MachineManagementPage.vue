@@ -5,6 +5,7 @@ import { useTelemetryStore } from '@/stores/telemetry.store';
 import { useWebSocket } from '@/composables/useWebSocket';
 import { Plus, Search, Activity, Cpu, Thermometer, Eye, MoveRight } from 'lucide-vue-next';
 import type { Machine, MachineType } from '@/types';
+import AddMachineModal from '@/components/machines/AddMachineModal.vue';
 
 const machineStore = useMachineStore();
 const telemetryStore = useTelemetryStore();
@@ -12,6 +13,7 @@ useWebSocket();
 
 const search = ref('');
 const typeFilter = ref<MachineType | ''>('');
+const showAddModal = ref(false);
 
 onMounted(async () => {
   await Promise.all([
@@ -86,7 +88,7 @@ const stats = computed(() => ({
         <h1 class="page-title">Machines</h1>
         <p class="page-subtitle">Monitor and manage production equipment</p>
       </div>
-      <button class="btn-primary">
+      <button class="btn-primary" @click="showAddModal = true">
         <Plus class="w-4 h-4" />
         Add Machine
       </button>
@@ -198,4 +200,11 @@ const stats = computed(() => ({
       </div>
     </div>
   </div>
+
+  <AddMachineModal
+    v-if="showAddModal"
+    :production-lines="machineStore.productionLines"
+    @close="showAddModal = false"
+    @created="machineStore.fetchMachines()"
+  />
 </template>

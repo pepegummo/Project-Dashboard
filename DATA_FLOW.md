@@ -259,7 +259,7 @@ Click delete button ───────► DELETE /api/dashboards/:id/widgets/
                             │  Check cooldown: last fired?        │
                             │  If within cooldown window → skip   │
                             │  Else:                              │
-                            │    INSERT alert_events (status=open)│
+                            │    INSERT alert_events (status=open)│x
                             └──────────┬──────────────────────────┘
                                        │
                         ┌──────────────▼──────────────────────────┐
