@@ -229,7 +229,7 @@ const option = computed<EChartsOption>(() => {
       data: [
         ...(upperLimit.value !== null ? [{
           yAxis: upperLimit.value,
-          lineStyle: { color: '#f59e0b', type: 'solid' as const, width: 2, opacity: 0.85 },
+          lineStyle: { color: '#f59e0b', type: 'solid' as const, width: 2, opacity: 0.4 },
           label: { formatter: `↑ ${upperLimit.value}`, color: '#f59e0b', fontSize: 10, fontWeight: 'bold' as const, position: 'end' as const },
         }] : []),
         ...(threshold.value !== null ? [{
@@ -239,7 +239,7 @@ const option = computed<EChartsOption>(() => {
         }] : []),
         ...(lowerLimit.value !== null ? [{
           yAxis: lowerLimit.value,
-          lineStyle: { color: '#f59e0b', type: 'solid' as const, width: 2, opacity: 0.85 },
+          lineStyle: { color: '#f59e0b', type: 'solid' as const, width: 2, opacity: 0.4 },
           label: { formatter: `↓ ${lowerLimit.value}`, color: '#f59e0b', fontSize: 10, fontWeight: 'bold' as const, position: 'end' as const },
         }] : []),
       ],

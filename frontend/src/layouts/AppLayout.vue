@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import Sidebar from '@/components/layout/Sidebar.vue'
 import TopBar from '@/components/layout/TopBar.vue'
 import LEDCarousel from '@/components/led/LEDCarousel.vue'
+import ToastNotification from '@/components/layout/ToastNotification.vue'
 import { useScreenMode } from '@/composables/useScreenMode'
 
 const { isLED, isMobile } = useScreenMode()
@@ -66,6 +67,8 @@ watch(() => route.path, () => { if (isMobile.value) closeSidebar() })
       </main>
     </div>
   </div>
+
+  <ToastNotification />
 </template>
 
 <style scoped>

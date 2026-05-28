@@ -5,6 +5,7 @@ import { useDashboardStore } from '@/stores/dashboard.store';
 import { useMachineStore } from '@/stores/machine.store';
 import { useWidgetViewStateStore } from '@/stores/widget-view-state.store';
 import { useLedExport } from '@/composables/useLedExport';
+import { useToast } from '@/composables/useToast';
 import { Save, Plus, ArrowLeft, Loader2, LayoutGrid, Monitor, ExternalLink } from 'lucide-vue-next';
 import GridStackCanvas from '@/components/dashboard/GridStackCanvas.vue';
 import WidgetToolbox from '@/components/dashboard/WidgetToolbox.vue';
@@ -19,6 +20,7 @@ const widgetViewStateStore = useWidgetViewStateStore();
 
 // ── LED Export ─────────────────────────────────────────────────────────────────
 const { exportLedLink, openLedPreview, exportLabel, copied } = useLedExport();
+const toast = useToast();
 
 const showToolbox = ref(false);
 const showConfigModal = ref(false);
@@ -34,10 +36,6 @@ onMounted(async () => {
     machineStore.fetchMachines(),
   ]);
 });
-
-async function saveLayout(layouts: Array<{ id: string; layout: WidgetLayout }>) {
-  await dashboardStore.saveLayout(layouts);
-}
 
 async function onSave() {
   saving.value = true;
@@ -57,6 +55,9 @@ async function onSave() {
         });
       }),
     );
+    toast.show('Dashboard saved');
+  } catch {
+    toast.show('Failed to save', 'error');
   } finally {
     saving.value = false;
   }
@@ -183,7 +184,7 @@ async function onRemoveWidget(widgetId: string) {
         >
           <Loader2 v-if="saving" class="w-4 h-4 animate-spin" />
           <Save v-else class="w-4 h-4" />
-          {{ saving ? 'Saving…' : 'Saved' }}
+          {{ saving ? 'Saving…' : 'Save' }}
         </button>
       </div>
     </div>
@@ -211,7 +212,6 @@ async function onRemoveWidget(widgetId: string) {
           v-else
           ref="gridCanvasRef"
           :widgets="dashboardStore.widgets"
-          @layout-change="saveLayout"
           @edit-widget="onEditWidget"
           @remove-widget="onRemoveWidget"
         />
