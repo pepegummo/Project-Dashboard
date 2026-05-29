@@ -71,6 +71,15 @@ func (ctrl *Controller) GetDailyCount(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "data": result})
 }
 
+func (ctrl *Controller) GetTotalCount(c *fiber.Ctx) error {
+	user := middleware.GetUser(c)
+	result, err := ctrl.svc.GetTotalCount(c.Context(), c.Params("machineId"), user.OrgId)
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"success": true, "data": result})
+}
+
 func (ctrl *Controller) Ingest(c *fiber.Ctx) error {
 	user := middleware.GetUser(c)
 	var body map[string]interface{}

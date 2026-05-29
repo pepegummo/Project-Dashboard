@@ -17,5 +17,6 @@ func RegisterRoutes(router fiber.Router) {
 	router.Get("/:machineId/series", middleware.Authenticate, ctrl.GetSeries)
 	router.Get("/:machineId/aggregate", middleware.Authenticate, ctrl.GetAggregate)
 	router.Get("/:machineId/daily-count", middleware.Authenticate, ctrl.GetDailyCount)
+	router.Get("/:machineId/total-count", middleware.Authenticate, ctrl.GetTotalCount)
 	router.Post("/:machineId/ingest", middleware.Authenticate, ctrl.Ingest)
 }

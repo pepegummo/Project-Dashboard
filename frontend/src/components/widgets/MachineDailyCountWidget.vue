@@ -39,20 +39,27 @@ const selectedDays = ref<DayOption>(
 
 // ── Data fetching ─────────────────────────────────────────────────────────────
 interface DayPoint { date: string; count: number }
-const rows    = ref<DayPoint[]>([]);
-const loading = ref(false);
-const error   = ref<string | null>(null);
+const rows         = ref<DayPoint[]>([]);
+const loading      = ref(false);
+const error        = ref<string | null>(null);
+const allTimeTotal = ref<number | null>(null);
+const allTimeSince = ref<string | null>(null);
 
 async function load() {
   if (!machineId.value) return;
   loading.value = true;
   error.value   = null;
   try {
-    const result = await api.getTelemetryDailyCount(machineId.value, selectedDays.value);
-    rows.value = (result?.data ?? []).map(r => ({
+    const [rangeResult, totalResult] = await Promise.all([
+      api.getTelemetryDailyCount(machineId.value, selectedDays.value),
+      api.getTotalCount(machineId.value),
+    ]);
+    rows.value = (rangeResult?.data ?? []).map(r => ({
       date:  r.date,
       count: r.count,
     }));
+    allTimeTotal.value = totalResult.total;
+    allTimeSince.value = totalResult.since;
   } catch (e) {
     error.value = (e as Error).message;
   } finally {
@@ -63,20 +70,53 @@ async function load() {
 onMounted(load);
 watch(selectedDays, load);
 
+// ── Sample data (Adjusted to match 8.9k total, 1.3k avg, 1.8k peak) ───────────
+const SAMPLE_COUNTS = [1200, 1300, 1400, 1800, 1100, 1200, 900];
+
+const mockRows = computed<DayPoint[]>(() => {
+  const today = new Date('2026-05-29T00:00:00Z'); // Fixed to match the design context
+  return SAMPLE_COUNTS.map((count, i) => {
+    const d = new Date(today);
+    d.setDate(today.getDate() - (SAMPLE_COUNTS.length - 1 - i));
+    return { date: d.toISOString(), count };
+  });
+});
+
+const isMockData  = computed(() => !loading.value && rows.value.length === 0);
+const displayRows = computed(() => isMockData.value ? mockRows.value : rows.value);
+
+// ── Cumulative Calculation ────────────────────────────────────────────────────
+const cumulativeRows = computed(() => {
+  let runningTotal = 0;
+  return displayRows.value.map(r => {
+    runningTotal += r.count;
+    return {
+      date: r.date,
+      dailyCount: r.count,
+      cumulative: runningTotal
+    };
+  });
+});
+
 // ── Derived stats ─────────────────────────────────────────────────────────────
-const totalCount = computed(() => rows.value.reduce((s, r) => s + r.count, 0));
+const totalCount = computed(() => cumulativeRows.value.length ? cumulativeRows.value[cumulativeRows.value.length - 1].cumulative : 0);
 const avgPerDay  = computed(() =>
-  rows.value.length ? Math.round(totalCount.value / rows.value.length) : 0,
+  displayRows.value.length ? Math.round(totalCount.value / displayRows.value.length) : 0,
 );
 const peakDay = computed(() => {
-  if (!rows.value.length) return null;
-  return rows.value.reduce((a, b) => (a.count >= b.count ? a : b));
+  if (!displayRows.value.length) return null;
+  return displayRows.value.reduce((a, b) => (a.count >= b.count ? a : b));
 });
 
 // ── Format helpers ────────────────────────────────────────────────────────────
 function fmtDate(iso: string) {
   const d = new Date(iso);
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function fmtSince(iso: string | null) {
+  if (!iso) return '';
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 function fmtCount(n: number) {
@@ -99,14 +139,15 @@ function barHeight(item: LedWeekDay): number {
   return Math.round((item.count / maxCount.value) * 60)
 }
 
-// ── ECharts option ────────────────────────────────────────────────────────────
+// ── ECharts option (Cumulative Area Chart) ────────────────────────────────────
 const option = computed<EChartsOption>(() => {
-  const labels = rows.value.map(r => fmtDate(r.date));
-  const counts = rows.value.map(r => r.count);
+  const labels = cumulativeRows.value.map(r => fmtDate(r.date));
+  const cumulativeData = cumulativeRows.value.map(r => r.cumulative);
+  const finalValue = cumulativeData[cumulativeData.length - 1] || 0;
 
   return {
     backgroundColor: 'transparent',
-    grid: { left: 48, right: 12, top: 16, bottom: 28, containLabel: false },
+    grid: { left: 60, right: 40, top: 24, bottom: 28, containLabel: false },
 
     xAxis: {
       type: 'category',
@@ -122,6 +163,13 @@ const option = computed<EChartsOption>(() => {
     },
 
     yAxis: {
+      name: 'Cumulative Production (Units)',
+      nameLocation: 'middle',
+      nameGap: 40,
+      nameTextStyle: {
+        color: '#9ca3af',
+        fontSize: 10,
+      },
       type: 'value',
       axisLabel: {
         color: '#6b7280',
@@ -139,20 +187,23 @@ const option = computed<EChartsOption>(() => {
       textStyle: { color: '#e5e7eb', fontSize: 12 },
       formatter: (params: any) => {
         const p = Array.isArray(params) ? params[0] : params;
+        const dataIndex = p.dataIndex;
+        const dailyVal = cumulativeRows.value[dataIndex].dailyCount;
         return `<div style="font-family:monospace;line-height:1.6">
           ${p.name}<br/>
-          Readings: <b>${(p.value as number).toLocaleString()}</b>
+          Cumulative: <b style="color:#60a5fa">${fmtCount(p.value as number)}</b><br/>
+          Daily Output: <b>${dailyVal.toLocaleString()}</b>
         </div>`;
       },
     },
 
     series: [{
       type: 'line',
-      data: counts,
+      data: cumulativeData,
       smooth: true,
       symbol: 'circle',
       symbolSize: 5,
-      showSymbol: false,        // only show dots on hover
+      showSymbol: false, 
       lineStyle: {
         color: '#3b82f6',
         width: 2,
@@ -171,11 +222,29 @@ const option = computed<EChartsOption>(() => {
           type: 'linear',
           x: 0, y: 0, x2: 0, y2: 1,
           colorStops: [
-            { offset: 0,   color: 'rgba(59,130,246,0.35)' },
-            { offset: 0.6, color: 'rgba(59,130,246,0.08)' },
-            { offset: 1,   color: 'rgba(59,130,246,0.00)' },
+            { offset: 0,   color: 'rgba(59,130,246,0.6)' },
+            { offset: 1,   color: 'rgba(59,130,246,0.05)' },
           ],
         },
+      },
+      markPoint: {
+        data: [
+          {
+            name: 'Total',
+            coord: [labels.length - 1, finalValue],
+            value: `Total\n${fmtCount(finalValue)}`,
+            symbol: 'circle',
+            symbolSize: 1,
+            label: {
+              show: true,
+              position: 'right',
+              color: '#60a5fa',
+              fontSize: 10,
+              lineHeight: 12,
+              distance: 5
+            }
+          }
+        ]
       },
       markLine: {
         silent: true,
@@ -183,10 +252,10 @@ const option = computed<EChartsOption>(() => {
         animation: false,
         data: avgPerDay.value > 0 ? [{
           yAxis: avgPerDay.value,
-          lineStyle: { color: '#6366f1', type: 'dashed', width: 1 },
+          lineStyle: { color: '#6b7280', type: 'dashed', width: 1 },
           label: {
-            formatter: `avg ${fmtCount(avgPerDay.value)}`,
-            color: '#6366f1',
+            formatter: `avg`,
+            color: '#9ca3af',
             fontSize: 9,
             position: 'end',
           },
@@ -198,11 +267,7 @@ const option = computed<EChartsOption>(() => {
 </script>
 
 <template>
-  <!-- ═══════════════════════════════════════════════════════════════════════ -->
-  <!--  LED MODE                                                              -->
-  <!-- ═══════════════════════════════════════════════════════════════════════ -->
   <div v-if="ledMode" class="led-daily-count">
-    <!-- Left: big number readout -->
     <div class="led-left">
       <div class="led-label">{{ data?.machineName }} DAILY OUTPUT</div>
       <div class="led-value">{{ formattedCount }}</div>
@@ -210,7 +275,6 @@ const option = computed<EChartsOption>(() => {
       <div class="led-sub">AVG/DAY · {{ formattedAvg }} PCS</div>
     </div>
 
-    <!-- Right: 7-day bar chart -->
     <div class="led-right">
       <div class="led-bars">
         <div
@@ -234,38 +298,30 @@ const option = computed<EChartsOption>(() => {
     </div>
   </div>
 
-  <!-- ═══════════════════════════════════════════════════════════════════════ -->
-  <!--  NORMAL MODE  (unchanged)                                              -->
-  <!-- ═══════════════════════════════════════════════════════════════════════ -->
   <div v-else class="flex flex-col h-full">
-    <!-- Unconfigured state -->
-    <div
-      v-if="!machineId"
-      class="flex items-center justify-center h-full text-xs text-gray-600"
-    >
+    <!-- Unconfigured -->
+    <div v-if="!machineId" class="flex items-center justify-center h-full text-xs text-gray-600">
       Configure machine
     </div>
 
     <template v-else>
-      <!-- Day-range toggle + summary row -->
+      <!-- Stats row + day selector -->
       <div class="flex items-center justify-between px-1 pt-0.5 pb-1 flex-shrink-0">
-        <!-- Stats -->
         <div class="flex gap-3 text-[10px] text-gray-500">
           <span>
-            <span class="text-gray-400 font-mono">{{ fmtCount(totalCount) }}</span>
-            <span class="ml-1">total</span>
+            <span class="text-blue-400 font-mono">{{ fmtCount(totalCount) }}</span>
+            <span class="ml-1">{{ selectedDays }}d</span>
           </span>
           <span>
             <span class="text-indigo-400 font-mono">{{ fmtCount(avgPerDay) }}</span>
             <span class="ml-1">avg/day</span>
           </span>
           <span v-if="peakDay">
-            <span class="text-blue-400 font-mono">{{ fmtCount(peakDay.count) }}</span>
+            <span class="text-violet-400 font-mono">{{ fmtCount(peakDay.count) }}</span>
             <span class="ml-1">peak</span>
           </span>
         </div>
 
-        <!-- Day selector -->
         <div class="flex gap-0.5">
           <button
             v-for="d in DAY_OPTIONS"
@@ -291,17 +347,18 @@ const option = computed<EChartsOption>(() => {
         {{ error }}
       </div>
 
-      <!-- Empty -->
-      <div
-        v-else-if="!rows.length"
-        class="flex-1 flex items-center justify-center text-xs text-gray-600"
-      >
-        No data for the last {{ selectedDays }} days
-      </div>
-
       <!-- Chart -->
-      <div v-else class="flex-1 min-h-0">
+      <div v-else class="relative flex-1 min-h-0">
         <VChart :option="option" autoresize class="w-full h-full" />
+
+        <div
+          v-if="isMockData"
+          class="absolute inset-0 flex items-center justify-center pointer-events-none"
+        >
+          <span class="text-[10px] font-medium tracking-widest uppercase text-gray-600 opacity-40">
+            SAMPLE DATA
+          </span>
+        </div>
       </div>
     </template>
   </div>
@@ -310,6 +367,7 @@ const option = computed<EChartsOption>(() => {
 <style scoped>
 @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@700&display=swap');
 
+/* ... (LED CSS remains identical to original) ... */
 .led-daily-count {
   display: flex;
   flex-direction: row;

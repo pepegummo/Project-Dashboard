@@ -135,6 +135,11 @@ class ApiService {
     return data.data;
   }
 
+  async getTotalCount(machineId: string) {
+    const { data } = await this.client.get<ApiResponse<{ total: number; since: string | null }>>(`/telemetry/${machineId}/total-count`);
+    return data.data;
+  }
+
   async getTelemetryDailyCount(machineId: string, days: number) {
     const { data } = await this.client.get<ApiResponse<{
       machineId: string;

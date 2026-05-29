@@ -35,6 +35,11 @@ type DailyCount struct {
 	Count int       `json:"count"`
 }
 
+type TotalCount struct {
+	Total int        `json:"total"`
+	Since *time.Time `json:"since"`
+}
+
 type Repository struct{}
 
 func (r *Repository) Ingest(ctx context.Context, machineID string, data map[string]interface{}, timestamp time.Time) error {
@@ -198,6 +203,20 @@ func (r *Repository) GetDailyCount(ctx context.Context, machineID string, days i
 		result = append(result, d)
 	}
 	return result, nil
+}
+
+func (r *Repository) GetTotalCount(ctx context.Context, machineID string) (*TotalCount, error) {
+	row := database.Pool.QueryRow(ctx, `
+		SELECT COUNT(*) AS total, MIN(timestamp) AS since
+		FROM telemetry_raw
+		WHERE machine_id = $1
+	`, machineID)
+	var total int64
+	var since *time.Time
+	if err := row.Scan(&total, &since); err != nil {
+		return nil, err
+	}
+	return &TotalCount{Total: int(total), Since: since}, nil
 }
 
 func (r *Repository) GetLatestForMachines(ctx context.Context, machineIDs []string) (map[string]*LatestSnapshot, error) {

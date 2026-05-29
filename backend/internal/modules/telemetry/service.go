@@ -166,6 +166,13 @@ func (s *Service) GetDailyCount(ctx context.Context, machineID string, days int,
 	return map[string]interface{}{"machineId": machineID, "days": days, "data": data}, nil
 }
 
+func (s *Service) GetTotalCount(ctx context.Context, machineID, orgID string) (*TotalCount, error) {
+	if err := s.requireMachineInOrg(ctx, machineID, orgID); err != nil {
+		return nil, err
+	}
+	return s.repo.GetTotalCount(ctx, machineID)
+}
+
 func (s *Service) GetMultiMachineLatest(ctx context.Context, machineIDs []string, orgID *string) (map[string]*LatestSnapshot, error) {
 	if orgID != nil {
 		all, err := s.machineRepo.FindAll(ctx, *orgID, nil)
