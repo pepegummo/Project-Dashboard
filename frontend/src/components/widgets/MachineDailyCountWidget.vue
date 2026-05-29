@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import VChart from 'vue-echarts';
 import type { EChartsOption } from 'echarts';
 import type { DashboardWidget } from '@/types';
 import { api } from '@/services/api.service';
+import { wsService } from '@/services/ws.service';
 
 // ── LED mode data shape ───────────────────────────────────────────────────────
 export interface LedWeekDay {
@@ -69,6 +70,60 @@ async function load() {
 
 onMounted(load);
 watch(selectedDays, load);
+
+// ── Live mode — 30-minute rolling window ─────────────────────────────────────
+const liveMode    = ref(false);
+const liveLoading = ref(false);
+const livePoints  = ref<Array<{ ts: string; count: number }>>([]);
+const LIVE_WINDOW_MS = 30 * 60 * 1000;
+
+let offTelemetry: (() => void) | null = null;
+let liveTimer: ReturnType<typeof setInterval> | null = null;
+
+async function loadLiveSeed() {
+  const seedField = props.widget.machine?.fields?.[0]?.key;
+  if (!machineId.value || !seedField) return;
+  liveLoading.value = true;
+  try {
+    const series = await api.getTelemetrySeries(machineId.value, seedField, { timeRange: '30m' });
+    livePoints.value = (series?.data ?? []).map((p: any) => ({
+      ts:    p.bucket ?? p.ts,
+      count: (p.avg ?? p.value) != null ? 1 : 0,
+    }));
+  } catch { /* ok */ }
+  finally { liveLoading.value = false; }
+}
+
+function enterLive() {
+  if (!machineId.value) return;
+  livePoints.value = [];
+  loadLiveSeed();
+  wsService.subscribe([machineId.value]);
+  offTelemetry = wsService.onTelemetry(machineId.value, (payload) => {
+    const d = new Date(payload.timestamp);
+    d.setSeconds(0, 0);
+    const bucket = d.toISOString();
+    const cutoff = Date.now() - LIVE_WINDOW_MS;
+    const existing = livePoints.value.find(p => p.ts === bucket);
+    if (existing) {
+      existing.count++;
+    } else {
+      livePoints.value.push({ ts: bucket, count: 1 });
+    }
+    livePoints.value = livePoints.value.filter(p => new Date(p.ts).getTime() > cutoff);
+  });
+  liveTimer = setInterval(loadLiveSeed, 5 * 60_000);
+}
+
+function exitLive() {
+  offTelemetry?.(); offTelemetry = null;
+  if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
+  if (machineId.value) wsService.unsubscribe([machineId.value]);
+  livePoints.value = [];
+}
+
+watch(liveMode, isLive => { if (isLive) enterLive(); else exitLive(); });
+onUnmounted(exitLive);
 
 // ── Sample data (Adjusted to match 8.9k total, 1.3k avg, 1.8k peak) ───────────
 const SAMPLE_COUNTS = [1200, 1300, 1400, 1800, 1100, 1200, 900];
@@ -264,6 +319,65 @@ const option = computed<EChartsOption>(() => {
     }],
   };
 });
+
+// ── Live chart option (30-min rolling bar chart) ──────────────────────────────
+const liveOption = computed<EChartsOption>(() => {
+  const labels = livePoints.value.map(p => {
+    const d = new Date(p.ts);
+    return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+  });
+  const counts = livePoints.value.map(p => p.count);
+
+  return {
+    backgroundColor: 'transparent',
+    grid: { left: 36, right: 16, top: 16, bottom: 28, containLabel: false },
+
+    xAxis: {
+      type: 'category',
+      data: labels,
+      axisLabel: { color: '#6b7280', fontSize: 9, interval: 'auto' },
+      axisLine: { lineStyle: { color: '#374151' } },
+      splitLine: { show: false },
+    },
+
+    yAxis: {
+      type: 'value',
+      minInterval: 1,
+      axisLabel: { color: '#6b7280', fontSize: 9 },
+      splitLine: { lineStyle: { color: '#1f2937', type: 'dashed' } },
+      min: 0,
+    },
+
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: '#1e2130',
+      borderColor: '#374151',
+      textStyle: { color: '#e5e7eb', fontSize: 12 },
+      formatter: (params: any) => {
+        const p = Array.isArray(params) ? params[0] : params;
+        return `<div style="font-family:monospace;line-height:1.6">
+          ${p.name}<br/>Events: <b style="color:#34d399">${p.value}</b>
+        </div>`;
+      },
+    },
+
+    series: [{
+      type: 'bar',
+      data: counts,
+      itemStyle: {
+        color: {
+          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [
+            { offset: 0, color: 'rgba(52,211,153,0.9)' },
+            { offset: 1, color: 'rgba(52,211,153,0.3)' },
+          ],
+        },
+        borderRadius: [2, 2, 0, 0],
+      },
+      emphasis: { itemStyle: { color: '#6ee7b7' } },
+    }],
+  };
+});
 </script>
 
 <template>
@@ -307,22 +421,36 @@ const option = computed<EChartsOption>(() => {
     <template v-else>
       <!-- Stats row + day selector -->
       <div class="flex items-center justify-between px-1 pt-0.5 pb-1 flex-shrink-0">
-        <div class="flex gap-3 text-[10px] text-gray-500">
-          <span>
-            <span class="text-blue-400 font-mono">{{ fmtCount(totalCount) }}</span>
-            <span class="ml-1">{{ selectedDays }}d</span>
-          </span>
-          <span>
-            <span class="text-indigo-400 font-mono">{{ fmtCount(avgPerDay) }}</span>
-            <span class="ml-1">avg/day</span>
-          </span>
-          <span v-if="peakDay">
-            <span class="text-violet-400 font-mono">{{ fmtCount(peakDay.count) }}</span>
-            <span class="ml-1">peak</span>
-          </span>
+        <div class="flex gap-3 text-[10px] text-gray-500 items-center">
+          <!-- Live mode stats -->
+          <template v-if="liveMode">
+            <span class="flex items-center gap-1 px-1.5 py-0.5 rounded-full font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse inline-block" />
+              LIVE · 30 min
+            </span>
+            <span>
+              <span class="text-emerald-400 font-mono">{{ livePoints.reduce((s, p) => s + p.count, 0) }}</span>
+              <span class="ml-1">events</span>
+            </span>
+          </template>
+          <!-- Historical stats -->
+          <template v-else>
+            <span>
+              <span class="text-blue-400 font-mono">{{ fmtCount(totalCount) }}</span>
+              <span class="ml-1">{{ selectedDays }}d</span>
+            </span>
+            <span>
+              <span class="text-indigo-400 font-mono">{{ fmtCount(avgPerDay) }}</span>
+              <span class="ml-1">avg/day</span>
+            </span>
+            <span v-if="peakDay">
+              <span class="text-violet-400 font-mono">{{ fmtCount(peakDay.count) }}</span>
+              <span class="ml-1">peak</span>
+            </span>
+          </template>
         </div>
 
-        <div class="flex gap-0.5">
+        <div class="flex gap-0.5 items-center">
           <button
             v-for="d in DAY_OPTIONS"
             :key="d"
@@ -334,25 +462,34 @@ const option = computed<EChartsOption>(() => {
           >
             {{ d }}d
           </button>
+          <button
+            class="ml-1 px-1.5 py-0.5 rounded font-medium border transition-colors text-[9px]"
+            :class="liveMode
+              ? 'bg-emerald-600/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-600/30'
+              : 'bg-surface-300 text-gray-400 border-gray-700 hover:text-emerald-400 hover:border-emerald-500/30'"
+            @click="liveMode = !liveMode"
+          >
+            {{ liveMode ? 'Exit Live' : '⊙ Live' }}
+          </button>
         </div>
       </div>
 
       <!-- Loading -->
-      <div v-if="loading" class="flex-1 flex items-center justify-center">
+      <div v-if="liveMode ? liveLoading : loading" class="flex-1 flex items-center justify-center">
         <div class="spinner" />
       </div>
 
-      <!-- Error -->
-      <div v-else-if="error" class="flex-1 flex items-center justify-center text-xs text-red-400 px-3 text-center">
+      <!-- Error (historical only) -->
+      <div v-else-if="!liveMode && error" class="flex-1 flex items-center justify-center text-xs text-red-400 px-3 text-center">
         {{ error }}
       </div>
 
       <!-- Chart -->
       <div v-else class="relative flex-1 min-h-0">
-        <VChart :option="option" autoresize class="w-full h-full" />
+        <VChart :option="liveMode ? liveOption : option" autoresize class="w-full h-full" />
 
         <div
-          v-if="isMockData"
+          v-if="!liveMode && isMockData"
           class="absolute inset-0 flex items-center justify-center pointer-events-none"
         >
           <span class="text-[10px] font-medium tracking-widest uppercase text-gray-600 opacity-40">
