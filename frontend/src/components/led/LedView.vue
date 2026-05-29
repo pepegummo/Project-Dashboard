@@ -71,6 +71,10 @@ export interface LedWidget {
   // ── Daily-count widget specific ───────────────────────────────────────────
   /** Number of days to fetch for daily-count bar chart (default 7) */
   days?: number
+
+  // ── Grid layout ───────────────────────────────────────────────────────────
+  /** Number of grid columns this cell spans (default 1). Use 2 for wide widgets. */
+  colSpan?: number
 }
 
 // ─── Default mock widgets (used when no prop is passed) ────────────────────────
@@ -483,7 +487,22 @@ function colsForCount(n: number): number {
 }
 
 const columns = computed(() => colsForCount(count.value))
-const rows    = computed(() => (count.value === 0 ? 1 : Math.ceil(count.value / columns.value)))
+
+// Effective column span for a widget. `daily-count` is wide by design — its
+// 8-hour bar chart needs two cells to breathe — so it defaults to span 2 even
+// when an older exported URL omits colSpan. Spans are clamped to the column
+// count so a wide widget never overflows the grid.
+function effectiveSpan(w: LedWidget): number {
+  const span = w.type === 'daily-count' ? (w.colSpan ?? 2) : (w.colSpan ?? 1)
+  return Math.min(Math.max(span, 1), columns.value)
+}
+
+// Total grid cells occupied once colSpans are taken into account.
+const totalUnits = computed(() =>
+  displayWidgets.value.reduce((sum, w) => sum + effectiveSpan(w), 0),
+)
+
+const rows = computed(() => (count.value === 0 ? 1 : Math.ceil(totalUnits.value / columns.value)))
 
 /** CSS Grid container style — gap creates the 1-px divider via wrapper bg */
 const gridStyle = computed(() => ({
@@ -499,7 +518,7 @@ const gridStyle = computed(() => ({
 const emptySlotCount = computed(() => {
   if (count.value === 0) return 0
   const total = columns.value * rows.value
-  return Math.max(0, total - count.value)
+  return Math.max(0, total - totalUnits.value)
 })
 
 // ─── Per-cell typography — shrinks as more widgets appear ─────────────────────
@@ -701,7 +720,10 @@ function trendClass(t?: string): string {
         v-for="widget in displayWidgets"
         :key="widget.id"
         class="bg-black relative flex flex-col items-center justify-center overflow-hidden"
-        :style="{ padding: widget.type === 'daily-count' ? '0' : cellPad }"
+        :style="{
+          padding:    widget.type === 'daily-count' ? '0' : cellPad,
+          gridColumn: effectiveSpan(widget) > 1 ? `span ${effectiveSpan(widget)}` : undefined,
+        }"
       >
         <!-- Per-cell pixel-level scanlines (very faint) -->
         <div

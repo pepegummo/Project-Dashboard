@@ -82,6 +82,7 @@ function mapToLedWidgets(widgets: DashboardWidget[]): LedWidget[] {
           title:     w.title ?? 'Daily Output',
           machineId: w.machineId,
           days:      (w.config?.days as number | undefined) ?? 7,
+          colSpan:   2,
         }
 
       // kpi-card, table → rendered as a metric readout

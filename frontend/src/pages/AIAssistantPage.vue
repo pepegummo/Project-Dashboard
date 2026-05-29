@@ -1,11 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, nextTick, computed } from 'vue';
 import { api } from '@/services/api.service';
-import { useAuthStore } from '@/stores/auth.store';
 import { Bot, Send, Plus, Loader2, Wrench, ChevronDown, ChevronRight } from 'lucide-vue-next';
 import type { AiConversation, AiMessage, AiTool } from '@/types';
-
-const auth = useAuthStore();
+import ChatBox from '@/components/ai/ChatBox.vue';
 
 const conversations = ref<AiConversation[]>([]);
 const activeConversation = ref<AiConversation | null>(null);
@@ -224,34 +222,7 @@ function handleKeydown(e: KeyboardEvent) {
 
         <!-- Message list -->
         <template v-else>
-          <div
-            v-for="msg in messages"
-            :key="msg.id"
-            class="flex gap-3"
-            :class="msg.role === 'user' ? 'flex-row-reverse' : ''"
-          >
-            <!-- Avatar -->
-            <div
-              class="w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold"
-              :class="msg.role === 'user' ? 'bg-primary-500/30 text-primary-400' : msg.role === 'tool' ? 'bg-accent-teal/20 text-accent-teal' : 'bg-accent-violet/20 text-accent-violet'"
-            >
-              {{ msg.role === 'user' ? auth.user?.name?.[0] : msg.role === 'tool' ? '⚡' : 'AI' }}
-            </div>
-
-            <!-- Content -->
-            <div
-              class="max-w-[75%] rounded-xl px-4 py-2.5 text-sm"
-              :class="msg.role === 'user' ? 'bg-primary-500/20 text-gray-100 border border-primary-500/20' : 'bg-surface-200 text-gray-300 border border-white/5'"
-            >
-              <p class="whitespace-pre-wrap leading-relaxed">{{ msg.content }}</p>
-              <div v-if="msg.toolName" class="mt-2 pt-2 border-t border-white/10">
-                <p class="text-[10px] text-gray-600 flex items-center gap-1">
-                  <Wrench class="w-3 h-3" />
-                  Tool: <code class="text-cyan-500">{{ msg.toolName }}</code>
-                </p>
-              </div>
-            </div>
-          </div>
+          <ChatBox v-for="msg in messages" :key="msg.id" :message="msg" />
 
           <!-- Typing indicator -->
           <div v-if="loading" class="flex gap-3">

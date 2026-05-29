@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { defineAsyncComponent, computed } from 'vue';
+import { computed } from 'vue';
 import { GripVertical, Settings, X, TrendingUp, Gauge, CreditCard, Activity, Table2, Bell, BarChart2 } from 'lucide-vue-next';
 import type { DashboardWidget } from '@/types';
+import { useWidgetComponents } from '@/composables/useWidgetComponents';
 
 const props = defineProps<{
   widget: DashboardWidget;
@@ -9,18 +10,9 @@ const props = defineProps<{
   onRemove?: () => void;
 }>();
 
-// Dynamic component loading by widget type
-const widgetComponents = {
-  'line-chart':   defineAsyncComponent(() => import('./LineChartWidget.vue')),
-  'gauge':        defineAsyncComponent(() => import('./GaugeWidget.vue')),
-  'kpi-card':     defineAsyncComponent(() => import('./KpiCardWidget.vue')),
-  'status-card':  defineAsyncComponent(() => import('./StatusCardWidget.vue')),
-  'table':        defineAsyncComponent(() => import('./TableWidget.vue')),
-  'alarm-panel':  defineAsyncComponent(() => import('./AlarmPanelWidget.vue')),
-  'daily-count':  defineAsyncComponent(() => import('./MachineDailyCountWidget.vue')),
-};
-
-const WidgetComponent = computed(() => widgetComponents[props.widget.widgetType] ?? null);
+// Dynamic component loading by widget type (shared map — see useWidgetComponents)
+const { resolveWidget } = useWidgetComponents();
+const WidgetComponent = computed(() => resolveWidget(props.widget.widgetType));
 
 const widgetTitle = computed(() => {
   if (props.widget.title) return props.widget.title;

@@ -7,6 +7,7 @@ import (
 	"iot-dashboard/internal/database"
 	"iot-dashboard/internal/middleware"
 	"iot-dashboard/internal/migrate"
+	"iot-dashboard/internal/modules/ai"
 	"iot-dashboard/internal/modules/alerts"
 	"iot-dashboard/internal/modules/auth"
 	"iot-dashboard/internal/modules/dashboards"
@@ -117,6 +118,7 @@ func main() {
 	telemetry.RegisterRoutes(api.Group("/telemetry"))
 	dashboards.RegisterRoutes(api.Group("/dashboards"))
 	alerts.RegisterRoutes(api.Group("/alerts"))
+	ai.RegisterRoutes(api.Group("/ai"))
 
 	// 404 fallback
 	app.Use(func(c *fiber.Ctx) error {

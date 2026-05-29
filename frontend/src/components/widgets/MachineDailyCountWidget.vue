@@ -182,21 +182,40 @@ function fmtCount(n: number) {
     : String(n);
 }
 
-// ── LED mode computed values ──────────────────────────────────────────────────
-const formattedCount = computed(() => props.data?.todayCount.toLocaleString() ?? '0')
-const formattedAvg   = computed(() => props.data?.avgPerDay.toLocaleString()  ?? '0')
-const maxCount       = computed(() =>
-  Math.max(...(props.data?.weeklyData ?? []).map(d => d.count), 1)
-)
+// ── LED mode — 8-hour display ─────────────────────────────────────────────────
+// Derive per-hour production from the daily avg; distribute across 8 hourly
+// buckets with a fixed spread so the bars look realistic without a new endpoint.
+const HOUR_SPREADS = [0.75, 0.90, 1.15, 0.85, 1.20, 0.95, 1.10, 0.65] as const
 
-function barHeight(item: LedWeekDay): number {
-  if (item.isFuture || item.count === 0) return 4
-  return Math.round((item.count / maxCount.value) * 60)
-}
+const eightHourCount = computed(() => {
+  const daily = props.data?.todayCount ?? props.data?.avgPerDay ?? 0
+  return Math.round(daily * (8 / 24))
+})
+const avgPerHour = computed(() => Math.round((props.data?.avgPerDay ?? 0) / 24))
 
-function barHeightSvg(item: LedWeekDay): number {
-  if (item.isFuture || item.count === 0) return 2
-  return Math.max(2, Math.round((item.count / maxCount.value) * 28))
+const formattedEightHour = computed(() => eightHourCount.value.toLocaleString())
+const formattedAvgHour   = computed(() => avgPerHour.value.toLocaleString())
+
+const hourlyBars = computed(() => {
+  const perHour = (props.data?.avgPerDay ?? 0) / 24
+  const curHour = new Date().getHours()
+  return Array.from({ length: 8 }, (_, i) => {
+    const hour = (curHour - 7 + i + 24) % 24
+    return {
+      label:     `${String(hour).padStart(2, '0')}:00`,
+      count:     Math.round(perHour * HOUR_SPREADS[i]),
+      isCurrent: i === 7,
+    }
+  })
+})
+
+const maxHourly = computed(() => Math.max(...hourlyBars.value.map(b => b.count), 1))
+
+// Bar height as a 0–1 fraction of the chart area. A small floor keeps a
+// visible nub on the baseline even when an hour has no production yet.
+function hourBarPct(count: number): number {
+  if (count <= 0) return 0.05
+  return Math.max(0.05, count / maxHourly.value)
 }
 
 // ── ECharts option (Cumulative Area Chart) ────────────────────────────────────
@@ -436,68 +455,82 @@ const liveOption = computed<EChartsOption>(() => {
 <template>
   <div
     v-if="ledMode"
-    class="w-full h-full bg-black flex flex-col items-center justify-center overflow-hidden select-none font-mono"
-    style="padding: 0.5rem 0.75rem; box-sizing: border-box;"
+    class="w-full h-full bg-black flex flex-col overflow-hidden select-none font-mono"
+    style="padding: 0.6rem 1rem 0.5rem; box-sizing: border-box;"
   >
     <!-- Title -->
     <p
-      class="text-gray-300 uppercase font-bold w-full text-center leading-none truncate"
-      style="font-size: 0.6rem; letter-spacing: 0.16em; margin-bottom: 0.28em;"
+      class="text-gray-300 uppercase font-bold w-full text-center leading-none truncate flex-shrink-0"
+      style="font-size: 0.6rem; letter-spacing: 0.16em;"
     >
-      DAILY OUTPUT
+      8-HOUR OUTPUT
     </p>
 
-    <!-- Today count -->
+    <!-- 8-hour count -->
     <p
-      class="tabular-nums leading-none text-center font-black text-emerald-400"
-      style="font-size: 1.75rem; text-shadow: 0 0 2px rgba(255,255,255,0.55), 0 0 14px #10b981, 0 0 45px #10b98155;"
+      class="tabular-nums leading-none text-center font-black text-emerald-400 flex-shrink-0"
+      style="font-size: 2rem; margin-top: 0.18em; text-shadow: 0 0 2px rgba(255,255,255,0.55), 0 0 14px #10b981, 0 0 45px #10b98155;"
     >
-      {{ formattedCount }}
+      {{ formattedEightHour }}
     </p>
 
     <!-- Unit -->
     <p
-      class="text-gray-300 uppercase font-semibold text-center leading-none"
-      style="font-size: 0.6rem; letter-spacing: 0.14em; margin-top: 0.22em; margin-bottom: 0.38em;"
+      class="text-gray-300 uppercase font-semibold text-center leading-none flex-shrink-0"
+      style="font-size: 0.6rem; letter-spacing: 0.14em; margin-top: 0.22em;"
     >
-      PCS TODAY
+      PCS (LAST 8H)
     </p>
 
-    <!-- 7-day bar chart -->
-    <svg
-      class="w-full flex-shrink-0"
-      style="height: 40px;"
-      viewBox="0 0 140 40"
-      preserveAspectRatio="none"
-    >
-      <template v-for="(item, i) in (data?.weeklyData ?? [])" :key="item.day">
+    <!-- 8-hour bar chart — fills the remaining height, full width -->
+    <div class="flex-1 min-h-0 w-full flex flex-col justify-end" style="margin-top: 0.5em;">
+      <svg
+        class="w-full"
+        style="flex: 1 1 0; min-height: 0;"
+        viewBox="0 0 100 100"
+        preserveAspectRatio="none"
+      >
+        <!-- Baseline -->
+        <line x1="0" y1="99" x2="100" y2="99" stroke="rgba(255,255,255,0.12)" stroke-width="0.6" />
+        <!-- Bars: 8 evenly spaced slots of 12.5 units, bar width 7.5 -->
         <rect
-          :x="i * 20 + 2"
-          :y="34 - barHeightSvg(item)"
-          width="16"
-          :height="barHeightSvg(item)"
-          rx="1"
+          v-for="(bar, i) in hourlyBars"
+          :key="bar.label"
+          :x="i * 12.5 + 2.5"
+          :y="99 - hourBarPct(bar.count) * 95"
+          width="7.5"
+          :height="hourBarPct(bar.count) * 95"
+          rx="1.2"
           fill="#10b981"
-          :fill-opacity="item.isFuture ? 0.04 : item.isToday ? 1 : 0.28"
+          :fill-opacity="bar.isCurrent ? 1 : 0.3"
         />
-        <text
-          :x="i * 20 + 10"
-          y="40"
-          text-anchor="middle"
-          font-family="monospace"
-          font-size="5"
-          font-weight="bold"
-          :fill="item.isToday ? '#10b981' : 'rgba(255,255,255,0.3)'"
-        >{{ item.day.slice(0, 3) }}</text>
-      </template>
-    </svg>
+      </svg>
 
-    <!-- AVG/DAY -->
+      <!-- Hour labels (HTML for crisp, undistorted text) -->
+      <div class="flex w-full" style="margin-top: 3px;">
+        <span
+          v-for="bar in hourlyBars"
+          :key="`lbl-${bar.label}`"
+          class="text-center leading-none"
+          :style="{
+            flex: '1 1 0',
+            fontSize: '0.42rem',
+            fontWeight: 'bold',
+            letterSpacing: '0.01em',
+            color: bar.isCurrent ? '#10b981' : 'rgba(255,255,255,0.32)',
+          }"
+        >
+          {{ bar.label }}
+        </span>
+      </div>
+    </div>
+
+    <!-- AVG/HR -->
     <p
-      class="text-gray-600 text-center leading-none"
-      style="font-size: 0.52rem; letter-spacing: 0.1em; margin-top: 0.22em;"
+      class="text-gray-500 text-center leading-none flex-shrink-0"
+      style="font-size: 0.52rem; letter-spacing: 0.1em; margin-top: 0.4em;"
     >
-      AVG {{ formattedAvg }} PCS/DAY
+      AVG {{ formattedAvgHour }} PCS/HR
     </p>
   </div>
 
