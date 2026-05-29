@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue';
+import { computed, onMounted, onUnmounted, ref, nextTick } from 'vue';
 import VChart from 'vue-echarts';
 import type { EChartsOption } from 'echarts';
 import type { DashboardWidget } from '@/types';
@@ -10,6 +10,7 @@ import { api } from '@/services/api.service';
 
 const props = defineProps<{ widget: DashboardWidget }>();
 
+const chartRef  = ref<InstanceType<typeof VChart>>();
 const store     = useTelemetryStore();
 const machineId = computed(() => props.widget.machineId ?? '');
 const field     = computed(() => (props.widget.config?.field as string) ?? '');
@@ -38,6 +39,11 @@ onMounted(() => {
     wsService.subscribe([machineId.value]);
     fetchLatest(); // seed store immediately from DB; WS handles all subsequent updates
   }
+  // Defer resize to the next paint so ECharts recalculates center/radius from the
+  // container's settled layout dimensions — fixes misalignment inside CSS-scaled wrappers.
+  nextTick(() => {
+    chartRef.value?.chart?.resize();
+  });
 });
 
 onUnmounted(() => {
@@ -127,7 +133,7 @@ const option = computed<EChartsOption>(() => {
       Configure machine &amp; field
     </div>
     <template v-else>
-      <VChart :option="option" autoresize />
+      <VChart ref="chartRef" :option="option" autoresize />
 
       <!-- Threshold / limit labels -->
       <div v-if="threshold !== null || upperLimit !== null" class="absolute bottom-8 left-0 right-0 flex justify-center gap-3 text-[9px]">

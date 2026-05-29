@@ -373,8 +373,7 @@ function buildGaugePath(pct: number): string {
   const angle = -Math.PI + pct * Math.PI
   const x = (100 + 80 * Math.cos(angle)).toFixed(2)
   const y = (105 + 80 * Math.sin(angle)).toFixed(2)
-  const large = pct > 0.5 ? 1 : 0
-  return `M 20,105 A 80,80 0 ${large},1 ${x},${y}`
+  return `M 20,105 A 80,80 0 0,1 ${x},${y}`
 }
 
 /** Emerald → amber → red based on how full the gauge is */
@@ -1069,6 +1068,40 @@ function trendClass(t?: string): string {
               fill="rgba(255,255,255,0.4)"
             >{{ widget.gaugeMax ?? 100 }}</text>
           </svg>
+        </template>
+
+        <!-- ════════════════════════════════════════════════════════════════ -->
+        <!--  DAILY-COUNT  ─  MachineDailyCountWidget in LED mode            -->
+        <!-- ════════════════════════════════════════════════════════════════ -->
+        <template v-else-if="widget.type === 'daily-count'">
+          <MachineDailyCountWidget
+            v-if="buildLedDailyData(widget)"
+            :widget="{
+              id: String(widget.id),
+              dashboardId: '',
+              widgetType: 'daily-count',
+              layout: { x: 0, y: 0, w: 1, h: 1 },
+              config: { days: widget.days ?? 7 },
+              machineId: widget.machineId,
+              order: 0,
+            }"
+            :led-mode="true"
+            :data="buildLedDailyData(widget)"
+            class="w-full h-full"
+          />
+          <!-- Shown while daily data is still loading -->
+          <div
+            v-else
+            class="flex flex-col items-center justify-center w-full h-full gap-1"
+          >
+            <span class="w-1 h-1 rounded-full bg-emerald-800 animate-pulse" />
+            <p
+              class="font-mono uppercase font-bold text-emerald-900"
+              style="font-size: 0.55rem; letter-spacing: 0.3em;"
+            >
+              {{ widget.title }}
+            </p>
+          </div>
         </template>
 
       </div><!-- /.widget cell -->

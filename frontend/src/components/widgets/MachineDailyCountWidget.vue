@@ -194,6 +194,11 @@ function barHeight(item: LedWeekDay): number {
   return Math.round((item.count / maxCount.value) * 60)
 }
 
+function barHeightSvg(item: LedWeekDay): number {
+  if (item.isFuture || item.count === 0) return 2
+  return Math.max(2, Math.round((item.count / maxCount.value) * 28))
+}
+
 // ── ECharts option (Cumulative Area Chart) ────────────────────────────────────
 const option = computed<EChartsOption>(() => {
   const labels = cumulativeRows.value.map(r => fmtDate(r.date));
@@ -320,17 +325,24 @@ const option = computed<EChartsOption>(() => {
   };
 });
 
-// ── Live chart option (30-min rolling bar chart) ──────────────────────────────
+// ── Live chart option (30-min rolling cumulative area chart) ─────────────────
 const liveOption = computed<EChartsOption>(() => {
   const labels = livePoints.value.map(p => {
     const d = new Date(p.ts);
     return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
   });
-  const counts = livePoints.value.map(p => p.count);
+
+  // Running cumulative total across the 30-min window
+  let running = 0;
+  const cumul = livePoints.value.map(p => { running += p.count; return running; });
+  const finalVal = cumul[cumul.length - 1] ?? 0;
+  const liveAvg  = livePoints.value.length
+    ? Math.round(running / livePoints.value.length)
+    : 0;
 
   return {
     backgroundColor: 'transparent',
-    grid: { left: 36, right: 16, top: 16, bottom: 28, containLabel: false },
+    grid: { left: 36, right: 20, top: 16, bottom: 28, containLabel: false },
 
     xAxis: {
       type: 'category',
@@ -343,7 +355,7 @@ const liveOption = computed<EChartsOption>(() => {
     yAxis: {
       type: 'value',
       minInterval: 1,
-      axisLabel: { color: '#6b7280', fontSize: 9 },
+      axisLabel: { color: '#6b7280', fontSize: 9, formatter: (v: number) => fmtCount(v) },
       splitLine: { lineStyle: { color: '#1f2937', type: 'dashed' } },
       min: 0,
     },
@@ -354,62 +366,139 @@ const liveOption = computed<EChartsOption>(() => {
       borderColor: '#374151',
       textStyle: { color: '#e5e7eb', fontSize: 12 },
       formatter: (params: any) => {
-        const p = Array.isArray(params) ? params[0] : params;
-        return `<div style="font-family:monospace;line-height:1.6">
-          ${p.name}<br/>Events: <b style="color:#34d399">${p.value}</b>
+        const arr = Array.isArray(params) ? params : [params];
+        const time     = arr[0]?.name ?? '';
+        const cumulVal = arr[0]?.value ?? 0;
+        const idx      = arr[0]?.dataIndex ?? 0;
+        const perMin   = livePoints.value[idx]?.count ?? 0;
+        return `<div style="font-family:monospace;line-height:1.8;font-size:11px">
+          <span style="color:#9ca3af">${time}</span><br/>
+          <span style="color:#60a5fa">Cumulative</span>: <b>${(cumulVal as number).toLocaleString()}</b><br/>
+          <span style="color:#6b7280">This min</span>: +${perMin}
         </div>`;
       },
     },
 
     series: [{
-      type: 'bar',
-      data: counts,
-      itemStyle: {
+      type: 'line',
+      data: cumul,
+      smooth: 0.3,
+      symbol: 'circle',
+      symbolSize: 4,
+      showSymbol: false,
+      lineStyle: { color: '#3b82f6', width: 2 },
+      itemStyle: { color: '#3b82f6', borderColor: '#1e40af', borderWidth: 2 },
+      emphasis: {
+        showSymbol: true,
+        itemStyle: { color: '#60a5fa', borderColor: '#93c5fd', borderWidth: 2 },
+      },
+      areaStyle: {
         color: {
           type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
           colorStops: [
-            { offset: 0, color: 'rgba(52,211,153,0.9)' },
-            { offset: 1, color: 'rgba(52,211,153,0.3)' },
+            { offset: 0,   color: 'rgba(59,130,246,0.35)' },
+            { offset: 0.6, color: 'rgba(59,130,246,0.08)' },
+            { offset: 1,   color: 'rgba(59,130,246,0.00)' },
           ],
         },
-        borderRadius: [2, 2, 0, 0],
       },
-      emphasis: { itemStyle: { color: '#6ee7b7' } },
-    }],
+      markLine: liveAvg > 0 ? {
+        silent: true,
+        symbol: 'none',
+        animation: false,
+        data: [{
+          yAxis: liveAvg,
+          lineStyle: { color: '#6366f1', type: 'dashed', width: 1 },
+          label: { formatter: `avg ${fmtCount(liveAvg)}`, color: '#6366f1', fontSize: 9, position: 'end' },
+        }],
+      } : undefined,
+      markPoint: cumul.length ? {
+        symbol: 'circle',
+        symbolSize: 6,
+        data: [{ type: 'max' as const, name: 'Total' }],
+        label: {
+          formatter: (p: any) => `Total ${fmtCount(p.value)}`,
+          color: '#93c5fd',
+          fontSize: 9,
+          position: 'top',
+          distance: 8,
+          backgroundColor: 'rgba(14,17,30,0.85)',
+          padding: [2, 5] as [number, number],
+          borderRadius: 3,
+        },
+        itemStyle: { color: '#3b82f6', borderColor: '#93c5fd', borderWidth: 1 },
+      } : undefined,
+    } as any],
   };
 });
 </script>
 
 <template>
-  <div v-if="ledMode" class="led-daily-count">
-    <div class="led-left">
-      <div class="led-label">{{ data?.machineName }} DAILY OUTPUT</div>
-      <div class="led-value">{{ formattedCount }}</div>
-      <div class="led-unit">PCS TODAY</div>
-      <div class="led-sub">AVG/DAY · {{ formattedAvg }} PCS</div>
-    </div>
+  <div
+    v-if="ledMode"
+    class="w-full h-full bg-black flex flex-col items-center justify-center overflow-hidden select-none font-mono"
+    style="padding: 0.5rem 0.75rem; box-sizing: border-box;"
+  >
+    <!-- Title -->
+    <p
+      class="text-gray-300 uppercase font-bold w-full text-center leading-none truncate"
+      style="font-size: 0.6rem; letter-spacing: 0.16em; margin-bottom: 0.28em;"
+    >
+      DAILY OUTPUT
+    </p>
 
-    <div class="led-right">
-      <div class="led-bars">
-        <div
-          v-for="item in data?.weeklyData"
-          :key="item.day"
-          class="led-bar-col"
-        >
-          <div
-            class="led-bar"
-            :class="{
-              'is-today':  item.isToday,
-              'is-future': item.isFuture,
-            }"
-            :style="{ height: barHeight(item) + 'px' }"
-          />
-          <div class="led-day-label" :class="{ 'is-today': item.isToday }">
-            {{ item.day }}
-          </div>
-        </div>
-      </div>
-    </div>
+    <!-- Today count -->
+    <p
+      class="tabular-nums leading-none text-center font-black text-emerald-400"
+      style="font-size: 1.75rem; text-shadow: 0 0 2px rgba(255,255,255,0.55), 0 0 14px #10b981, 0 0 45px #10b98155;"
+    >
+      {{ formattedCount }}
+    </p>
+
+    <!-- Unit -->
+    <p
+      class="text-gray-300 uppercase font-semibold text-center leading-none"
+      style="font-size: 0.6rem; letter-spacing: 0.14em; margin-top: 0.22em; margin-bottom: 0.38em;"
+    >
+      PCS TODAY
+    </p>
+
+    <!-- 7-day bar chart -->
+    <svg
+      class="w-full flex-shrink-0"
+      style="height: 40px;"
+      viewBox="0 0 140 40"
+      preserveAspectRatio="none"
+    >
+      <template v-for="(item, i) in (data?.weeklyData ?? [])" :key="item.day">
+        <rect
+          :x="i * 20 + 2"
+          :y="34 - barHeightSvg(item)"
+          width="16"
+          :height="barHeightSvg(item)"
+          rx="1"
+          fill="#10b981"
+          :fill-opacity="item.isFuture ? 0.04 : item.isToday ? 1 : 0.28"
+        />
+        <text
+          :x="i * 20 + 10"
+          y="40"
+          text-anchor="middle"
+          font-family="monospace"
+          font-size="5"
+          font-weight="bold"
+          :fill="item.isToday ? '#10b981' : 'rgba(255,255,255,0.3)'"
+        >{{ item.day.slice(0, 3) }}</text>
+      </template>
+    </svg>
+
+    <!-- AVG/DAY -->
+    <p
+      class="text-gray-600 text-center leading-none"
+      style="font-size: 0.52rem; letter-spacing: 0.1em; margin-top: 0.22em;"
+    >
+      AVG {{ formattedAvg }} PCS/DAY
+    </p>
   </div>
 
   <div v-else class="flex flex-col h-full">
@@ -502,116 +591,16 @@ const liveOption = computed<EChartsOption>(() => {
 </template>
 
 <style scoped>
-@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@700&display=swap');
-
-/* ... (LED CSS remains identical to original) ... */
-.led-daily-count {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 24px;
-  background: #050f05;
-  border: 1px solid #1a3a1a;
-  border-radius: 2px;
-  padding: 12px 16px;
-  height: 100%;
-  box-sizing: border-box;
+.spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid #374151;
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
 }
 
-.led-left {
-  flex: 0 0 40%;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.led-label {
-  font-family: 'Share Tech Mono', monospace;
-  font-size: 11px;
-  letter-spacing: 3px;
-  color: #00cc66;
-  opacity: 0.75;
-  text-transform: uppercase;
-}
-
-.led-value {
-  font-family: 'Orbitron', sans-serif;
-  font-weight: 700;
-  font-size: 48px;
-  color: #00ff88;
-  line-height: 1;
-  text-shadow: 0 0 12px rgba(0, 255, 136, 0.5);
-}
-
-.led-unit {
-  font-family: 'Share Tech Mono', monospace;
-  font-size: 11px;
-  letter-spacing: 2px;
-  color: #00aa55;
-  opacity: 0.7;
-  text-transform: uppercase;
-}
-
-.led-sub {
-  font-family: 'Share Tech Mono', monospace;
-  font-size: 11px;
-  letter-spacing: 1px;
-  color: #00aa55;
-  opacity: 0.5;
-  margin-top: 6px;
-}
-
-.led-right {
-  flex: 1;
-}
-
-.led-bars {
-  display: flex;
-  align-items: flex-end;
-  gap: 4px;
-  height: 76px;
-}
-
-.led-bar-col {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 4px;
-  height: 100%;
-}
-
-.led-bar {
-  width: 100%;
-  border-radius: 1px 1px 0 0;
-  background: #00ff88;
-  opacity: 0.3;
-  min-height: 4px;
-  transition: height 0.4s ease;
-}
-
-.led-bar.is-today {
-  opacity: 1;
-  box-shadow: 0 0 8px #00ff88;
-}
-
-.led-bar.is-future {
-  background: #0d1a0d;
-  opacity: 1;
-}
-
-.led-day-label {
-  font-family: 'Share Tech Mono', monospace;
-  font-size: 9px;
-  letter-spacing: 1px;
-  color: #00aa55;
-  opacity: 0.5;
-  text-transform: uppercase;
-}
-
-.led-day-label.is-today {
-  color: #00ff88;
-  opacity: 1;
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 </style>

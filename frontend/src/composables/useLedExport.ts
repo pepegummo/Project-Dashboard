@@ -25,7 +25,7 @@ import type { LedWidget } from '@/components/led/LedView.vue'
 // ─────────────────────────────────────────────
 // kpi-card                   →  'metric'
 // gauge                      →  'gauge'    (semicircle arc with min/max)
-// daily-count                →  null       (omitted — requires separate API)
+// daily-count                →  'daily-count' (bar chart + today count; data fetched by LedView)
 // line-chart                 →  'sparkline'
 // status-card (no field)     →  'status'   (shows machine RUNNING/OFFLINE badge)
 // status-card (with field)   →  'metric'   (shows a specific sensor value)
@@ -76,8 +76,13 @@ function mapToLedWidgets(widgets: DashboardWidget[]): LedWidget[] {
         }
 
       case 'daily-count':
-        // Requires a separate daily-count API call — not renderable as a live LED metric
-        return null
+        return {
+          id:        w.id,
+          type:      'daily-count',
+          title:     w.title ?? 'Daily Output',
+          machineId: w.machineId,
+          days:      (w.config?.days as number | undefined) ?? 7,
+        }
 
       // kpi-card, table → rendered as a metric readout
       default:
@@ -130,7 +135,7 @@ export function useLedExport() {
   function buildLedUrl(widgets: DashboardWidget[]): string {
     const led     = mapToLedWidgets(widgets)
     const payload = encodeLedPayload(led)
-    return `${window.location.origin}/led?w=${payload}`
+    return `${window.location.origin}/led?w=${encodeURIComponent(payload)}`
   }
 
   /**
