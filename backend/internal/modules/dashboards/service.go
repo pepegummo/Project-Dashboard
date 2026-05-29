@@ -26,7 +26,6 @@ func (s *Service) CreateDashboard(ctx context.Context, orgID, userID, name strin
 	if err != nil {
 		return nil, err
 	}
-	_ = s.repo.CopyWidgetsFromDefault(ctx, orgID, d.ID)
 	return s.repo.FindByID(ctx, d.ID)
 }
 

@@ -6,7 +6,7 @@ import { useMachineStore } from '@/stores/machine.store';
 import { useWidgetViewStateStore } from '@/stores/widget-view-state.store';
 import { useLedExport } from '@/composables/useLedExport';
 import { useToast } from '@/composables/useToast';
-import { Save, Plus, ArrowLeft, Loader2, LayoutGrid, Monitor, ExternalLink } from 'lucide-vue-next';
+import { Save, Plus, ArrowLeft, Loader2, LayoutGrid, Monitor, ExternalLink, Download } from 'lucide-vue-next';
 import GridStackCanvas from '@/components/dashboard/GridStackCanvas.vue';
 import WidgetToolbox from '@/components/dashboard/WidgetToolbox.vue';
 import WidgetConfigModal from '@/components/dashboard/WidgetConfigModal.vue';
@@ -61,6 +61,32 @@ async function onSave() {
   } finally {
     saving.value = false;
   }
+}
+
+function exportDashboard() {
+  const dashboard = dashboardStore.currentDashboard;
+  if (!dashboard) return;
+
+  const exportData = {
+    name: dashboard.name,
+    description: dashboard.description ?? '',
+    tags: dashboard.tags ?? [],
+    widgets: dashboardStore.widgets.map(w => ({
+      widgetType: w.widgetType,
+      title: w.title,
+      machineId: w.machineId,
+      layout: w.layout,
+      config: w.config,
+    })),
+  };
+
+  const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${dashboard.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 async function onAddWidget(type: WidgetType) {
@@ -127,6 +153,16 @@ async function onRemoveWidget(widgetId: string) {
         <button class="btn-secondary" @click="showToolbox = !showToolbox">
           <Plus class="w-4 h-4" />
           Add Widget
+        </button>
+
+        <button
+          class="btn-secondary"
+          :disabled="!dashboardStore.widgets.length"
+          title="Export dashboard config as JSON"
+          @click="exportDashboard"
+        >
+          <Download class="w-4 h-4" />
+          Export
         </button>
 
         <!-- ── LED Export button group ──────────────────────────────────── -->

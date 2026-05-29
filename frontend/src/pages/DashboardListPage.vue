@@ -2,14 +2,18 @@
 import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useDashboardStore } from '@/stores/dashboard.store';
-import { Plus, LayoutDashboard, Star, Globe, Trash2, Edit3, Loader2 } from 'lucide-vue-next';
+import { useToast } from '@/composables/useToast';
+import { Plus, Upload, LayoutDashboard, Star, Globe, Trash2, Edit3, Loader2 } from 'lucide-vue-next';
 import type { Dashboard } from '@/types';
 
 const router = useRouter();
 const dashboardStore = useDashboardStore();
+const toast = useToast();
 
 const showCreate = ref(false);
 const creating = ref(false);
+const importing = ref(false);
+const importFileRef = ref<HTMLInputElement | null>(null);
 const newDashboard = ref({ name: '', description: '' });
 
 onMounted(() => dashboardStore.fetchDashboards());
@@ -37,6 +41,43 @@ async function deleteDashboard(id: string, e: Event) {
   await dashboardStore.deleteDashboard(id);
 }
 
+async function importDashboard(event: Event) {
+  const file = (event.target as HTMLInputElement).files?.[0];
+  if (!file) return;
+
+  importing.value = true;
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+
+    if (!data.name || !Array.isArray(data.widgets)) {
+      toast.show('Invalid dashboard config file', 'error');
+      return;
+    }
+
+    const d = await dashboardStore.createDashboard({
+      name: data.name,
+      description: data.description,
+      tags: data.tags,
+    });
+
+    // Set currentDashboard so addWidget knows which dashboard to use
+    await dashboardStore.fetchDashboard(d.id);
+
+    for (const widget of data.widgets) {
+      await dashboardStore.addWidget(widget);
+    }
+
+    toast.show(`Dashboard imported — ${data.widgets.length} widget${data.widgets.length !== 1 ? 's' : ''} loaded`);
+    router.push(`/dashboards/${d.id}`);
+  } catch {
+    toast.show('Failed to import dashboard', 'error');
+  } finally {
+    importing.value = false;
+    if (importFileRef.value) importFileRef.value.value = '';
+  }
+}
+
 const timeAgo = (date: string) => {
   const diff = Date.now() - new Date(date).getTime();
   const mins = Math.floor(diff / 60000);
@@ -55,10 +96,29 @@ const timeAgo = (date: string) => {
         <h1 class="page-title">Dashboards</h1>
         <p class="page-subtitle">Monitor your production in real-time</p>
       </div>
-      <button class="btn-primary" @click="showCreate = true">
-        <Plus class="w-4 h-4" />
-        New Dashboard
-      </button>
+      <div class="flex items-center gap-2">
+        <input
+          ref="importFileRef"
+          type="file"
+          accept=".json"
+          class="hidden"
+          @change="importDashboard"
+        />
+        <button
+          class="btn-secondary"
+          :disabled="importing"
+          title="Import dashboard from JSON file"
+          @click="importFileRef?.click()"
+        >
+          <Loader2 v-if="importing" class="w-4 h-4 animate-spin" />
+          <Upload v-else class="w-4 h-4" />
+          {{ importing ? 'Importing…' : 'Import' }}
+        </button>
+        <button class="btn-primary" @click="showCreate = true">
+          <Plus class="w-4 h-4" />
+          New Dashboard
+        </button>
+      </div>
     </div>
 
     <!-- Loading -->
