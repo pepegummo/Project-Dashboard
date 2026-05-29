@@ -1,19 +1,46 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { useMachineStore } from '@/stores/machine.store';
-import { useTelemetryStore } from '@/stores/telemetry.store';
 import { useWebSocket } from '@/composables/useWebSocket';
-import { Plus, Search, Activity, Cpu, Thermometer, Eye, MoveRight } from 'lucide-vue-next';
+import { Plus, Search, Activity, Cpu, Thermometer, Eye, MoveRight, Pencil, Wrench, Power } from 'lucide-vue-next';
 import type { Machine, MachineType } from '@/types';
 import AddMachineModal from '@/components/machines/AddMachineModal.vue';
+import EditMachineModal from '@/components/machines/EditMachineModal.vue';
 
 const machineStore = useMachineStore();
-const telemetryStore = useTelemetryStore();
 useWebSocket();
 
 const search = ref('');
 const typeFilter = ref<MachineType | ''>('');
 const showAddModal = ref(false);
+const showEditModal = ref(false);
+const editingMachine = ref<Machine | null>(null);
+const deletingId = ref<string | null>(null);
+
+function openEdit(machine: Machine) {
+  editingMachine.value = machine;
+  showEditModal.value = true;
+}
+
+async function setMaintenance(machine: Machine) {
+  if (!confirm(`Set "${machine.name}" to maintenance mode?`)) return;
+  deletingId.value = machine.id;
+  try {
+    await machineStore.updateMachine(machine.id, { status: 'maintenance' });
+  } finally {
+    deletingId.value = null;
+  }
+}
+
+async function setOnline(machine: Machine) {
+  deletingId.value = machine.id;
+  try {
+    await machineStore.updateMachine(machine.id, { status: 'online' });
+  } finally {
+    deletingId.value = null;
+  }
+}
+
 
 onMounted(async () => {
   await Promise.all([
@@ -64,12 +91,6 @@ const statusClass = (status: string) => {
 
 const statusDotClass = (status: string) => `status-dot-${status}`;
 
-const getKeyMetric = (machine: Machine) => {
-  const keyField = machine.fields?.find(f => f.isKey);
-  if (!keyField) return null;
-  const value = telemetryStore.getFieldValue(machine.id, keyField.key);
-  return value !== undefined ? { label: keyField.label, value: value.toFixed(keyField.precision ?? 1), unit: keyField.unit ?? '' } : null;
-};
 
 // Summary stats
 const stats = computed(() => ({
@@ -143,9 +164,9 @@ const stats = computed(() => ({
             <th>Type</th>
             <th>Status</th>
             <th>Production Line</th>
-            <th>Key Metric</th>
             <th>Fields</th>
             <th>Alerts</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -171,18 +192,6 @@ const stats = computed(() => ({
               </div>
             </td>
             <td class="text-gray-400">{{ machine.productionLine?.name ?? '—' }}</td>
-            <td>
-              <template v-for="metric in [getKeyMetric(machine)]" :key="machine.id + '-metric'">
-                <template v-if="metric">
-                  <div class="font-mono text-sm text-white">
-                    {{ metric.value }}
-                    <span class="text-xs text-gray-500 ml-0.5">{{ metric.unit }}</span>
-                  </div>
-                  <div class="text-[10px] text-gray-600">{{ metric.label }}</div>
-                </template>
-                <span v-else class="text-gray-600">—</span>
-              </template>
-            </td>
             <td class="text-gray-400">{{ machine.fields?.length ?? 0 }} fields</td>
             <td>
               <span
@@ -191,6 +200,35 @@ const stats = computed(() => ({
               >
                 {{ machine._count?.alerts ?? 0 }}
               </span>
+            </td>
+            <td>
+              <div class="flex items-center gap-1">
+                <button
+                  class="p-1.5 rounded-lg text-gray-500 hover:text-white hover:bg-white/10 transition-colors"
+                  title="Edit machine"
+                  @click="openEdit(machine)"
+                >
+                  <Pencil class="w-3.5 h-3.5" />
+                </button>
+                <button
+                  v-if="machine.status !== 'maintenance'"
+                  class="p-1.5 rounded-lg text-gray-500 hover:text-amber-400 hover:bg-amber-500/10 transition-colors"
+                  title="Set to maintenance"
+                  :disabled="deletingId === machine.id"
+                  @click="setMaintenance(machine)"
+                >
+                  <Wrench class="w-3.5 h-3.5" />
+                </button>
+                <button
+                  v-else
+                  class="p-1.5 rounded-lg text-amber-400 hover:text-emerald-400 hover:bg-emerald-500/10 transition-colors"
+                  title="Set back to online"
+                  :disabled="deletingId === machine.id"
+                  @click="setOnline(machine)"
+                >
+                  <Power class="w-3.5 h-3.5" />
+                </button>
+              </div>
             </td>
           </tr>
         </tbody>
@@ -206,5 +244,13 @@ const stats = computed(() => ({
     :production-lines="machineStore.productionLines"
     @close="showAddModal = false"
     @created="machineStore.fetchMachines()"
+  />
+
+  <EditMachineModal
+    v-if="showEditModal && editingMachine"
+    :machine="editingMachine"
+    :production-lines="machineStore.productionLines"
+    @close="showEditModal = false; editingMachine = null"
+    @updated="machineStore.fetchMachines()"
   />
 </template>

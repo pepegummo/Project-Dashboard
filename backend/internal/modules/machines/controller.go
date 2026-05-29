@@ -97,6 +97,14 @@ func (ctrl *Controller) UpsertField(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "data": result})
 }
 
+func (ctrl *Controller) DeleteField(c *fiber.Ctx) error {
+	user := middleware.GetUser(c)
+	if err := ctrl.svc.DeleteMachineField(c.Context(), c.Params("id"), user.OrgId, c.Params("key")); err != nil {
+		return err
+	}
+	return c.SendStatus(204)
+}
+
 func (ctrl *Controller) GetFactories(c *fiber.Ctx) error {
 	user := middleware.GetUser(c)
 	factories, err := ctrl.svc.GetFactories(c.Context(), user.OrgId)

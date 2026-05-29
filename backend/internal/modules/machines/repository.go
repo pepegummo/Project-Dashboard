@@ -160,16 +160,45 @@ func (r *Repository) Update(ctx context.Context, id string, fields map[string]in
 	if len(fields) == 0 {
 		return r.FindByID(ctx, id)
 	}
-	// Build dynamic update (simple approach for known fields)
 	if name, ok := fields["name"].(string); ok {
-		_, err := database.Pool.Exec(ctx, `UPDATE machines SET name=$1, updated_at=NOW() WHERE id=$2`, name, id)
-		if err != nil {
+		if _, err := database.Pool.Exec(ctx, `UPDATE machines SET name=$1, updated_at=NOW() WHERE id=$2`, name, id); err != nil {
 			return nil, err
 		}
 	}
 	if status, ok := fields["status"].(string); ok {
-		_, err := database.Pool.Exec(ctx, `UPDATE machines SET status=$1, updated_at=NOW() WHERE id=$2`, status, id)
-		if err != nil {
+		if _, err := database.Pool.Exec(ctx, `UPDATE machines SET status=$1, updated_at=NOW() WHERE id=$2`, status, id); err != nil {
+			return nil, err
+		}
+	}
+	if plID, ok := fields["productionLineId"].(string); ok && plID != "" {
+		if _, err := database.Pool.Exec(ctx, `UPDATE machines SET production_line_id=$1, updated_at=NOW() WHERE id=$2`, plID, id); err != nil {
+			return nil, err
+		}
+	}
+	if _, ok := fields["serialNumber"]; ok {
+		var val *string
+		if s, ok2 := fields["serialNumber"].(string); ok2 && s != "" {
+			val = &s
+		}
+		if _, err := database.Pool.Exec(ctx, `UPDATE machines SET serial_number=$1, updated_at=NOW() WHERE id=$2`, val, id); err != nil {
+			return nil, err
+		}
+	}
+	if _, ok := fields["model"]; ok {
+		var val *string
+		if s, ok2 := fields["model"].(string); ok2 && s != "" {
+			val = &s
+		}
+		if _, err := database.Pool.Exec(ctx, `UPDATE machines SET model=$1, updated_at=NOW() WHERE id=$2`, val, id); err != nil {
+			return nil, err
+		}
+	}
+	if _, ok := fields["manufacturer"]; ok {
+		var val *string
+		if s, ok2 := fields["manufacturer"].(string); ok2 && s != "" {
+			val = &s
+		}
+		if _, err := database.Pool.Exec(ctx, `UPDATE machines SET manufacturer=$1, updated_at=NOW() WHERE id=$2`, val, id); err != nil {
 			return nil, err
 		}
 	}
@@ -185,6 +214,11 @@ func (r *Repository) UpdateStatus(ctx context.Context, id, status string) error 
 
 func (r *Repository) Delete(ctx context.Context, id string) error {
 	_, err := database.Pool.Exec(ctx, `DELETE FROM machines WHERE id=$1`, id)
+	return err
+}
+
+func (r *Repository) DeleteField(ctx context.Context, machineID, fieldKey string) error {
+	_, err := database.Pool.Exec(ctx, `DELETE FROM machine_fields WHERE machine_id=$1 AND key=$2`, machineID, fieldKey)
 	return err
 }
 

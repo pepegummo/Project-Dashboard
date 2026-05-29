@@ -1,26 +1,24 @@
 <script setup lang="ts">
 import { ref, reactive } from 'vue';
-import { X, Plus, Trash2, ChevronRight, ChevronLeft } from 'lucide-vue-next';
+import { X, Save, Plus, Trash2, ChevronRight, ChevronLeft } from 'lucide-vue-next';
 import { useMachineStore } from '@/stores/machine.store';
 import { api } from '@/services/api.service';
-import type { MachineType, ProductionLine } from '@/types';
+import type { Machine, MachineStatus, ProductionLine } from '@/types';
 
-defineProps<{ productionLines: ProductionLine[] }>();
-const emit = defineEmits<{ close: []; created: [] }>();
+const props = defineProps<{ machine: Machine; productionLines: ProductionLine[] }>();
+const emit = defineEmits<{ close: []; updated: [] }>();
 
 const machineStore = useMachineStore();
-
-// ── Step ──────────────────────────────────────────────────────────────────────
 const step = ref<1 | 2>(1);
 
 // ── Step 1 ────────────────────────────────────────────────────────────────────
 const info = reactive({
-  name: '',
-  type: '',
-  productionLineId: '',
-  serialNumber: '',
-  model: '',
-  manufacturer: '',
+  name: props.machine.name,
+  status: props.machine.status as MachineStatus,
+  productionLineId: props.machine.productionLineId,
+  serialNumber: props.machine.serialNumber ?? '',
+  model: props.machine.model ?? '',
+  manufacturer: props.machine.manufacturer ?? '',
 });
 
 // ── Step 2 ────────────────────────────────────────────────────────────────────
@@ -34,9 +32,26 @@ interface FieldRow {
   threshold: string;
   precision: string;
   isKey: boolean;
+  isOriginal: boolean;
 }
 
-const fields = ref<FieldRow[]>([]);
+const originalFieldKeys = new Set((props.machine.fields ?? []).map(f => f.key));
+const deletedFieldKeys = ref<string[]>([]);
+
+const fields = ref<FieldRow[]>(
+  (props.machine.fields ?? []).map(f => ({
+    key: f.key,
+    label: f.label,
+    unit: f.unit ?? '',
+    dataType: f.dataType as 'number' | 'boolean' | 'string',
+    min: f.min != null ? String(f.min) : '',
+    max: f.max != null ? String(f.max) : '',
+    threshold: f.threshold != null ? String(f.threshold) : '',
+    precision: String(f.precision ?? 2),
+    isKey: f.isKey,
+    isOriginal: true,
+  })),
+);
 
 function addField() {
   fields.value.push({
@@ -45,10 +60,15 @@ function addField() {
     min: '', max: '', threshold: '',
     precision: '2',
     isKey: false,
+    isOriginal: false,
   });
 }
 
 function removeField(i: number) {
+  const f = fields.value[i];
+  if (f.isOriginal && originalFieldKeys.has(f.key)) {
+    deletedFieldKeys.value.push(f.key);
+  }
   fields.value.splice(i, 1);
 }
 
@@ -57,7 +77,6 @@ function toggleKeyField(index: number) {
   fields.value.forEach((f, i) => { f.isKey = !wasKey && i === index; });
 }
 
-// Auto-fill label from key when label is still empty
 function onKeyBlur(f: FieldRow) {
   if (!f.label && f.key) {
     f.label = f.key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
@@ -69,9 +88,8 @@ const error = ref<string | null>(null);
 
 function goToStep2() {
   error.value = null;
-  if (!info.name.trim())        { error.value = 'Machine name is required.'; return; }
-  if (!info.type.trim())        { error.value = 'Machine type is required.'; return; }
-  if (!info.productionLineId)   { error.value = 'Production line is required.'; return; }
+  if (!info.name.trim())      { error.value = 'Machine name is required.'; return; }
+  if (!info.productionLineId) { error.value = 'Production line is required.'; return; }
   step.value = 2;
 }
 
@@ -99,18 +117,20 @@ async function submit() {
 
   submitting.value = true;
   try {
-    const machine = await machineStore.createMachine({
-      name: info.name.trim(),
-      type: info.type.trim() as MachineType,
+    await machineStore.updateMachine(props.machine.id, {
+      name:             info.name.trim(),
+      status:           info.status,
       productionLineId: info.productionLineId,
-      serialNumber: info.serialNumber.trim() || undefined,
-      model:        info.model.trim()        || undefined,
-      manufacturer: info.manufacturer.trim() || undefined,
+      serialNumber:     info.serialNumber.trim() || undefined,
+      model:            info.model.trim()        || undefined,
+      manufacturer:     info.manufacturer.trim() || undefined,
     });
+
+    await Promise.all(deletedFieldKeys.value.map(key => api.deleteField(props.machine.id, key)));
 
     if (fields.value.length) {
       await Promise.all(fields.value.map(f =>
-        api.upsertMachineField(machine.id, {
+        api.upsertMachineField(props.machine.id, {
           key:       f.key.trim(),
           label:     f.label.trim(),
           unit:      f.unit.trim() || undefined,
@@ -122,10 +142,10 @@ async function submit() {
           isKey:     f.isKey,
         } as any),
       ));
-      await machineStore.fetchMachine(machine.id);
     }
 
-    emit('created');
+    await machineStore.fetchMachine(props.machine.id);
+    emit('updated');
     emit('close');
   } catch (err) {
     error.value = (err as Error).message;
@@ -149,13 +169,12 @@ async function submit() {
         <!-- Header -->
         <div class="flex items-center justify-between px-6 py-4 border-b border-white/5 flex-shrink-0">
           <div>
-            <h2 class="text-base font-semibold text-white">Add Machine</h2>
+            <h2 class="text-base font-semibold text-white">Edit Machine</h2>
             <p class="text-xs text-gray-500 mt-0.5">
-              {{ step === 1 ? 'Basic info' : 'Sensor fields (optional)' }}
+              {{ step === 1 ? 'Basic info' : 'Sensor fields' }}
             </p>
           </div>
           <div class="flex items-center gap-4">
-            <!-- Step indicator -->
             <div class="flex items-center gap-2 text-xs">
               <div class="flex items-center gap-1.5">
                 <span
@@ -191,10 +210,19 @@ async function submit() {
               <input v-model="info.name" class="input" placeholder="e.g. Checkweigher Line 1" />
             </div>
             <div>
-              <label class="label">Type <span class="text-red-400">*</span></label>
-              <input v-model="info.type" class="input" placeholder="e.g. checkweigher, conveyor…" />
+              <label class="label">Type</label>
+              <input :value="machine.type" class="input opacity-50 cursor-not-allowed" disabled />
             </div>
             <div>
+              <label class="label">Status</label>
+              <select v-model="info.status" class="input">
+                <option value="online">online</option>
+                <option value="offline">offline</option>
+                <option value="maintenance">maintenance</option>
+                <option value="error">error</option>
+              </select>
+            </div>
+            <div class="col-span-2">
               <label class="label">Production Line <span class="text-red-400">*</span></label>
               <select v-model="info.productionLineId" class="input">
                 <option value="">— Select —</option>
@@ -219,40 +247,36 @@ async function submit() {
         <!-- ── Step 2: Fields ─────────────────────────────────────────────── -->
         <div v-else class="flex flex-col flex-1 min-h-0">
 
-          <!-- Error -->
           <div v-if="error" class="mx-6 mt-4 rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-2 text-sm text-red-400 flex-shrink-0">
             {{ error }}
           </div>
 
-          <!-- Scrollable field list -->
           <div class="flex-1 overflow-y-auto px-6 py-4 space-y-3">
 
-            <!-- Empty state -->
             <div v-if="!fields.length" class="py-10 flex flex-col items-center gap-3 text-gray-500 border border-dashed border-white/10 rounded-xl">
               <div class="w-10 h-10 rounded-full bg-surface-200 flex items-center justify-center">
                 <Plus class="w-5 h-5 text-gray-500" />
               </div>
               <div class="text-center">
-                <p class="text-sm font-medium text-gray-400">No fields added yet</p>
-                <p class="text-xs mt-1 text-gray-600">Fields define what sensor data this machine reports.<br>You can also add them later.</p>
+                <p class="text-sm font-medium text-gray-400">No fields defined</p>
+                <p class="text-xs mt-1 text-gray-600">Add fields to define what sensor data this machine reports.</p>
               </div>
             </div>
 
-            <!-- Field cards -->
             <div
               v-for="(f, i) in fields"
               :key="i"
               class="rounded-xl border border-white/10 bg-surface-200 overflow-hidden"
             >
-              <!-- Top row: Key / Label / Unit + delete button -->
               <div class="flex items-end gap-3 px-4 pt-4 pb-3">
-                <!-- grid: 1fr 1fr 80px -->
                 <div class="grid gap-3 flex-1" style="grid-template-columns: 1fr 1fr 80px">
                   <div>
                     <label class="label">Key <span class="text-red-400">*</span></label>
                     <input
                       v-model="f.key"
                       class="input font-mono"
+                      :class="{ 'opacity-50 cursor-not-allowed': f.isOriginal }"
+                      :disabled="f.isOriginal"
                       placeholder="e.g. temperature"
                       @blur="onKeyBlur(f)"
                     />
@@ -266,7 +290,6 @@ async function submit() {
                     <input v-model="f.unit" class="input" placeholder="e.g. °C" />
                   </div>
                 </div>
-                <!-- Delete -->
                 <button
                   class="mb-0.5 p-1.5 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-500/10 transition-colors flex-shrink-0"
                   @click="removeField(i)"
@@ -275,12 +298,9 @@ async function submit() {
                 </button>
               </div>
 
-              <!-- Divider -->
               <div class="mx-4 h-px bg-white/5" />
 
-              <!-- Bottom row: DataType / Threshold / Min / Max / Precision / Key Metric -->
               <div class="px-4 pt-3 pb-4">
-                <!-- grid: 1fr 1fr 80px 80px 80px 36px -->
                 <div class="grid gap-3 items-end" style="grid-template-columns: 1fr 1fr 80px 80px 80px 36px">
                   <div>
                     <label class="label">Data Type</label>
@@ -306,7 +326,6 @@ async function submit() {
                     <label class="label">Precision</label>
                     <input v-model="f.precision" class="input" placeholder="2" type="number" min="0" max="6" :disabled="f.dataType !== 'number'" />
                   </div>
-                  <!-- Key Metric checkbox -->
                   <div class="flex flex-col items-center gap-1.5 pb-0.5">
                     <label class="label text-center leading-tight">Key</label>
                     <input
@@ -321,7 +340,6 @@ async function submit() {
               </div>
             </div>
 
-            <!-- + Add field (dashed) -->
             <button
               class="w-full py-3 rounded-xl border border-dashed border-white/20 text-sm text-gray-500 hover:text-gray-300 hover:border-white/40 hover:bg-white/[0.03] transition-colors flex items-center justify-center gap-2"
               @click="addField"
@@ -337,7 +355,7 @@ async function submit() {
           <template v-if="step === 1">
             <button class="btn-secondary flex-1" @click="$emit('close')">Cancel</button>
             <button class="btn-primary flex-1 justify-center" @click="goToStep2">
-              Next — Add Fields
+              Next — Edit Fields
               <ChevronRight class="w-4 h-4" />
             </button>
           </template>
@@ -347,8 +365,8 @@ async function submit() {
               Back
             </button>
             <button class="btn-primary flex-1 justify-center" :disabled="submitting" @click="submit">
-              <Plus class="w-4 h-4" />
-              {{ submitting ? 'Saving…' : fields.length ? `Save Machine + ${fields.length} field${fields.length > 1 ? 's' : ''}` : 'Save Machine' }}
+              <Save class="w-4 h-4" />
+              {{ submitting ? 'Saving…' : 'Save Changes' }}
             </button>
           </template>
         </div>

@@ -77,6 +77,13 @@ func (s *Service) UpsertMachineField(ctx context.Context, machineID, orgID strin
 	return s.repo.UpsertField(ctx, machineID, f)
 }
 
+func (s *Service) DeleteMachineField(ctx context.Context, machineID, orgID, fieldKey string) error {
+	if _, err := s.GetMachineByID(ctx, machineID, orgID); err != nil {
+		return err
+	}
+	return s.repo.DeleteField(ctx, machineID, fieldKey)
+}
+
 func (s *Service) GetProductionLines(ctx context.Context, orgID string) ([]ProductionLine, error) {
 	return s.repo.GetProductionLines(ctx, orgID)
 }

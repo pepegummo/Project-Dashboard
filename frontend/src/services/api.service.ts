@@ -91,6 +91,10 @@ class ApiService {
     return data.data;
   }
 
+  async deleteField(machineId: string, fieldKey: string) {
+    await this.client.delete(`/machines/${machineId}/fields/${fieldKey}`);
+  }
+
   async getProductionLines() {
     const { data } = await this.client.get<ApiResponse<any[]>>('/machines/production-lines');
     return data.data;

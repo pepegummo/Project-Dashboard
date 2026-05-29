@@ -22,4 +22,5 @@ func RegisterRoutes(router fiber.Router) {
 
 	router.Get("/:id/fields", ctrl.GetFields)
 	router.Put("/:id/fields", middleware.RequireRole("admin", "editor"), ctrl.UpsertField)
+	router.Delete("/:id/fields/:key", middleware.RequireRole("admin", "editor"), ctrl.DeleteField)
 }

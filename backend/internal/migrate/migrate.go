@@ -97,7 +97,6 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool) error {
 			created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
-
 		// ── machine_fields ───────────────────────────────────────────────────
 		`CREATE TABLE IF NOT EXISTS machine_fields (
 			id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
