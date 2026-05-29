@@ -190,14 +190,16 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool) error {
 
 		// ── alert_events ─────────────────────────────────────────────────────
 		`CREATE TABLE IF NOT EXISTS alert_events (
-			id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-			alert_id    UUID        NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
-			value       FLOAT       NOT NULL,
-			message     TEXT,
-			status      TEXT        NOT NULL DEFAULT 'open',
-			resolved_at TIMESTAMPTZ,
-			resolved_by TEXT,
-			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+			id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+			alert_id        UUID        NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
+			value           FLOAT       NOT NULL,
+			message         TEXT,
+			status          TEXT        NOT NULL DEFAULT 'open',
+			triggered_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			acknowledged_at TIMESTAMPTZ,
+			acknowledged_by TEXT,
+			resolved_at     TIMESTAMPTZ,
+			resolved_by     TEXT
 		)`,
 
 		// ── ai_conversations ─────────────────────────────────────────────────

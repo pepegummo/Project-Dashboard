@@ -262,6 +262,16 @@ func (r *Repository) UpdateWidget(ctx context.Context, widgetID string, data map
 	if title, ok := data["title"].(string); ok {
 		_, _ = database.Pool.Exec(ctx, `UPDATE dashboard_widgets SET title=$1, updated_at=NOW() WHERE id=$2`, title, widgetID)
 	}
+	if machineId, ok := data["machineId"].(string); ok {
+		if machineId == "" {
+			_, _ = database.Pool.Exec(ctx, `UPDATE dashboard_widgets SET machine_id=NULL, updated_at=NOW() WHERE id=$1`, widgetID)
+		} else {
+			_, _ = database.Pool.Exec(ctx, `UPDATE dashboard_widgets SET machine_id=$1, updated_at=NOW() WHERE id=$2`, machineId, widgetID)
+		}
+	}
+	if widgetType, ok := data["widgetType"].(string); ok && widgetType != "" {
+		_, _ = database.Pool.Exec(ctx, `UPDATE dashboard_widgets SET widget_type=$1, updated_at=NOW() WHERE id=$2`, widgetType, widgetID)
+	}
 	return nil
 }
 

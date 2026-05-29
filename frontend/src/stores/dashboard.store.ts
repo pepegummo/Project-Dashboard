@@ -73,11 +73,10 @@ export const useDashboardStore = defineStore('dashboards', () => {
 
   async function updateWidget(widgetId: string, payload: Partial<DashboardWidget>) {
     if (!currentDashboard.value) return;
-    const updated = await api.updateWidget(currentDashboard.value.id, widgetId, payload);
-    const widgets = currentDashboard.value.widgets ?? [];
-    const idx = widgets.findIndex(w => w.id === widgetId);
-    if (idx >= 0) widgets[idx] = { ...widgets[idx], ...updated };
-    return updated;
+    const dashId = currentDashboard.value.id;
+    await api.updateWidget(dashId, widgetId, payload);
+    // Re-fetch to get fresh joined machine data and trigger widget remount
+    currentDashboard.value = await api.getDashboard(dashId);
   }
 
   async function saveLayout(widgetLayouts: Array<{ id: string; layout: WidgetLayout }>) {

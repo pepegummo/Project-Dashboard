@@ -13,7 +13,18 @@ const emit = defineEmits<{
   close: [];
 }>();
 
+const ALL_WIDGET_TYPES: { value: WidgetType; label: string }[] = [
+  { value: 'line-chart',  label: 'Line Chart' },
+  { value: 'gauge',       label: 'Gauge' },
+  { value: 'kpi-card',    label: 'KPI Card' },
+  { value: 'status-card', label: 'Status Card' },
+  { value: 'table',       label: 'Data Table' },
+  { value: 'alarm-panel', label: 'Alarm Panel' },
+  { value: 'daily-count', label: 'Daily Count' },
+];
+
 const title = ref(props.widget.title ?? '');
+const selectedWidgetType = ref<WidgetType>(props.widget.widgetType);
 const selectedMachineId = ref(props.widget.machineId ?? '');
 const selectedField = ref((props.widget.config?.field as string) ?? '');
 const color = ref((props.widget.config?.color as string) ?? '#3b82f6');
@@ -24,19 +35,7 @@ const selectedMachine = computed(() => props.machines.find(m => m.id === selecte
 const availableFields = computed(() => selectedMachine.value?.fields ?? []);
 
 watch(() => selectedMachineId.value, () => { selectedField.value = ''; });
-
-const widgetTypeLabel = (type: WidgetType) => {
-  const map: Record<WidgetType, string> = {
-    'line-chart':  'Line Chart',
-    'gauge':       'Gauge',
-    'kpi-card':    'KPI Card',
-    'status-card': 'Status Card',
-    'table':       'Data Table',
-    'alarm-panel': 'Alarm Panel',
-    'daily-count': 'Daily Count',
-  };
-  return map[type] ?? type;
-};
+watch(selectedWidgetType, () => { selectedField.value = ''; });
 
 const needsMachine = (type: WidgetType) => ['line-chart', 'gauge', 'kpi-card', 'status-card', 'table', 'daily-count', 'alarm-panel'].includes(type);
 const needsField   = (type: WidgetType) => ['line-chart', 'gauge', 'kpi-card'].includes(type);
@@ -46,7 +45,7 @@ function save() {
   const config: WidgetConfig = {};
   if (selectedField.value) config.field = selectedField.value;
   if (color.value) config.color = color.value;
-  if (needsMinMax(props.widget.widgetType)) {
+  if (needsMinMax(selectedWidgetType.value)) {
     config.min = min.value;
     config.max = max.value;
     const field = availableFields.value.find(f => f.key === selectedField.value);
@@ -55,7 +54,7 @@ function save() {
 
   emit('save', {
     machineId: selectedMachineId.value || undefined,
-    widgetType: props.widget.widgetType,
+    widgetType: selectedWidgetType.value,
     title: title.value || undefined,
     config,
     layout: props.widget.layout,
@@ -74,7 +73,6 @@ function save() {
         <div class="flex items-center justify-between px-6 py-4 border-b border-white/5">
           <div>
             <h2 class="text-base font-semibold text-white">Configure Widget</h2>
-            <p class="text-xs text-gray-500 mt-0.5">{{ widgetTypeLabel(widget.widgetType) }}</p>
           </div>
           <button class="btn-ghost btn-icon" @click="$emit('close')">
             <X class="w-4 h-4" />
@@ -83,6 +81,14 @@ function save() {
 
         <!-- Body -->
         <div class="px-6 py-5 space-y-4">
+          <!-- Widget Type -->
+          <div>
+            <label class="label">Widget Type</label>
+            <select v-model="selectedWidgetType" class="input">
+              <option v-for="t in ALL_WIDGET_TYPES" :key="t.value" :value="t.value">{{ t.label }}</option>
+            </select>
+          </div>
+
           <!-- Title -->
           <div>
             <label class="label">Widget Title</label>
@@ -90,7 +96,7 @@ function save() {
           </div>
 
           <!-- Machine selector -->
-          <div v-if="needsMachine(widget.widgetType)">
+          <div v-if="needsMachine(selectedWidgetType)">
             <label class="label">Machine</label>
             <select v-model="selectedMachineId" class="input">
               <option value="">— Select machine —</option>
@@ -99,7 +105,7 @@ function save() {
           </div>
 
           <!-- Field selector -->
-          <div v-if="needsField(widget.widgetType) && selectedMachineId">
+          <div v-if="needsField(selectedWidgetType) && selectedMachineId">
             <label class="label">Data Field</label>
             <select v-model="selectedField" class="input">
               <option value="">— Select field —</option>
@@ -110,7 +116,7 @@ function save() {
           </div>
 
           <!-- Min / Max (gauge) -->
-          <div v-if="needsMinMax(widget.widgetType)" class="grid grid-cols-2 gap-3">
+          <div v-if="needsMinMax(selectedWidgetType)" class="grid grid-cols-2 gap-3">
             <div>
               <label class="label">Min Value</label>
               <input v-model.number="min" type="number" class="input" />
@@ -122,7 +128,7 @@ function save() {
           </div>
 
           <!-- Color -->
-          <div v-if="['line-chart'].includes(widget.widgetType)">
+          <div v-if="selectedWidgetType === 'line-chart'">
             <label class="label">Chart Color</label>
             <div class="flex items-center gap-3">
               <input v-model="color" type="color" class="w-10 h-10 rounded cursor-pointer border border-white/10 bg-transparent" />

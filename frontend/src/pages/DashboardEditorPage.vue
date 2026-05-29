@@ -106,8 +106,9 @@ async function onAddWidget(type: WidgetType) {
 async function onSaveWidget(widget: { machineId?: string; widgetType: WidgetType; title?: string; config: WidgetConfig; layout: WidgetLayout }) {
   if (!editingWidget.value) return;
   if (editingWidget.value.id) {
-    // Update existing — include machineId so machine changes take effect
+    // Update existing
     await dashboardStore.updateWidget(editingWidget.value.id, {
+      widgetType: widget.widgetType,
       machineId: widget.machineId,
       title: widget.title,
       config: widget.config,

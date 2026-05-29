@@ -142,10 +142,10 @@ func (g *rtpGen) next(tick int) float64 {
 		base = valueOf(seg.isHigh) // flat plateau
 	}
 
-	// ── Layer 1: Gaussian noise (Box-Muller) — σ = 22% of amplitude ───────
+	// ── Layer 1: Gaussian noise (Box-Muller) — σ = 45% of amplitude ───────
 	u1 := rand.Float64() + 1e-10
 	u2 := rand.Float64()
-	gaussNoise := math.Sqrt(-2*math.Log(u1))*math.Cos(2*math.Pi*u2) * 0.22 * g.amplitude
+	gaussNoise := math.Sqrt(-2*math.Log(u1)) * math.Cos(2*math.Pi*u2) * 0.45 * g.amplitude
 
 	// ── Layer 2: Spike bursts  P=2.5%  ±45% of amplitude ──────────────────
 	spikeNoise := 0.0
@@ -156,14 +156,14 @@ func (g *rtpGen) next(tick int) float64 {
 	// ── Layer 3: Long sinusoidal drift  ±30%  30-day period ───────────────
 	drift := g.amplitude * 0.30 * math.Sin(2*math.Pi*float64(tick)/driftPeriod)
 
-	// ── Layer 4: Fast vibration  ±8% ──────────────────────────────────────
-	vibration := g.amplitude * 0.08 * math.Sin(float64(tick)*1.8)
+	// ── Layer 4: Fast vibration  ±20% ──────────────────────────────────────
+	vibration := g.amplitude * 0.20 * math.Sin(float64(tick)*1.8)
 
-	// ── Layer 5: Micro-vibration  ±3% ─────────────────────────────────────
-	micro := g.amplitude * 0.03 * math.Sin(float64(tick)*7)
+	// ── Layer 5: Micro-vibration  ±12% ─────────────────────────────────────
+	micro := g.amplitude * 0.12 * math.Sin(float64(tick)*7)
 
-	// ── Layer 6: Correlated wobble  ±6% ───────────────────────────────────
-	wobble := g.amplitude * 0.06 * math.Sin(float64(tick)*0.15+math.Sin(float64(tick)*0.03))
+	// ── Layer 6: Correlated wobble  ±15% ───────────────────────────────────
+	wobble := g.amplitude * 0.15 * math.Sin(float64(tick)*0.15+math.Sin(float64(tick)*0.03))
 
 	// ── Layer 7: Burst oscillation  P=1.5%  ±12% ──────────────────────────
 	burst := 0.0
@@ -182,8 +182,8 @@ func (g *rtpGen) next(tick int) float64 {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-func clamp01(v float64) float64          { return math.Max(0, math.Min(1, v)) }
-func lerp(a, b, t float64) float64      { return a*(1-t) + b*t }
+func clamp01(v float64) float64    { return math.Max(0, math.Min(1, v)) }
+func lerp(a, b, t float64) float64 { return a*(1-t) + b*t }
 
 // fmtNum formats an integer with comma separators (e.g. 2334720 → "2,334,720")
 func fmtNum(n int) string {
@@ -510,29 +510,29 @@ func main() {
 	}
 
 	alertEvents := []alertEvt{
-		{alertOverWeight,  515.23, "Weight exceeded upper tolerance: 515.23 g", "resolved", parseDay("2025-06-12"), resolvedAfter("2025-06-12", 4)},
-		{alertUnderWeight, 483.11, "Weight below lower tolerance: 483.11 g",    "resolved", parseDay("2025-07-03"), resolvedAfter("2025-07-03", 2)},
-		{alertHighTemp,    36.50,  "Temperature exceeded threshold: 36.50 °C",  "resolved", parseDay("2025-08-19"), resolvedAfter("2025-08-19", 6)},
-		{alertOverWeight,  528.74, "Weight exceeded upper tolerance: 528.74 g", "resolved", parseDay("2025-09-07"), resolvedAfter("2025-09-07", 3)},
-		{alertUnderWeight, 476.42, "Weight below lower tolerance: 476.42 g",    "resolved", parseDay("2025-10-14"), resolvedAfter("2025-10-14", 5)},
-		{alertHighTemp,    38.20,  "Temperature exceeded threshold: 38.20 °C",  "resolved", parseDay("2025-11-02"), resolvedAfter("2025-11-02", 8)},
-		{alertOverWeight,  519.31, "Weight exceeded upper tolerance: 519.31 g", "resolved", parseDay("2025-12-18"), resolvedAfter("2025-12-18", 2)},
-		{alertUnderWeight, 488.05, "Weight below lower tolerance: 488.05 g",    "resolved", parseDay("2026-01-09"), resolvedAfter("2026-01-09", 3)},
-		{alertHighTemp,    35.83,  "Temperature exceeded threshold: 35.83 °C",  "resolved", parseDay("2026-02-22"), resolvedAfter("2026-02-22", 7)},
-		{alertOverWeight,  531.62, "Weight exceeded upper tolerance: 531.62 g", "resolved", parseDay("2026-03-15"), resolvedAfter("2026-03-15", 4)},
-		{alertUnderWeight, 471.90, "Weight below lower tolerance: 471.90 g",    "resolved", parseDay("2026-04-04"), resolvedAfter("2026-04-04", 6)},
-		{alertHighTemp,    37.15,  "Temperature exceeded threshold: 37.15 °C",  "resolved", parseDay("2026-05-11"), resolvedAfter("2026-05-11", 5)},
-		{alertOverWeight,  522.48, "Weight exceeded upper tolerance: 522.48 g", "resolved", parseDay("2026-05-28"), resolvedAfter("2026-05-28", 3)},
+		{alertOverWeight, 515.23, "Weight exceeded upper tolerance: 515.23 g", "resolved", parseDay("2025-06-12"), resolvedAfter("2025-06-12", 4)},
+		{alertUnderWeight, 483.11, "Weight below lower tolerance: 483.11 g", "resolved", parseDay("2025-07-03"), resolvedAfter("2025-07-03", 2)},
+		{alertHighTemp, 36.50, "Temperature exceeded threshold: 36.50 °C", "resolved", parseDay("2025-08-19"), resolvedAfter("2025-08-19", 6)},
+		{alertOverWeight, 528.74, "Weight exceeded upper tolerance: 528.74 g", "resolved", parseDay("2025-09-07"), resolvedAfter("2025-09-07", 3)},
+		{alertUnderWeight, 476.42, "Weight below lower tolerance: 476.42 g", "resolved", parseDay("2025-10-14"), resolvedAfter("2025-10-14", 5)},
+		{alertHighTemp, 38.20, "Temperature exceeded threshold: 38.20 °C", "resolved", parseDay("2025-11-02"), resolvedAfter("2025-11-02", 8)},
+		{alertOverWeight, 519.31, "Weight exceeded upper tolerance: 519.31 g", "resolved", parseDay("2025-12-18"), resolvedAfter("2025-12-18", 2)},
+		{alertUnderWeight, 488.05, "Weight below lower tolerance: 488.05 g", "resolved", parseDay("2026-01-09"), resolvedAfter("2026-01-09", 3)},
+		{alertHighTemp, 35.83, "Temperature exceeded threshold: 35.83 °C", "resolved", parseDay("2026-02-22"), resolvedAfter("2026-02-22", 7)},
+		{alertOverWeight, 531.62, "Weight exceeded upper tolerance: 531.62 g", "resolved", parseDay("2026-03-15"), resolvedAfter("2026-03-15", 4)},
+		{alertUnderWeight, 471.90, "Weight below lower tolerance: 471.90 g", "resolved", parseDay("2026-04-04"), resolvedAfter("2026-04-04", 6)},
+		{alertHighTemp, 37.15, "Temperature exceeded threshold: 37.15 °C", "resolved", parseDay("2026-05-11"), resolvedAfter("2026-05-11", 5)},
+		{alertOverWeight, 522.48, "Weight exceeded upper tolerance: 522.48 g", "resolved", parseDay("2026-05-28"), resolvedAfter("2026-05-28", 3)},
 		// Recent open events — shown in alarm-panel widget
-		{alertUnderWeight, 479.31, "Weight below lower tolerance: 479.31 g",    "open",     parseDay("2026-06-01"), nil},
-		{alertHighTemp,    36.82,  "Temperature exceeded threshold: 36.82 °C",  "open",     parseDay("2026-06-05"), nil},
-		{alertOverWeight,  514.71, "Weight exceeded upper tolerance: 514.71 g", "open",     parseDay("2026-06-08"), nil},
+		{alertUnderWeight, 479.31, "Weight below lower tolerance: 479.31 g", "open", parseDay("2026-06-01"), nil},
+		{alertHighTemp, 36.82, "Temperature exceeded threshold: 36.82 °C", "open", parseDay("2026-06-05"), nil},
+		{alertOverWeight, 514.71, "Weight exceeded upper tolerance: 514.71 g", "open", parseDay("2026-06-08"), nil},
 	}
 
 	alertInserted := 0
 	for _, ev := range alertEvents {
 		_, err := pool.Exec(ctx, `
-			INSERT INTO alert_events (id, alert_id, value, message, status, created_at, resolved_at)
+			INSERT INTO alert_events (id, alert_id, value, message, status, triggered_at, resolved_at)
 			VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)
 		`, ev.alertID, ev.value, ev.message, ev.status, ev.createdAt, ev.resolvedAt)
 		if err != nil {

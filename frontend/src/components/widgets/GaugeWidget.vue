@@ -56,21 +56,7 @@ const threshold    = computed(() => machineField.value?.threshold  ?? null);
 const upperLimit   = computed(() => machineField.value?.upperLimit ?? null);
 const lowerLimit   = computed(() => machineField.value?.lowerLimit ?? null);
 
-// Arc color stops: gray | green (good zone) | gray
-// Each stop is [endPercent, color] where percent = (value - min) / (max - min)
-const arcColors = computed<[number, string][]>(() => {
-  const range = maxVal.value - minVal.value;
-  if (range === 0 || lowerLimit.value === null || upperLimit.value === null) {
-    return [[1, '#374151']];
-  }
-  const lo = Math.max(0, Math.min(1, (lowerLimit.value - minVal.value) / range));
-  const up = Math.max(0, Math.min(1, (upperLimit.value - minVal.value) / range));
-  return [
-    [lo, '#374151'],   // below lower → gray
-    [up, '#10b981'],   // lower → upper → green (good zone)
-    [1,  '#374151'],   // above upper → gray
-  ];
-});
+const arcColors: [number, string][] = [[1, '#374151']];
 
 // Needle color: green if in range, red if out
 const inRange = computed(() => {
@@ -96,7 +82,7 @@ const option = computed<EChartsOption>(() => {
       radius: '90%',
       center: ['50%', '60%'],
       progress: { show: true, width: 12, itemStyle: { color: isLoading ? '#374151' : needleColor.value } },
-      axisLine: { lineStyle: { width: 12, color: arcColors.value } },
+      axisLine: { lineStyle: { width: 12, color: arcColors } },
       axisTick: { show: false },
       splitLine: { length: 8, distance: 4, lineStyle: { width: 2, color: '#374151' } },
       axisLabel: {
@@ -133,7 +119,7 @@ const option = computed<EChartsOption>(() => {
       Configure machine &amp; field
     </div>
     <template v-else>
-      <VChart ref="chartRef" :option="option" autoresize />
+      <VChart ref="chartRef" :option="option" :update-options="{ notMerge: true }" autoresize />
 
       <!-- Threshold / limit labels -->
       <div v-if="threshold !== null || upperLimit !== null" class="absolute bottom-8 left-0 right-0 flex justify-center gap-3 text-[9px]">
