@@ -166,17 +166,36 @@ Frontend Axios  ──  Authorization: Bearer <token>  ──►  Go Middleware 
               └─────────────────────────────────────────────┘
 ```
 
-**Widget Polling vs Real-Time:**
+**Widget Data Sources (current):**
 
-| Widget Type        | Data Source              | Update Method    |
-|--------------------|--------------------------|------------------|
-| Line Chart         | `/telemetry/:id/series`  | Poll on load + WS push |
-| Gauge              | `/telemetry/:id/latest`  | WS push (live)   |
-| KPI Card           | `/telemetry/:id/latest`  | WS push (live)   |
-| Status Card        | `/telemetry/:id/latest`  | WS push (live)   |
-| Table              | `/telemetry/:id/series`  | Poll on load     |
-| Alarm Panel        | `/alerts/events/active`  | WS push (live)   |
-| Machine Daily Count| `/telemetry/:id/daily-count` | Poll on load |
+| Widget | REST (initial seed) | WebSocket (live updates) | Notes |
+|---|---|---|---|
+| Line Chart | `GET /telemetry/:id/series` — 60s refresh | ✅ Live Mode: REST seed → WS append | Normal mode = REST only; Live Mode = rolling 30-min window via WS |
+| Gauge | `GET /telemetry/:id/latest` — once on mount | ✅ global `onTelemetry` handler | No longer polls REST every 2s |
+| KPI Card | `GET /telemetry/:id/latest` — once on mount | ✅ global `onTelemetry` handler | No longer polls REST every 2s |
+| Status Card | — (store only) | ✅ global `onTelemetry` handler | Reads `telemetryStore` reactively |
+| Table | `GET /telemetry/:id/latest` — once on mount | ✅ per-widget `onTelemetry` handler | Was store-only; now independently fetches |
+| Alarm Panel | `GET /alerts/events/active` — once on mount | ✅ `addLiveAlert` handler | Can filter by machine via widget config |
+| Daily Count | `GET /telemetry/:id/daily-count` — on mount | ❌ REST only | Daily granularity; WS not needed |
+
+**Live data flow (gauge, KPI, table, status, alarm):**
+```
+Mount → REST (seed store immediately)
+         ↓
+WS message arrives → global useWebSocket handler
+  → telemetryStore.updateSnapshot()
+  → widget computed re-renders automatically
+```
+
+**Line Chart Live Mode (30-min rolling window):**
+```
+Mount → REST seed: GET /telemetry/:id/series?timeRange=30m
+         ↓
+WS message → append point to liveData[]
+           → trim points older than 30 min
+           → chart re-renders
+Every 5 min → REST re-anchor to keep bucket shapes accurate
+```
 
 ---
 
@@ -195,7 +214,16 @@ User visits /dashboards ───► GET /api/dashboards ───────�
 Click "+ New" ─────────────► POST /api/dashboards {name} ──────────────►
                                                             INSERT dashboards
                              ◄── {id, name, widgets: []} ───────────────
-                             Redirect to /dashboards/:id (editor)
+                             Redirect to /dashboards/:id (empty editor)
+
+[Import Dashboard from JSON]
+Click "Import" ────────────► File picker → user selects .json
+                             Parse {name, description, tags, widgets[]}
+                             POST /api/dashboards {name, ...} ──────────►
+                             ◄── {id, ...} ───────────────────────────────
+                             For each widget in JSON:
+                               POST /api/dashboards/:id/widgets ──────────►
+                             Redirect to /dashboards/:id
 
 [Add a Widget]
 Click "Add Widget" ────────► Select widget type + configure fields
@@ -292,38 +320,44 @@ Lifecycle of an Alert Event:
 ```
 User/Operator generates a shareable kiosk URL:
 
-1. On DashboardEditorPage, click "Export LED"
+1. On DashboardEditorPage, click "Export" (copy LED link or open preview)
    (composable: useLedExport.ts)
 
-2. Frontend serializes selected widgets:
-   widgetIds[] → base64 encode → ?w=<base64string>
+2. Frontend maps each DashboardWidget → LedWidget type:
+   line-chart  → sparkline   (30-min rolling mini chart)
+   gauge       → gauge       (semicircle arc)
+   kpi-card    → metric      (large number readout)
+   status-card → status      (RUNNING / OFFLINE badge)
+   alarm-panel → alarm       (critical / warning counts)
 
-3. Share URL:  https://your-domain.com/led?w=eyJpZHMiOlsiMTIzIiwiNDU2Il19
+3. Serialize: LedWidget[] → JSON → encodeURIComponent → btoa → ?w=<base64>
+
+4. Share URL:  https://your-domain.com/led?w=<base64>
 
 ─────────────────────────────────────────────────────────────
 
-Kiosk Screen opens /led?w=<base64>:
+Kiosk Screen opens /led?w=<base64>  (LedView.vue):
 
-┌───────────────────────────────────────────────┐
-│   LedViewPage (NO auth required)              │
-│                                               │
-│   1. Parse ?w= → decode widgetIds             │
-│                                               │
-│   2. GET /api/telemetry/latest?ids=...        │
-│      (public endpoint, no JWT needed)         │
-│                                               │
-│   3. GET /api/alerts/events/active            │
-│      (public endpoint)                        │
-│                                               │
-│   4. Connect WebSocket (no token)             │
-│      Subscribe to machine IDs                 │
-│                                               │
-│   5. Carousel auto-cycles through widgets     │
-│      (MachineDailyCountWidget, GaugeWidget,   │
-│       KpiCardWidget, AlarmPanelWidget, etc.)  │
-│                                               │
-│   6. Live WS updates refresh widget data      │
-└───────────────────────────────────────────────┘
+Mount sequence:
+  1. Decode ?w= → LedWidget[]
+  2. Connect WebSocket (no token), subscribe to all machineIds
+  3. GET /api/telemetry/:id/latest  (every 2s poll as WS fallback)
+     → telemetryStore.updateSnapshot() → metric/gauge/status cells re-render
+  4. GET /api/alerts/events/active  (once, for alarm cell counts)
+  5. GET /api/telemetry/:id/daily-count  (for daily-count cells, refresh 60s)
+
+  For each sparkline widget:
+  6. GET /api/telemetry/:id/series?timeRange=30m  (seed 30-min history)
+     → liveSparkData[widgetId] seeded with 1-min REST buckets
+  7. WS onTelemetry('*') → append new points to liveSparkData
+                         → trim points older than 30 min
+     → SVG sparkline re-renders with live rolling history
+
+Widget types and their live data:
+  metric / gauge / status  →  telemetryStore (WS + 2s REST poll)
+  alarm                    →  alertStore (REST on mount + WS push)
+  sparkline                →  liveSparkData (REST seed + WS append)
+  daily-count              →  REST only, refresh 60s
 
 No login required — safe to display on factory floor screens.
 ```
@@ -391,8 +425,9 @@ The Dashboard List (`/dashboards`) is your home screen after login.
 | Action | How |
 |--------|-----|
 | View a dashboard | Click the dashboard card |
-| Create a new dashboard | Click the **"+ New Dashboard"** button, enter a name |
-| Delete a dashboard | Open the dashboard → click Delete (admin/editor only) |
+| Create a new dashboard | Click **"+ New Dashboard"**, enter a name — opens an empty canvas |
+| Import a dashboard | Click **"Import"**, select a `.json` file exported from any dashboard |
+| Delete a dashboard | Hover the card → click the trash icon (admin/editor only) |
 
 Each card shows the dashboard name and the number of widgets it contains.
 
@@ -406,23 +441,31 @@ The Dashboard Editor (`/dashboards/:id`) is a drag-and-drop canvas for building 
 1. Click **"Add Widget"** in the toolbar
 2. Select a widget type from the panel:
 
-   | Widget | What it shows |
-   |--------|---------------|
-   | **Line Chart** | Historical time-series for a selected field |
-   | **Gauge** | Live single-value radial gauge |
-   | **KPI Card** | Live single numeric metric |
-   | **Status Card** | Machine online/offline status |
-   | **Table** | All fields in tabular view |
-   | **Alarm Panel** | List of active alert events |
-   | **Machine Daily Count** | Bar chart of daily reading counts |
+   | Widget | What it shows | Config fields |
+   |--------|---------------|---------------|
+   | **Line Chart** | Historical time-series + optional Live Mode | Machine, Field, Color |
+   | **Gauge** | Live single-value radial gauge | Machine, Field, Min/Max |
+   | **KPI Card** | Live single numeric metric | Machine, Field |
+   | **Status Card** | Machine online/offline status | Machine |
+   | **Table** | All fields in tabular view, live via WS | Machine |
+   | **Alarm Panel** | Active alert events, optionally filtered | Machine (optional) |
+   | **Machine Daily Count** | Bar chart of daily reading counts | Machine |
 
-3. Configure the widget: choose a **Machine**, **Field**, and any display options
+3. Configure the widget: choose a **Machine** and **Field** where required
 4. Click **Save** — the widget appears on the canvas
+
+> **Note:** Time Range and Aggregation Period are no longer configurable in the widget modal. Gauge and KPI always show live real-time values. Use Line Chart's built-in date picker or Live Mode for time-range control.
+
+#### Line Chart — Live Mode
+- Click the **"⊙ Live"** button in the chart toolbar to activate Live Mode
+- Live Mode shows the last **30 minutes** of data as a rolling window
+- New WebSocket points are appended to the chart in real-time
+- Click **"Exit Live"** to return to the datetime picker
 
 #### Arranging Widgets
 - **Drag** a widget by its header to reposition
 - **Resize** by dragging the bottom-right corner handle
-- The layout is saved automatically after you stop dragging
+- Click **Save** in the toolbar to persist the layout
 
 #### Editing a Widget
 - Click the **gear icon** on the widget → modify config → Save
@@ -430,10 +473,20 @@ The Dashboard Editor (`/dashboards/:id`) is a drag-and-drop canvas for building 
 #### Deleting a Widget
 - Click the **trash icon** on the widget → confirm
 
-#### Exporting to LED Kiosk
-- Click **"Export LED"** in the toolbar
-- Select which widgets to include in the kiosk view
-- Copy the generated URL and open it on any screen (no login required)
+#### Export Dashboard as JSON
+- Click **"Export"** in the toolbar — downloads `<dashboard-name>.json`
+- The file contains the dashboard name, tags, and all widget configs (type, machine, field, layout)
+- Use it as a template to recreate the dashboard on any environment
+
+#### Import Dashboard from JSON
+- On the Dashboard List page, click **"Import"**
+- Select a previously exported `.json` file
+- A new dashboard is created with all widgets pre-configured
+
+#### LED Kiosk Link
+- Click the **monitor icon** button group in the toolbar
+- **Copy link** — copies the kiosk URL to clipboard
+- **Open preview** — opens the LED view in a new tab (no login required)
 
 ---
 
@@ -637,4 +690,38 @@ Receive:      { "type": "telemetry" | "alert" | "machine_status", "payload": {..
 
 ---
 
-*Last updated: 2026-05-28*
+---
+
+## 6. Backfill & Mock Data
+
+The backfill script (`backend/cmd/backfill/main.go`) generates historical data for all widget types:
+
+| Widget | Data generated |
+|---|---|
+| Line Chart / Gauge / KPI / Table / Status | ~2.3M `telemetry_raw` rows — 4 machines × 405 days × 1 min/point |
+| Daily Count | Same `telemetry_raw` rows (aggregated by day on query) |
+| Alarm Panel | 16 `alert_events` — 13 resolved (historical) + 3 open (recent) |
+
+**Machines seeded:**
+| ID suffix | Name | Fields |
+|---|---|---|
+| `...0005` | CW-01 Checkweigher | weight, speed, throughput, rejects, status_code |
+| `...0006` | TS-01 Temp Sensor | temp, humidity, dew_point |
+| `...0007` | CB-01 Conveyor Belt | speed, load, rpm, vibration |
+| `...0008` | VC-01 Vision Camera | defect_rate, confidence, inspected, passed, failed |
+
+**Alert rules seeded (hardcoded IDs):**
+| ID suffix | Machine | Condition | Severity |
+|---|---|---|---|
+| `...0011` | CW-01 | weight > 510 g | warning |
+| `...0012` | CW-01 | weight < 490 g | critical |
+| `...0013` | TS-01 | temp > 35 °C | critical |
+
+Run backfill:
+```bash
+docker compose exec backend ./backfill
+```
+
+---
+
+*Last updated: 2026-05-29*

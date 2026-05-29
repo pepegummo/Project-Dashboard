@@ -135,9 +135,7 @@ const liveMachineIds = computed(() =>
   [...new Set(displayWidgets.value.filter(w => w.machineId).map(w => w.machineId!))]
 )
 
-// ─── Polling: fetch latest snapshot every 2 s as WebSocket fallback ───────────
-let pollTimer: ReturnType<typeof setInterval> | null = null
-
+// ─── Initial REST seed — called once on mount; WS handler keeps data live ────
 async function fetchAllLatest() {
   for (const mid of liveMachineIds.value) {
     try {
@@ -158,9 +156,39 @@ onMounted(async () => {
 
   if (liveMachineIds.value.length > 0) {
     wsService.subscribe(liveMachineIds.value)
-    await fetchAllLatest()
-    pollTimer = setInterval(fetchAllLatest, 2000)
+    await fetchAllLatest() // seed store once; WS takes over from here
   }
+
+  // Seed sparkline widgets with 30-min REST history
+  const sparkWidgets = displayWidgets.value.filter(w => w.type === 'sparkline' && w.machineId && w.field)
+  for (const w of sparkWidgets) {
+    try {
+      const series = await api.getTelemetrySeries(w.machineId!, w.field!, { timeRange: '30m' })
+      liveSparkData.value[w.id] = (series?.data ?? []).map((p: any) => ({
+        ts:    p.bucket ?? p.ts,
+        value: Number(p.avg ?? p.value),
+      }))
+    } catch { /* silently ignored */ }
+  }
+
+  // Single WS handler: updates telemetryStore (metric/gauge/status) + liveSparkData (sparkline)
+  offSparkTelemetry = wsService.onTelemetry('*', (payload) => {
+    // Feed metric / gauge / status cells
+    telemetryStore.updateSnapshot(payload.machineId, payload.timestamp, payload.data as any)
+
+    // Feed sparkline cells
+    const cutoff = Date.now() - SPARK_WINDOW_MS
+    for (const w of sparkWidgets) {
+      if (w.machineId !== payload.machineId || !w.field) continue
+      const val = (payload.data as any)[w.field]
+      if (val == null) continue
+      if (!liveSparkData.value[w.id]) liveSparkData.value[w.id] = []
+      liveSparkData.value[w.id].push({ ts: payload.timestamp, value: Number(val) })
+      liveSparkData.value[w.id] = liveSparkData.value[w.id].filter(
+        p => new Date(p.ts).getTime() > cutoff,
+      )
+    }
+  })
 
   // Preload alert event counts (non-blocking)
   if (alertStore.activeEvents.length === 0) {
@@ -176,8 +204,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (clockTimer)      { clearInterval(clockTimer);      clockTimer      = null }
-  if (pollTimer)       { clearInterval(pollTimer);       pollTimer       = null }
   if (dailyCountTimer) { clearInterval(dailyCountTimer); dailyCountTimer = null }
+  offSparkTelemetry?.()
   if (liveMachineIds.value.length > 0) {
     wsService.unsubscribe(liveMachineIds.value)
   }
@@ -207,9 +235,13 @@ function resolveWarning(widget: LedWidget): number {
   return widget.warningCount ?? alertStore.warningCount
 }
 
-// ─── Sparkline history (last 30 pts, grouped to 10 for low-res display) ────────
-const SPARK_WINDOW = 30   // minutes of history
-const SPARK_GROUPS = 10   // display points after grouping
+// ─── Sparkline: REST-seeded 30-min rolling data per widget ───────────────────
+const SPARK_WINDOW    = 30   // minutes of history (used for store fallback slice)
+const SPARK_GROUPS    = 10   // display points after grouping
+const SPARK_WINDOW_MS = 30 * 60 * 1000
+
+const liveSparkData = ref<Record<string | number, Array<{ ts: string; value: number }>>>({})
+let offSparkTelemetry: (() => void) | null = null
 
 function groupSparkHistory(
   values: number[],
@@ -230,6 +262,12 @@ function groupSparkHistory(
 }
 
 function resolveSparkHistory(widget: LedWidget): { values: number[]; timestamps: string[] } {
+  // Prefer REST-seeded + WS-appended live data (full 30-min window from load)
+  const live = liveSparkData.value[widget.id]
+  if (live?.length) {
+    return groupSparkHistory(live.map(p => p.value), live.map(p => p.ts), SPARK_GROUPS)
+  }
+  // Fallback: telemetry store rolling history (accumulates from 2s polling)
   if (widget.machineId && widget.field) {
     const hist = telemetryStore.getHistory(widget.machineId, widget.field)
     if (hist?.values.length) {

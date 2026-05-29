@@ -481,6 +481,69 @@ func main() {
 			fmtNum(machineInserted), elapsed, fmtNum(rate))
 	}
 
+	// ── Alert Events ─────────────────────────────────────────────────────────────
+	fmt.Print("\n📋  Generating historical alert events...")
+	_, _ = pool.Exec(ctx, "DELETE FROM alert_events")
+
+	const (
+		alertOverWeight  = "00000000-0000-0000-0000-000000000011"
+		alertUnderWeight = "00000000-0000-0000-0000-000000000012"
+		alertHighTemp    = "00000000-0000-0000-0000-000000000013"
+	)
+
+	type alertEvt struct {
+		alertID    string
+		value      float64
+		message    string
+		status     string
+		createdAt  time.Time
+		resolvedAt *time.Time
+	}
+
+	parseDay := func(s string) time.Time {
+		t, _ := time.Parse("2006-01-02T15:04:05Z", s+"T08:00:00Z")
+		return t
+	}
+	resolvedAfter := func(s string, hours float64) *time.Time {
+		t := parseDay(s).Add(time.Duration(hours * float64(time.Hour)))
+		return &t
+	}
+
+	alertEvents := []alertEvt{
+		{alertOverWeight,  515.23, "Weight exceeded upper tolerance: 515.23 g", "resolved", parseDay("2025-06-12"), resolvedAfter("2025-06-12", 4)},
+		{alertUnderWeight, 483.11, "Weight below lower tolerance: 483.11 g",    "resolved", parseDay("2025-07-03"), resolvedAfter("2025-07-03", 2)},
+		{alertHighTemp,    36.50,  "Temperature exceeded threshold: 36.50 °C",  "resolved", parseDay("2025-08-19"), resolvedAfter("2025-08-19", 6)},
+		{alertOverWeight,  528.74, "Weight exceeded upper tolerance: 528.74 g", "resolved", parseDay("2025-09-07"), resolvedAfter("2025-09-07", 3)},
+		{alertUnderWeight, 476.42, "Weight below lower tolerance: 476.42 g",    "resolved", parseDay("2025-10-14"), resolvedAfter("2025-10-14", 5)},
+		{alertHighTemp,    38.20,  "Temperature exceeded threshold: 38.20 °C",  "resolved", parseDay("2025-11-02"), resolvedAfter("2025-11-02", 8)},
+		{alertOverWeight,  519.31, "Weight exceeded upper tolerance: 519.31 g", "resolved", parseDay("2025-12-18"), resolvedAfter("2025-12-18", 2)},
+		{alertUnderWeight, 488.05, "Weight below lower tolerance: 488.05 g",    "resolved", parseDay("2026-01-09"), resolvedAfter("2026-01-09", 3)},
+		{alertHighTemp,    35.83,  "Temperature exceeded threshold: 35.83 °C",  "resolved", parseDay("2026-02-22"), resolvedAfter("2026-02-22", 7)},
+		{alertOverWeight,  531.62, "Weight exceeded upper tolerance: 531.62 g", "resolved", parseDay("2026-03-15"), resolvedAfter("2026-03-15", 4)},
+		{alertUnderWeight, 471.90, "Weight below lower tolerance: 471.90 g",    "resolved", parseDay("2026-04-04"), resolvedAfter("2026-04-04", 6)},
+		{alertHighTemp,    37.15,  "Temperature exceeded threshold: 37.15 °C",  "resolved", parseDay("2026-05-11"), resolvedAfter("2026-05-11", 5)},
+		{alertOverWeight,  522.48, "Weight exceeded upper tolerance: 522.48 g", "resolved", parseDay("2026-05-28"), resolvedAfter("2026-05-28", 3)},
+		// Recent open events — shown in alarm-panel widget
+		{alertUnderWeight, 479.31, "Weight below lower tolerance: 479.31 g",    "open",     parseDay("2026-06-01"), nil},
+		{alertHighTemp,    36.82,  "Temperature exceeded threshold: 36.82 °C",  "open",     parseDay("2026-06-05"), nil},
+		{alertOverWeight,  514.71, "Weight exceeded upper tolerance: 514.71 g", "open",     parseDay("2026-06-08"), nil},
+	}
+
+	alertInserted := 0
+	for _, ev := range alertEvents {
+		_, err := pool.Exec(ctx, `
+			INSERT INTO alert_events (id, alert_id, value, message, status, created_at, resolved_at)
+			VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)
+		`, ev.alertID, ev.value, ev.message, ev.status, ev.createdAt, ev.resolvedAt)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "\n⚠️   Alert event insert failed: %v\n", err)
+		} else {
+			alertInserted++
+		}
+	}
+	openCount := 3
+	fmt.Printf(" %d events inserted (%d open, %d resolved)\n", alertInserted, openCount, alertInserted-openCount)
+
 	totalElapsed := time.Since(overallStart).Seconds()
 	fmt.Printf("🎉  Backfill complete!\n")
 	fmt.Printf("   Range    : %s → %s\n", startDateStr[:10], endDateStr[:10])

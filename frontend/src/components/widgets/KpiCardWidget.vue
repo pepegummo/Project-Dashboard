@@ -54,9 +54,7 @@ const trendPct = computed(() => {
   return ((trend.value / Math.abs(prev)) * 100).toFixed(1);
 });
 
-// ── Live mode: WebSocket subscription + 2-second polling fallback ─────────────
-let pollTimer: ReturnType<typeof setInterval> | null = null;
-
+// ── Live mode: WebSocket subscription + one-time REST seed ───────────────────
 async function fetchLatest() {
   if (!machineId.value) return;
   try {
@@ -68,14 +66,12 @@ async function fetchLatest() {
 onMounted(() => {
   if (isLive && machineId.value) {
     wsService.subscribe([machineId.value]);
-    fetchLatest();
-    pollTimer = setInterval(fetchLatest, 2000);
+    fetchLatest(); // seed store immediately from DB; WS handles all subsequent updates
   }
 });
 
 onUnmounted(() => {
   if (isLive && machineId.value) wsService.unsubscribe([machineId.value]);
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
 });
 
 const machineField = computed(() => props.widget.machine?.fields?.find(f => f.key === field.value));

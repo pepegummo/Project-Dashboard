@@ -4,6 +4,7 @@ import VChart from 'vue-echarts';
 import type { EChartsOption } from 'echarts';
 import type { DashboardWidget } from '@/types';
 import { useFieldSeries } from '@/composables/useTelemetry';
+import { useLiveFieldSeries } from '@/composables/useLiveFieldSeries';
 import { useWidgetViewStateStore } from '@/stores/widget-view-state.store';
 
 const props = defineProps<{ widget: DashboardWidget }>();
@@ -59,11 +60,13 @@ onUnmounted(() => {
 // ─────────────────────────────────────────────────────────────────────────────
 // Duration
 // ─────────────────────────────────────────────────────────────────────────────
-const rangeDurationMs = computed(() =>
-  new Date(endDateTime.value).getTime() - new Date(startDateTime.value).getTime(),
-);
+const rangeDurationMs = computed(() => {
+  if (liveMode.value) return 30 * 60 * 1000; // live mode = 30-min window → time-only axis labels
+  return new Date(endDateTime.value).getTime() - new Date(startDateTime.value).getTime();
+});
 
 const bucketLabel = computed(() => {
+  if (liveMode.value) return '1 min';
   const ms = rangeDurationMs.value;
   if (ms <=  1 * 60 * 60 * 1000) return '1 min';
   if (ms <=  6 * 60 * 60 * 1000) return '5 min';
@@ -73,14 +76,23 @@ const bucketLabel = computed(() => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Data
+// Data — historical (REST) and live (REST seed + WS append)
 // ─────────────────────────────────────────────────────────────────────────────
-const { mergedData, loading } = useFieldSeries(
+const liveMode = ref(false);
+
+const { mergedData, loading: histLoading } = useFieldSeries(
   machineId.value,
   field.value,
   startDateTime,
   endDateTime,
 );
+
+const { liveData, loading: liveLoading } = useLiveFieldSeries(machineId, field);
+
+const chartData = computed<Array<{ ts: string; value: number; min?: number; max?: number }>>(
+  () => liveMode.value ? liveData.value : mergedData.value,
+);
+const loading = computed<boolean>(() => liveMode.value ? liveLoading.value : histLoading.value);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Limits / Thresholds
@@ -95,7 +107,7 @@ const lowerLimit = computed(() => machineField.value?.lowerLimit ?? null);
 
 const hasProblems = computed(() => {
   if (lowerLimit.value === null && upperLimit.value === null) return false;
-  return mergedData.value.some(p => {
+  return chartData.value.some(p => {
     if (upperLimit.value !== null && p.value > upperLimit.value) return true;
     if (lowerLimit.value !== null && p.value < lowerLimit.value) return true;
     return false;
@@ -106,7 +118,9 @@ const hasProblems = computed(() => {
 // Chart refs / zoom state
 // ─────────────────────────────────────────────────────────────────────────────
 const chartRef = ref<InstanceType<typeof VChart> | null>(null);
-const isZoomed = ref(false);
+const isZoomed  = ref(false);
+const zoomStart = ref(0);
+const zoomEnd   = ref(100);
 
 const visibleYMin = ref<number | undefined>(undefined);
 const visibleYMax = ref<number | undefined>(undefined);
@@ -120,7 +134,9 @@ function handleZoom(e: any) {
   const batch = e?.batch?.[0] ?? e;
   const start = batch?.start ?? 0;
   const end   = batch?.end   ?? 100;
-  isZoomed.value = !(start === 0 && end === 100);
+  zoomStart.value = start;
+  zoomEnd.value   = end;
+  isZoomed.value  = !(start === 0 && end === 100);
 
   if (!isZoomed.value) {
     visibleYMin.value = undefined;
@@ -129,10 +145,10 @@ function handleZoom(e: any) {
     return;
   }
 
-  const total    = mergedData.value.length;
+  const total    = chartData.value.length;
   const startIdx = Math.floor(start / 100 * total);
   const endIdx   = Math.ceil(end   / 100 * total);
-  const visible  = mergedData.value.slice(startIdx, endIdx);
+  const visible  = chartData.value.slice(startIdx, endIdx);
   const values   = visible.map(p => p.value).filter(v => v != null);
   if (!values.length) return;
 
@@ -150,16 +166,21 @@ function handleZoom(e: any) {
 
 function onDataZoom(e: any) {
   if (zoomTimer) clearTimeout(zoomTimer);
-  zoomTimer = window.setTimeout(() => handleZoom(e), 16);
+  zoomTimer = window.setTimeout(() => handleZoom(e), 100);
 }
 
 function resetZoom() {
+  zoomStart.value   = 0;
+  zoomEnd.value     = 100;
   chartRef.value?.chart?.dispatchAction({ type: 'dataZoom', start: 0, end: 100 });
   isZoomed.value    = false;
   visibleYMin.value = undefined;
   visibleYMax.value = undefined;
   chartRef.value?.chart?.setOption({ yAxis: { min: null, max: null } });
 }
+
+// Clear zoom state when entering live mode (streaming data breaks any fixed zoom window)
+watch(liveMode, (isLive) => { if (isLive) resetZoom(); });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Time formatting
@@ -184,7 +205,7 @@ function formatLabel(ts: string): string {
   return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
-const shouldRotate = computed(() => rangeDurationMs.value >= 7 * 24 * 60 * 60 * 1000);
+const shouldRotate = computed(() => !liveMode.value && rangeDurationMs.value >= 7 * 24 * 60 * 60 * 1000);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ECharts option
@@ -195,7 +216,7 @@ const option = computed<EChartsOption>(() => {
   const avgSeries: any = {
     type: 'line',
     name: field.value,
-    data: mergedData.value.map(p => p.value),
+    data: chartData.value.map(p => p.value),
     smooth: 0.3,
     symbol: 'none',
     lineStyle: { width: 2 },
@@ -216,7 +237,7 @@ const option = computed<EChartsOption>(() => {
   // Separate series for markLine so visualMap on seriesIndex:0 never overrides line colours.
   const refSeries: any = {
     type: 'line',
-    data: new Array(mergedData.value.length).fill(null),
+    data: new Array(chartData.value.length).fill(null),
     lineStyle: { width: 0 },
     symbol: 'none',
     silent: true,
@@ -268,7 +289,7 @@ const option = computed<EChartsOption>(() => {
 
     xAxis: {
       type: 'category',
-      data: mergedData.value.map(p => formatLabel(p.ts)),
+      data: chartData.value.map(p => formatLabel(p.ts)),
       axisLabel: {
         color: '#6b7280',
         fontSize: 10,
@@ -312,7 +333,7 @@ const option = computed<EChartsOption>(() => {
         const p = Array.isArray(params) ? params[0] : params;
         const idx = p.dataIndex as number;
         const val = p.value as number;
-        const pt  = mergedData.value[idx];
+        const pt  = chartData.value[idx];
 
         const outOfRange =
           (upperLimit.value !== null && val > upperLimit.value) ||
@@ -336,13 +357,17 @@ const option = computed<EChartsOption>(() => {
 
     series: [avgSeries, refSeries],
 
-    dataZoom: [{
+    dataZoom: liveMode.value ? [] : [{
       type: 'inside',
       xAxisIndex: 0,
       filterMode: 'filter',
       zoomOnMouseWheel: true,
       moveOnMouseMove: true,
       moveOnMouseWheel: false,
+      minValueSpan: 2,
+      throttle: 60,
+      start: zoomStart.value,
+      end: zoomEnd.value,
     }],
   };
 });
@@ -377,22 +402,45 @@ const option = computed<EChartsOption>(() => {
         </div>
       </div>
 
-      <!-- Date range -->
+      <!-- Date range / Live toggle row -->
       <div class="flex items-center gap-1 px-1 pb-0.5 flex-shrink-0 flex-wrap text-[9px] text-gray-400">
-        <span>From</span>
-        <input
-          v-model="startDateTime"
-          type="datetime-local"
-          class="bg-surface-300 text-gray-200 rounded px-1 py-0.5 border border-gray-700 focus:outline-none focus:border-blue-500 text-[9px]"
-          style="color-scheme: dark"
-        />
-        <span>To</span>
-        <input
-          v-model="endDateTime"
-          type="datetime-local"
-          class="bg-surface-300 text-gray-200 rounded px-1 py-0.5 border border-gray-700 focus:outline-none focus:border-blue-500 text-[9px]"
-          style="color-scheme: dark"
-        />
+        <!-- Historical datetime picker -->
+        <template v-if="!liveMode">
+          <span>From</span>
+          <input
+            v-model="startDateTime"
+            type="datetime-local"
+            class="bg-surface-300 text-gray-200 rounded px-1 py-0.5 border border-gray-700 focus:outline-none focus:border-blue-500 text-[9px]"
+            style="color-scheme: dark"
+          />
+          <span>To</span>
+          <input
+            v-model="endDateTime"
+            type="datetime-local"
+            class="bg-surface-300 text-gray-200 rounded px-1 py-0.5 border border-gray-700 focus:outline-none focus:border-blue-500 text-[9px]"
+            style="color-scheme: dark"
+          />
+        </template>
+
+        <!-- Live mode badge -->
+        <span
+          v-else
+          class="flex items-center gap-1 px-1.5 py-0.5 rounded-full font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/20"
+        >
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse inline-block" />
+          LIVE · 30 min
+        </span>
+
+        <!-- Toggle button (always visible) -->
+        <button
+          class="ml-auto px-1.5 py-0.5 rounded font-medium border transition-colors"
+          :class="liveMode
+            ? 'bg-emerald-600/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-600/30'
+            : 'bg-surface-300 text-gray-400 border-gray-700 hover:text-emerald-400 hover:border-emerald-500/30'"
+          @click="liveMode = !liveMode"
+        >
+          {{ liveMode ? 'Exit Live' : '⊙ Live' }}
+        </button>
       </div>
 
       <!-- Chart -->

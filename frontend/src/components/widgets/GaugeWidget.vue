@@ -24,9 +24,7 @@ const { summary, loading: aggLoading, periodLabel, isLive } =
 const liveValue    = computed(() => store.getFieldValue(machineId.value, field.value) ?? 0);
 const currentValue = computed(() => (!isLive && summary.value != null) ? summary.value.avg : liveValue.value);
 
-// ── Live mode: WebSocket subscription + 2-second polling fallback ─────────────
-let pollTimer: ReturnType<typeof setInterval> | null = null;
-
+// ── Live mode: WebSocket subscription + one-time REST seed ───────────────────
 async function fetchLatest() {
   if (!machineId.value) return;
   try {
@@ -37,15 +35,13 @@ async function fetchLatest() {
 
 onMounted(() => {
   if (isLive && machineId.value) {
-    wsService.subscribe([machineId.value]);   // live data from simulator (if running)
-    fetchLatest();                             // seed store immediately from DB
-    pollTimer = setInterval(fetchLatest, 2000); // refresh every 2 s
+    wsService.subscribe([machineId.value]);
+    fetchLatest(); // seed store immediately from DB; WS handles all subsequent updates
   }
 });
 
 onUnmounted(() => {
   if (isLive && machineId.value) wsService.unsubscribe([machineId.value]);
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
 });
 
 // ── Threshold / limits from machine_field ─────────────────────────────────

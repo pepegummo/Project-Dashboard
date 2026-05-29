@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted, onUnmounted } from 'vue';
 import type { DashboardWidget } from '@/types';
 import { useTelemetryStore } from '@/stores/telemetry.store';
 import { useMachineStore } from '@/stores/machine.store';
+import { api } from '@/services/api.service';
+import { wsService } from '@/services/ws.service';
 
 const props = defineProps<{ widget: DashboardWidget }>();
 
@@ -12,6 +14,25 @@ const machineStore = useMachineStore();
 const machineId = computed(() => props.widget.machineId ?? '');
 const machine = computed(() => machineStore.machineById(machineId.value));
 const snapshot = computed(() => telemetryStore.getLatest(machineId.value));
+
+let offTelemetry: (() => void) | null = null;
+
+onMounted(async () => {
+  if (!machineId.value) return;
+  try {
+    const snap = await api.getLatestTelemetry(machineId.value);
+    if (snap) telemetryStore.updateSnapshot(machineId.value, (snap as any).timestamp, (snap as any).data ?? {});
+  } catch {}
+  wsService.subscribe([machineId.value]);
+  offTelemetry = wsService.onTelemetry(machineId.value, (payload) => {
+    telemetryStore.updateSnapshot(machineId.value, payload.timestamp, payload.data as any);
+  });
+});
+
+onUnmounted(() => {
+  offTelemetry?.();
+  if (machineId.value) wsService.unsubscribe([machineId.value]);
+});
 
 const rows = computed(() => {
   if (!snapshot.value || !machine.value) return [];
