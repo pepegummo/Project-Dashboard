@@ -13,6 +13,7 @@ const severities = computed(() => (props.widget.config?.severities as string[]) 
 const displayAlerts = computed(() => {
   return alertStore.liveAlerts
     .filter(a => severities.value.includes(a.severity))
+    .filter(a => !props.widget.machineId || a.machineId === props.widget.machineId)
     .slice(0, maxItems.value);
 });
 
@@ -38,9 +39,9 @@ onMounted(() => {
     <!-- Header -->
     <div class="flex items-center justify-between mb-2 px-1">
       <div class="flex items-center gap-1.5">
-        <span :class="alertStore.openCount > 0 ? 'status-dot-error' : 'status-dot-online'" />
+        <span :class="displayAlerts.length > 0 ? 'status-dot-error' : 'status-dot-online'" />
         <span class="text-[10px] text-gray-500 uppercase font-medium">
-          {{ alertStore.openCount > 0 ? `${alertStore.openCount} Active` : 'All Clear' }}
+          {{ displayAlerts.length > 0 ? `${displayAlerts.length} Active` : 'All Clear' }}
         </span>
       </div>
     </div>
