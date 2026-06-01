@@ -11,7 +11,7 @@ COPY . .
 #    Pass them as --build-arg in docker compose / docker build.
 #    Runtime env vars (docker run -e) have NO effect on the static bundle.
 ARG VITE_API_URL=""
-ARG VITE_WS_URL="ws://localhost:5173/ws"
+ARG VITE_WS_URL=""
 ENV VITE_API_URL=${VITE_API_URL}
 ENV VITE_WS_URL=${VITE_WS_URL}
 

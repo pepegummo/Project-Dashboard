@@ -12,11 +12,11 @@ func RegisterRoutes(router fiber.Router) {
 	// Public endpoints (for LED kiosk)
 	router.Get("/latest", ctrl.GetLatestMulti)
 	router.Get("/:machineId/latest", ctrl.GetLatest)
+	router.Get("/:machineId/series", ctrl.GetSeries)
+	router.Get("/:machineId/daily-count", ctrl.GetDailyCount)
+	router.Get("/:machineId/total-count", ctrl.GetTotalCount)
 
 	// Protected endpoints
-	router.Get("/:machineId/series", middleware.Authenticate, ctrl.GetSeries)
 	router.Get("/:machineId/aggregate", middleware.Authenticate, ctrl.GetAggregate)
-	router.Get("/:machineId/daily-count", middleware.Authenticate, ctrl.GetDailyCount)
-	router.Get("/:machineId/total-count", middleware.Authenticate, ctrl.GetTotalCount)
 	router.Post("/:machineId/ingest", middleware.Authenticate, ctrl.Ingest)
 }

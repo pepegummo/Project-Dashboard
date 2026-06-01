@@ -96,9 +96,11 @@ func calculateBucketForDuration(d time.Duration) string {
 	}
 }
 
-func (s *Service) GetSeries(ctx context.Context, machineID, field, timeRange, startTimeStr, endTimeStr, orgID string) (map[string]interface{}, error) {
-	if err := s.requireMachineInOrg(ctx, machineID, orgID); err != nil {
-		return nil, err
+func (s *Service) GetSeries(ctx context.Context, machineID, field, timeRange, startTimeStr, endTimeStr string, orgID *string) (map[string]interface{}, error) {
+	if orgID != nil {
+		if err := s.requireMachineInOrg(ctx, machineID, *orgID); err != nil {
+			return nil, err
+		}
 	}
 
 	var from, to time.Time
@@ -155,9 +157,11 @@ func (s *Service) GetAggregate(ctx context.Context, machineID, field, period, or
 	}, nil
 }
 
-func (s *Service) GetDailyCount(ctx context.Context, machineID string, days int, orgID string) (map[string]interface{}, error) {
-	if err := s.requireMachineInOrg(ctx, machineID, orgID); err != nil {
-		return nil, err
+func (s *Service) GetDailyCount(ctx context.Context, machineID string, days int, orgID *string) (map[string]interface{}, error) {
+	if orgID != nil {
+		if err := s.requireMachineInOrg(ctx, machineID, *orgID); err != nil {
+			return nil, err
+		}
 	}
 	data, err := s.repo.GetDailyCount(ctx, machineID, days)
 	if err != nil {
@@ -166,9 +170,11 @@ func (s *Service) GetDailyCount(ctx context.Context, machineID string, days int,
 	return map[string]interface{}{"machineId": machineID, "days": days, "data": data}, nil
 }
 
-func (s *Service) GetTotalCount(ctx context.Context, machineID, orgID string) (*TotalCount, error) {
-	if err := s.requireMachineInOrg(ctx, machineID, orgID); err != nil {
-		return nil, err
+func (s *Service) GetTotalCount(ctx context.Context, machineID string, orgID *string) (*TotalCount, error) {
+	if orgID != nil {
+		if err := s.requireMachineInOrg(ctx, machineID, *orgID); err != nil {
+			return nil, err
+		}
 	}
 	return s.repo.GetTotalCount(ctx, machineID)
 }

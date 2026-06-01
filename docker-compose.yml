@@ -163,7 +163,7 @@ services:
         # Relative base URL — works on any host without rebuilding
         VITE_API_URL: "${VITE_API_URL:-}"
         # WebSocket routed through Nginx on the same port as the SPA
-        VITE_WS_URL:  "${VITE_WS_URL:-ws://localhost:5173/ws}"
+        VITE_WS_URL:  "${VITE_WS_URL:-}"
     image: cpf-frontend:local
     container_name: iot_frontend
     restart: unless-stopped

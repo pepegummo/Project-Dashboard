@@ -123,7 +123,7 @@ func (r *Repository) Delete(ctx context.Context, id string) error {
 
 func (r *Repository) GetActiveAlerts(ctx context.Context, orgID *string) ([]AlertEvent, error) {
 	query := `
-		SELECT ae.id, ae.alert_id, a.name, m.id, m.name, ae.value, ae.message,
+		SELECT ae.id, ae.alert_id, a.name, m.id, m.name, ae.value, COALESCE(ae.message, ''),
 		       ae.status, a.severity, a.field, ae.triggered_at, ae.acknowledged_at, ae.resolved_at
 		FROM alert_events ae
 		JOIN alerts a ON a.id = ae.alert_id

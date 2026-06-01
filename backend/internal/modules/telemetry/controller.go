@@ -38,12 +38,11 @@ func (ctrl *Controller) GetLatest(c *fiber.Ctx) error {
 }
 
 func (ctrl *Controller) GetSeries(c *fiber.Ctx) error {
-	user := middleware.GetUser(c)
 	field := c.Query("field")
 	timeRange := c.Query("timeRange", "1h")
 	startTime := c.Query("startTime", "")
 	endTime := c.Query("endTime", "")
-	result, err := ctrl.svc.GetSeries(c.Context(), c.Params("machineId"), field, timeRange, startTime, endTime, user.OrgId)
+	result, err := ctrl.svc.GetSeries(c.Context(), c.Params("machineId"), field, timeRange, startTime, endTime, nil)
 	if err != nil {
 		return err
 	}
@@ -62,9 +61,8 @@ func (ctrl *Controller) GetAggregate(c *fiber.Ctx) error {
 }
 
 func (ctrl *Controller) GetDailyCount(c *fiber.Ctx) error {
-	user := middleware.GetUser(c)
 	days, _ := strconv.Atoi(c.Query("days", "7"))
-	result, err := ctrl.svc.GetDailyCount(c.Context(), c.Params("machineId"), days, user.OrgId)
+	result, err := ctrl.svc.GetDailyCount(c.Context(), c.Params("machineId"), days, nil)
 	if err != nil {
 		return err
 	}
@@ -72,8 +70,7 @@ func (ctrl *Controller) GetDailyCount(c *fiber.Ctx) error {
 }
 
 func (ctrl *Controller) GetTotalCount(c *fiber.Ctx) error {
-	user := middleware.GetUser(c)
-	result, err := ctrl.svc.GetTotalCount(c.Context(), c.Params("machineId"), user.OrgId)
+	result, err := ctrl.svc.GetTotalCount(c.Context(), c.Params("machineId"), nil)
 	if err != nil {
 		return err
 	}

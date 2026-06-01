@@ -158,6 +158,11 @@ async function fetchAllLatest() {
 onMounted(async () => {
   clockTimer = setInterval(() => { now.value = new Date() }, 1000)
 
+  if (!wsService.isConnected) {
+    wsService.connect(null)  // public kiosk — no token needed
+    ownedWsConnection = true
+  }
+
   if (liveMachineIds.value.length > 0) {
     wsService.subscribe(liveMachineIds.value)
     await fetchAllLatest() // seed store once; WS takes over from here
@@ -213,6 +218,10 @@ onUnmounted(() => {
   if (liveMachineIds.value.length > 0) {
     wsService.unsubscribe(liveMachineIds.value)
   }
+  if (ownedWsConnection) {
+    wsService.disconnect()
+    ownedWsConnection = false
+  }
 })
 
 // ─── Value resolvers ───────────────────────────────────────────────────────────
@@ -246,6 +255,7 @@ const SPARK_WINDOW_MS = 30 * 60 * 1000
 
 const liveSparkData = ref<Record<string | number, Array<{ ts: string; value: number }>>>({})
 let offSparkTelemetry: (() => void) | null = null
+let ownedWsConnection = false
 
 function groupSparkHistory(
   values: number[],
