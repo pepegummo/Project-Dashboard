@@ -4,6 +4,9 @@ import { useDashboardStore } from '@/stores/dashboard.store'
 import { useMachineStore } from '@/stores/machine.store'
 import { useTelemetryStore } from '@/stores/telemetry.store'
 import { useAlertStore } from '@/stores/alert.store'
+import { useWebSocket } from '@/composables/useWebSocket'
+import { wsService } from '@/services/ws.service'
+import { api } from '@/services/api.service'
 
 const props = withDefaults(defineProps<{
   interval?: number
@@ -13,6 +16,10 @@ const dashboardStore = useDashboardStore()
 const machineStore   = useMachineStore()
 const telemetryStore = useTelemetryStore()
 const alertStore     = useAlertStore()
+
+// Register WS handlers (telemetry → store, alerts → store)
+// Required because TopBar (the normal host of useWebSocket) is not rendered in LED mode.
+useWebSocket()
 
 // ── Slides: one per dashboard widget, sorted by position order ─────────────
 // Keep alarm-panel (no machine) and any widget that has a machineId.
@@ -168,8 +175,21 @@ onMounted(async () => {
     const target = dashboardStore.defaultDashboard ?? dashboardStore.dashboards[0]
     if (target) await dashboardStore.fetchDashboard(target.id)
   }
-  if (machineStore.machines.length === 0)      await machineStore.fetchMachines()
-  if (alertStore.activeEvents.length === 0)    await alertStore.fetchActiveEvents()
+  if (machineStore.machines.length === 0) await machineStore.fetchMachines()
+  if (alertStore.activeEvents.length === 0) await alertStore.fetchActiveEvents()
+
+  // Subscribe to live WS data for all machines and seed initial values from DB.
+  // Without this, LED mode would show '—' until the next simulator tick (up to 60s).
+  const machineIds = machineStore.machines.map(m => m.id)
+  if (machineIds.length > 0) {
+    wsService.subscribe(machineIds)
+    try {
+      const snapshots = await api.getMultiLatestTelemetry(machineIds)
+      for (const [machineId, snap] of Object.entries(snapshots)) {
+        telemetryStore.updateSnapshot(machineId, snap.timestamp, snap.data as any)
+      }
+    } catch { /* non-fatal — WS will populate on next tick */ }
+  }
 
   if (slides.value.length > 1 && timer === null) timer = setInterval(advance, props.interval)
   window.addEventListener('keydown', handleKeydown)
@@ -178,6 +198,8 @@ onMounted(async () => {
 onUnmounted(() => {
   if (timer !== null) { clearInterval(timer); timer = null }
   window.removeEventListener('keydown', handleKeydown)
+  const machineIds = machineStore.machines.map(m => m.id)
+  if (machineIds.length > 0) wsService.unsubscribe(machineIds)
 })
 </script>
 

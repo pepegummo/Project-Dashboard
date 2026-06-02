@@ -134,26 +134,26 @@ func initFields(machineType string) []fieldState {
 		return []fieldState{
 			{key: "weight", threshold: 500, duty: randDuty()},
 			{key: "speed", threshold: 60, duty: randDuty()},
-			{key: "throughput", threshold: 1200, duty: randDuty()},
-			{key: "rejects", threshold: 5, duty: randDuty()},
+			{key: "throughput", threshold: 60, duty: randDuty()},
+			{key: "rejects", threshold: 1.5, duty: randDuty()},
 		}
 	case "temperature_sensor":
 		return []fieldState{
 			{key: "temp", threshold: 22, duty: randDuty()},
 			{key: "humidity", threshold: 55, duty: randDuty()},
-			{key: "dew_point", threshold: 12, duty: randDuty()},
+			{key: "dew_point", threshold: 11, duty: randDuty()},
 		}
 	case "conveyor":
 		return []fieldState{
-			{key: "speed", threshold: 1.5, duty: randDuty()},
-			{key: "load", threshold: 80, duty: randDuty()},
+			{key: "speed", threshold: 1000, duty: randDuty()},
+			{key: "load", threshold: 45, duty: randDuty()},
 			{key: "rpm", threshold: 750, duty: randDuty()},
-			{key: "vibration", threshold: 0.5, duty: randDuty()},
+			{key: "vibration", threshold: 5, duty: randDuty()},
 		}
 	case "vision_camera":
 		return []fieldState{
-			{key: "defect_rate", threshold: 2.0, duty: randDuty()},
-			{key: "confidence", threshold: 98.5, duty: randDuty()},
+			{key: "defect_rate", threshold: 1.0, duty: randDuty()},
+			{key: "confidence", threshold: 97, duty: randDuty()},
 		}
 	default:
 		return []fieldState{{key: "value", threshold: 100, duty: randDuty()}}

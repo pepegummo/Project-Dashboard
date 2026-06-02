@@ -36,8 +36,8 @@ import (
 
 // ─── Constants (identical to backend/prisma/backfill.ts) ──────────────────────
 const (
-	startDateStr = "2025-05-01T00:00:00Z"
-	endDateStr   = "2026-06-10T23:59:00Z"
+	startDateStr = "2025-06-01T00:00:00Z"
+	endDateStr   = "2026-06-15T23:59:00Z"
 	batchSize    = 5_000
 	transTicks   = 7_200  // 5-day smooth transition edge  (5 × 24 × 60)
 	driftPeriod  = 43_200 // 30-day sinusoidal drift       (30 × 24 × 60)
@@ -205,6 +205,36 @@ type batchRow struct {
 	data      map[string]interface{}
 }
 
+// ─── Alert rule (loaded from DB for historical evaluation) ────────────────────
+type alertRuleDef struct {
+	id          string
+	machineID   string
+	name        string
+	field       string
+	condition   string
+	threshold   float64
+	thresholdHi *float64
+	severity    string
+}
+
+func checkAlertCondition(val float64, condition string, threshold float64, thresholdHi *float64) bool {
+	switch condition {
+	case "gt":
+		return val > threshold
+	case "lt":
+		return val < threshold
+	case "gte":
+		return val >= threshold
+	case "lte":
+		return val <= threshold
+	case "between":
+		return thresholdHi != nil && val >= threshold && val <= *thresholdHi
+	case "outside":
+		return thresholdHi != nil && (val < threshold || val > *thresholdHi)
+	}
+	return false
+}
+
 // ─── Bulk insert via pgx SendBatch ────────────────────────────────────────────
 // SendBatch pipelines all statements in one network round-trip; equivalent
 // to the multi-row INSERT used by the TypeScript backfill.
@@ -270,6 +300,31 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Load active alert rules for historical evaluation
+	ruleRows, err := pool.Query(ctx, `
+		SELECT id, machine_id, name, field, condition, threshold, threshold_hi, severity
+		FROM alerts WHERE is_active = true
+	`)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌  Failed to load alert rules: %v\n", err)
+		os.Exit(1)
+	}
+	rulesByMachine := map[string][]alertRuleDef{}
+	for ruleRows.Next() {
+		var r alertRuleDef
+		if err := ruleRows.Scan(&r.id, &r.machineID, &r.name, &r.field, &r.condition, &r.threshold, &r.thresholdHi, &r.severity); err == nil {
+			rulesByMachine[r.machineID] = append(rulesByMachine[r.machineID], r)
+		}
+	}
+	ruleRows.Close()
+	fmt.Printf("✅  Loaded %d alert rule(s)\n", func() int {
+		n := 0
+		for _, rs := range rulesByMachine {
+			n += len(rs)
+		}
+		return n
+	}())
+
 	// Parse date range
 	startDate, _ := time.Parse(time.RFC3339, startDateStr)
 	endDate, _ := time.Parse(time.RFC3339, endDateStr)
@@ -287,14 +342,23 @@ func main() {
 	fmt.Printf("   Total rows  : ~%s  (%s per machine × 4)\n", fmtNum(totalRows), fmtNum(rowsPerMachine))
 	fmt.Printf("   Batch size  : %s rows per flush\n\n", fmtNum(batchSize))
 
-	// Clear existing telemetry data
+	// Clear existing telemetry + alert event data
 	fmt.Print("🗑️   Clearing existing telemetry data...")
 	ct, err := pool.Exec(ctx, "DELETE FROM telemetry_raw")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\n❌  Delete failed: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf(" deleted %s rows\n\n", fmtNum(int(ct.RowsAffected())))
+	fmt.Printf(" deleted %s rows\n", fmtNum(int(ct.RowsAffected())))
+	fmt.Print("🗑️   Clearing existing alert events...")
+	ae, _ := pool.Exec(ctx, "DELETE FROM alert_events")
+	fmt.Printf(" deleted %s rows\n\n", fmtNum(int(ae.RowsAffected())))
+
+	// Cutoff: events triggered before this date are auto-resolved
+	openCutoff := endDate.Add(-7 * 24 * time.Hour)
+	// Minimum ticks between alert events for the same rule (4 hours)
+	const histCooldownTicks = 240
+	totalAlertEvents := 0
 
 	// ── CW-01: Checkweigher ───────────────────────────────────────────────────
 	cwWeight := newRTPGen(rtpConfig{
@@ -440,13 +504,50 @@ func main() {
 		machineStart := time.Now()
 		machineInserted := 0
 		batch := make([]batchRow, 0, batchSize)
+		lastFiredTick := map[string]int{} // rule id → last tick when event was created
 
 		for tick := 0; tick < rowsPerMachine; tick++ {
 			ts := startDate.Add(time.Duration(tick) * time.Minute)
+			data := m.generate(tick)
+
+			// Evaluate alert rules against this data point
+			for _, rule := range rulesByMachine[m.id] {
+				raw, ok := data[rule.field]
+				if !ok {
+					continue
+				}
+				val, ok := raw.(float64)
+				if !ok {
+					continue
+				}
+				if !checkAlertCondition(val, rule.condition, rule.threshold, rule.thresholdHi) {
+					continue
+				}
+				if last, fired := lastFiredTick[rule.id]; fired && tick-last < histCooldownTicks {
+					continue
+				}
+				lastFiredTick[rule.id] = tick
+
+				status := "open"
+				var resolvedAt *time.Time
+				if ts.Before(openCutoff) {
+					status = "resolved"
+					t := ts.Add(4 * time.Hour)
+					resolvedAt = &t
+				}
+				msg := fmt.Sprintf("%s: %s = %.2f (%s %.2f)", rule.name, rule.field, val, rule.condition, rule.threshold)
+				if _, insertErr := pool.Exec(ctx, `
+					INSERT INTO alert_events (id, alert_id, value, message, status, triggered_at, resolved_at)
+					VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)
+				`, rule.id, val, msg, status, ts, resolvedAt); insertErr == nil {
+					totalAlertEvents++
+				}
+			}
+
 			batch = append(batch, batchRow{
 				machineID: m.id,
 				ts:        ts,
-				data:      m.generate(tick),
+				data:      data,
 			})
 
 			if len(batch) >= batchSize {
@@ -481,75 +582,13 @@ func main() {
 			fmtNum(machineInserted), elapsed, fmtNum(rate))
 	}
 
-	// ── Alert Events ─────────────────────────────────────────────────────────────
-	fmt.Print("\n📋  Generating historical alert events...")
-	_, _ = pool.Exec(ctx, "DELETE FROM alert_events")
-
-	const (
-		alertOverWeight  = "00000000-0000-0000-0000-000000000011"
-		alertUnderWeight = "00000000-0000-0000-0000-000000000012"
-		alertHighTemp    = "00000000-0000-0000-0000-000000000013"
-	)
-
-	type alertEvt struct {
-		alertID    string
-		value      float64
-		message    string
-		status     string
-		createdAt  time.Time
-		resolvedAt *time.Time
-	}
-
-	parseDay := func(s string) time.Time {
-		t, _ := time.Parse("2006-01-02T15:04:05Z", s+"T08:00:00Z")
-		return t
-	}
-	resolvedAfter := func(s string, hours float64) *time.Time {
-		t := parseDay(s).Add(time.Duration(hours * float64(time.Hour)))
-		return &t
-	}
-
-	alertEvents := []alertEvt{
-		{alertOverWeight, 515.23, "Weight exceeded upper tolerance: 515.23 g", "resolved", parseDay("2025-06-12"), resolvedAfter("2025-06-12", 4)},
-		{alertUnderWeight, 483.11, "Weight below lower tolerance: 483.11 g", "resolved", parseDay("2025-07-03"), resolvedAfter("2025-07-03", 2)},
-		{alertHighTemp, 36.50, "Temperature exceeded threshold: 36.50 °C", "resolved", parseDay("2025-08-19"), resolvedAfter("2025-08-19", 6)},
-		{alertOverWeight, 528.74, "Weight exceeded upper tolerance: 528.74 g", "resolved", parseDay("2025-09-07"), resolvedAfter("2025-09-07", 3)},
-		{alertUnderWeight, 476.42, "Weight below lower tolerance: 476.42 g", "resolved", parseDay("2025-10-14"), resolvedAfter("2025-10-14", 5)},
-		{alertHighTemp, 38.20, "Temperature exceeded threshold: 38.20 °C", "resolved", parseDay("2025-11-02"), resolvedAfter("2025-11-02", 8)},
-		{alertOverWeight, 519.31, "Weight exceeded upper tolerance: 519.31 g", "resolved", parseDay("2025-12-18"), resolvedAfter("2025-12-18", 2)},
-		{alertUnderWeight, 488.05, "Weight below lower tolerance: 488.05 g", "resolved", parseDay("2026-01-09"), resolvedAfter("2026-01-09", 3)},
-		{alertHighTemp, 35.83, "Temperature exceeded threshold: 35.83 °C", "resolved", parseDay("2026-02-22"), resolvedAfter("2026-02-22", 7)},
-		{alertOverWeight, 531.62, "Weight exceeded upper tolerance: 531.62 g", "resolved", parseDay("2026-03-15"), resolvedAfter("2026-03-15", 4)},
-		{alertUnderWeight, 471.90, "Weight below lower tolerance: 471.90 g", "resolved", parseDay("2026-04-04"), resolvedAfter("2026-04-04", 6)},
-		{alertHighTemp, 37.15, "Temperature exceeded threshold: 37.15 °C", "resolved", parseDay("2026-05-11"), resolvedAfter("2026-05-11", 5)},
-		{alertOverWeight, 522.48, "Weight exceeded upper tolerance: 522.48 g", "resolved", parseDay("2026-05-28"), resolvedAfter("2026-05-28", 3)},
-		// Recent open events — shown in alarm-panel widget
-		{alertUnderWeight, 479.31, "Weight below lower tolerance: 479.31 g", "open", parseDay("2026-06-01"), nil},
-		{alertHighTemp, 36.82, "Temperature exceeded threshold: 36.82 °C", "open", parseDay("2026-06-05"), nil},
-		{alertOverWeight, 514.71, "Weight exceeded upper tolerance: 514.71 g", "open", parseDay("2026-06-08"), nil},
-	}
-
-	alertInserted := 0
-	for _, ev := range alertEvents {
-		_, err := pool.Exec(ctx, `
-			INSERT INTO alert_events (id, alert_id, value, message, status, triggered_at, resolved_at)
-			VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6)
-		`, ev.alertID, ev.value, ev.message, ev.status, ev.createdAt, ev.resolvedAt)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "\n⚠️   Alert event insert failed: %v\n", err)
-		} else {
-			alertInserted++
-		}
-	}
-	openCount := 3
-	fmt.Printf(" %d events inserted (%d open, %d resolved)\n", alertInserted, openCount, alertInserted-openCount)
-
 	totalElapsed := time.Since(overallStart).Seconds()
 	fmt.Printf("🎉  Backfill complete!\n")
-	fmt.Printf("   Range    : %s → %s\n", startDateStr[:10], endDateStr[:10])
-	fmt.Printf("   Inserted : %s rows\n", fmtNum(totalInserted))
-	fmt.Printf("   Time     : %.1fs\n", totalElapsed)
+	fmt.Printf("   Range        : %s → %s\n", startDateStr[:10], endDateStr[:10])
+	fmt.Printf("   Inserted     : %s telemetry rows\n", fmtNum(totalInserted))
+	fmt.Printf("   Alert events : %s (real, from data evaluation)\n", fmtNum(totalAlertEvents))
+	fmt.Printf("   Time         : %.1fs\n", totalElapsed)
 	if totalElapsed > 0 {
-		fmt.Printf("   Speed    : ~%s rows/sec\n", fmtNum(int(float64(totalInserted)/totalElapsed)))
+		fmt.Printf("   Speed        : ~%s rows/sec\n", fmtNum(int(float64(totalInserted)/totalElapsed)))
 	}
 }
