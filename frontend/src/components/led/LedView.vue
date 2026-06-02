@@ -188,23 +188,9 @@ onMounted(async () => {
     sparkRefreshTimer = setInterval(refreshSparklines, 60_000)
   }
 
-  // Single WS handler: updates telemetryStore (metric/gauge/status) + liveSparkData (sparkline)
+  // WS handler: drives metric / gauge / status cells only — sparklines are REST-only
   offSparkTelemetry = wsService.onTelemetry('*', (payload) => {
-    // Feed metric / gauge / status cells
     telemetryStore.updateSnapshot(payload.machineId, payload.timestamp, payload.data as any)
-
-    // Feed sparkline cells
-    const cutoff = Date.now() - SPARK_WINDOW_MS
-    for (const w of sparkWidgets) {
-      if (w.machineId !== payload.machineId || !w.field) continue
-      const val = (payload.data as any)[w.field]
-      if (val == null) continue
-      if (!liveSparkData.value[w.id]) liveSparkData.value[w.id] = []
-      liveSparkData.value[w.id].push({ ts: payload.timestamp, value: Number(val) })
-      liveSparkData.value[w.id] = liveSparkData.value[w.id].filter(
-        p => new Date(p.ts).getTime() > cutoff,
-      )
-    }
   })
 
   // Preload alert event counts (non-blocking)
@@ -258,51 +244,15 @@ function resolveWarning(widget: LedWidget): number {
 }
 
 // ─── Sparkline: REST-seeded 30-min rolling data per widget ───────────────────
-const SPARK_WINDOW    = 30   // minutes of history (used for store fallback slice)
-const SPARK_GROUPS    = 30   // display points — matches dashboard 30m × 1-min-bucket resolution
-const SPARK_WINDOW_MS = 30 * 60 * 1000
-
 const liveSparkData = ref<Record<string | number, Array<{ ts: string; value: number }>>>({})
 let offSparkTelemetry: (() => void) | null = null
 let ownedWsConnection = false
 let sparkRefreshTimer: ReturnType<typeof setInterval> | null = null
 
-function groupSparkHistory(
-  values: number[],
-  timestamps: string[],
-  groups: number,
-): { values: number[]; timestamps: string[] } {
-  if (values.length <= groups) return { values, timestamps }
-  const size  = Math.ceil(values.length / groups)
-  const gv: number[]  = []
-  const gt: string[]  = []
-  for (let i = 0; i < values.length; i += size) {
-    const vChunk = values.slice(i, i + size)
-    const tChunk = timestamps.slice(i, i + size)
-    gv.push(vChunk.reduce((a, b) => a + b, 0) / vChunk.length)
-    gt.push(tChunk[tChunk.length - 1] ?? '')   // last ts of the group
-  }
-  return { values: gv, timestamps: gt }
-}
-
 function resolveSparkHistory(widget: LedWidget): { values: number[]; timestamps: string[] } {
-  // Prefer REST-seeded + WS-appended live data (full 30-min window from load)
   const live = liveSparkData.value[widget.id]
-  if (live?.length) {
-    return groupSparkHistory(live.map(p => p.value), live.map(p => p.ts), SPARK_GROUPS)
-  }
-  // Fallback: telemetry store rolling history (accumulates from 2s polling)
-  if (widget.machineId && widget.field) {
-    const hist = telemetryStore.getHistory(widget.machineId, widget.field)
-    if (hist?.values.length) {
-      const raw = {
-        values:     hist.values.slice(-SPARK_WINDOW),
-        timestamps: hist.timestamps.slice(-SPARK_WINDOW),
-      }
-      return groupSparkHistory(raw.values, raw.timestamps, SPARK_GROUPS)
-    }
-  }
-  return { values: [], timestamps: [] }
+  if (!live?.length) return { values: [], timestamps: [] }
+  return { values: live.map(p => p.value), timestamps: live.map(p => p.ts) }
 }
 
 // ─── Daily count data ─────────────────────────────────────────────────────────
@@ -828,7 +778,7 @@ function trendClass(t?: string): string {
             {{ widget.unit }}
           </p>
 
-          <!-- Sparkline SVG with X/Y axes — last 30 min, grouped to 10 pts -->
+          <!-- Sparkline SVG with X/Y axes — last 30 min, 30 data points -->
           <svg
             v-if="resolveSparkData(widget).length >= 2"
             class="w-full flex-shrink-0"
