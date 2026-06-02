@@ -17,10 +17,11 @@ const (
 	email    = "admin@acme-foods.com"
 	password = "Admin@1234"
 
-	cwID = "00000000-0000-0000-0000-000000000005" // CW-01 Checkweigher
-	tsID = "00000000-0000-0000-0000-000000000006" // TS-01 Temp Sensor
-	cbID = "00000000-0000-0000-0000-000000000007" // CB-01 Conveyor
-	vcID = "00000000-0000-0000-0000-000000000008" // VC-01 Vision Camera
+	cwID          = "00000000-0000-0000-0000-000000000005" // CW-01 Checkweigher
+	tsID          = "00000000-0000-0000-0000-000000000006" // TS-01 Temp Sensor
+	cbID          = "00000000-0000-0000-0000-000000000007" // CB-01 Conveyor
+	vcID          = "00000000-0000-0000-0000-000000000008" // VC-01 Vision Camera
+	dashboardID   = "00000000-0000-0000-0000-000000000010" // seeded "Production Overview"
 )
 
 func login() string {
@@ -50,18 +51,40 @@ func buildTargets(token string) []vegeta.Target {
 	allIDs := strings.Join([]string{cwID, tsID, cbID, vcID}, ",")
 
 	return []vegeta.Target{
-		// latest snapshot — highest frequency in real dashboards (2x weight)
-		{Method: "GET", URL: baseURL + "/api/telemetry/latest?ids=" + allIDs, Header: auth},
-		{Method: "GET", URL: baseURL + "/api/telemetry/latest?ids=" + allIDs, Header: auth},
-		// heavy: TimescaleDB time_bucket() queries
-		{Method: "GET", URL: baseURL + "/api/telemetry/" + cwID + "/series?field=weight&timeRange=1h", Header: auth},
-		{Method: "GET", URL: baseURL + "/api/telemetry/" + tsID + "/series?field=temp&timeRange=1h", Header: auth},
-		{Method: "GET", URL: baseURL + "/api/telemetry/" + cwID + "/series?field=weight&timeRange=24h", Header: auth},
-		// 7-day daily aggregation
-		{Method: "GET", URL: baseURL + "/api/telemetry/" + cwID + "/daily-count?days=7", Header: auth},
-		// lightweight — baseline reference
-		{Method: "GET", URL: baseURL + "/api/machines", Header: auth},
+		// ── Dashboard load flow ────────────────────────────────────────────────
+		// 1. List dashboards (DashboardListPage)
 		{Method: "GET", URL: baseURL + "/api/dashboards", Header: auth},
+		// 2. Load specific dashboard + all widgets (DashboardEditorPage)
+		{Method: "GET", URL: baseURL + "/api/dashboards/" + dashboardID, Header: auth},
+		// 3. Machine list (sidebar + widget rendering)
+		{Method: "GET", URL: baseURL + "/api/machines", Header: auth},
+
+		// ── Widget data — line-chart (time_bucket queries, heaviest) ──────────
+		// Widget 14: CW-01 weight (default 1h)
+		{Method: "GET", URL: baseURL + "/api/telemetry/" + cwID + "/series?field=weight&timeRange=1h", Header: auth},
+		// Widget 18: CB-01 belt speed
+		{Method: "GET", URL: baseURL + "/api/telemetry/" + cbID + "/series?field=speed&timeRange=1h", Header: auth},
+		// Longer range — stress TimescaleDB chunk scans
+		{Method: "GET", URL: baseURL + "/api/telemetry/" + cwID + "/series?field=weight&timeRange=24h", Header: auth},
+
+		// ── Widget data — gauge + kpi-card (aggregate summary) ────────────────
+		// Widget 15: CW-01 weight gauge
+		{Method: "GET", URL: baseURL + "/api/telemetry/" + cwID + "/aggregate?field=weight&period=1h", Header: auth},
+		// Widget 16: TS-01 temperature kpi-card
+		{Method: "GET", URL: baseURL + "/api/telemetry/" + tsID + "/aggregate?field=temp&period=1h", Header: auth},
+		// Widget 17: CW-01 throughput kpi-card
+		{Method: "GET", URL: baseURL + "/api/telemetry/" + cwID + "/aggregate?field=throughput&period=1h", Header: auth},
+
+		// ── Widget data — alarm-panel (public endpoint, no auth required) ─────
+		// Widget 19: active alert events
+		{Method: "GET", URL: baseURL + "/api/alerts/events/active", Header: auth},
+
+		// ── Live snapshot — polled every 2s by telemetry store ────────────────
+		{Method: "GET", URL: baseURL + "/api/telemetry/latest?ids=" + allIDs, Header: auth},
+		{Method: "GET", URL: baseURL + "/api/telemetry/latest?ids=" + allIDs, Header: auth},
+
+		// ── Daily-count bar chart widget ──────────────────────────────────────
+		{Method: "GET", URL: baseURL + "/api/telemetry/" + cwID + "/daily-count?days=7", Header: auth},
 	}
 }
 

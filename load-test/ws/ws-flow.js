@@ -21,14 +21,14 @@ const MACHINE_IDS = [
 // ── Scenarios (5 phases staggered by startTime) ───────────────────────────────
 export const options = {
   scenarios: {
-    // Phase 1: Smoke — 2 VUs, verify no errors
+    // Phase 1: Smoke — 2 VUs, verify LED kiosk can connect and receive data
     smoke: {
       executor:  'constant-vus',
       vus:       2,
       duration:  '30s',
       startTime: '0s',
     },
-    // Phase 2: Ramp — find max subscribers before broadcast degrades
+    // Phase 2: Ramp — find max concurrent kiosk connections before broadcast degrades
     ramp: {
       executor: 'ramping-vus',
       startVUs: 5,
@@ -39,7 +39,7 @@ export const options = {
       ],
       startTime: '35s',
     },
-    // Phase 3: Sustained — SLA baseline for 100 concurrent subscribers
+    // Phase 3: Sustained — SLA baseline for 100 concurrent LED kiosk connections
     load: {
       executor:  'constant-vus',
       vus:       100,
@@ -63,39 +63,30 @@ export const options = {
   },
 
   thresholds: {
-    ws_connecting:        ['p(95)<500'],    // connect + JWT verify < 500ms
-    telemetry_msgs:       ['count>0'],      // must receive at least one broadcast
-    broadcast_latency_ms: ['p(95)<3000'],  // server → client under 3s
+    ws_connecting:        ['p(95)<500'],   // connect (no auth) < 500ms
+    telemetry_msgs:       ['count>0'],     // must receive at least one broadcast
+    broadcast_latency_ms: ['p(95)<3000'], // server → client under 3s
   },
 };
 
-// ── Setup: login once, share token across all VUs ─────────────────────────────
+// ── Setup: verify backend is reachable ────────────────────────────────────────
 export function setup() {
-  const res = http.post(
-    `${BASE}/api/auth/login`,
-    JSON.stringify({ email: 'admin@acme-foods.com', password: 'Admin@1234' }),
-    { headers: { 'Content-Type': 'application/json' } },
-  );
-  check(res, { 'login 200': (r) => r.status === 200 });
-
-  const token = res.json('data.token');
-  if (!token) throw new Error('login failed — no token in response');
-  console.log(`Token acquired: ${token.slice(0, 20)}…`);
-  return { token };
+  const res = http.get(`${BASE}/health`);
+  check(res, { 'backend healthy': (r) => r.status === 200 });
 }
 
-// ── VU lifecycle ──────────────────────────────────────────────────────────────
-export default function ({ token }) {
-  const url = `${WS_URL}?token=${encodeURIComponent(token)}`;
+// ── VU lifecycle — simulates a permanent LED kiosk connection ─────────────────
+// LED mode connects WITHOUT a token (public kiosk endpoint).
+// The connection stays open for the full scenario duration — no close() call.
+// This matches LedView.vue: wsService.connect(null) + never unsubscribes.
+export default function () {
+  const res = ws.connect(WS_URL, {}, (socket) => {
 
-  const res = ws.connect(url, {}, (socket) => {
-
-    // 1. Subscribe to all 4 machines on connect
+    // 1. Subscribe to all 4 machines immediately on connect
     socket.on('open', () => {
       socket.send(JSON.stringify({
-        type:      'subscribe',
-        payload:   { machineIds: MACHINE_IDS },
-        timestamp: Date.now(),
+        type:    'subscribe',
+        payload: { machineIds: MACHINE_IDS },
       }));
     });
 
@@ -107,10 +98,10 @@ export default function ({ token }) {
       if (msg.type === 'telemetry') {
         telemetryMsgs.add(1);
 
-        // measure broadcast latency using server-side timestamp in payload
-        if (msg.payload?.timestamp) {
-          const serverTs = new Date(msg.payload.timestamp).getTime();
-          broadcastLatency.add(Date.now() - serverTs);
+        // msg.timestamp is UnixMilli set by the server at send time (nowMs()).
+        // Using the outer timestamp, not msg.payload.timestamp (DB data age ~30-60s).
+        if (msg.timestamp) {
+          broadcastLatency.add(Date.now() - msg.timestamp);
         }
 
         check(msg, {
@@ -130,26 +121,14 @@ export default function ({ token }) {
 
     socket.on('error', (e) => console.error(`[WS] error: ${e.error()}`));
 
-    // 3. Keep-alive ping every 10s
+    // 3. Keep-alive: send JSON ping every 10s so the server resets its read deadline.
+    //    Protocol: { type: 'ping' } — no extra fields.
     socket.setInterval(() => {
-      socket.send(JSON.stringify({
-        type:      'ping',
-        payload:   {},
-        timestamp: Date.now(),
-      }));
+      socket.send(JSON.stringify({ type: 'ping' }));
     }, 10000);
 
-    // 4. Partial unsubscribe at 15s — simulate user removing 2 widgets
-    socket.setTimeout(() => {
-      socket.send(JSON.stringify({
-        type:      'unsubscribe',
-        payload:   { machineIds: [MACHINE_IDS[2], MACHINE_IDS[3]] }, // CB-01 + VC-01
-        timestamp: Date.now(),
-      }));
-    }, 15000);
-
-    // 5. Close connection after 30s
-    socket.setTimeout(() => socket.close(), 30000);
+    // NOTE: No socket.close() and no unsubscribe — LED kiosks stay connected
+    // indefinitely. k6 will close the socket when the scenario ends.
   });
 
   check(res, { 'WS handshake 101': (r) => r && r.status === 101 });
