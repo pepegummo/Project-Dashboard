@@ -168,16 +168,24 @@ onMounted(async () => {
     await fetchAllLatest() // seed store once; WS takes over from here
   }
 
-  // Seed sparkline widgets with 30-min REST history
+  // Seed sparkline widgets with 30-min REST history (1-min buckets = 30 points, same as dashboard)
   const sparkWidgets = displayWidgets.value.filter(w => w.type === 'sparkline' && w.machineId && w.field)
-  for (const w of sparkWidgets) {
-    try {
-      const series = await api.getTelemetrySeries(w.machineId!, w.field!, { timeRange: '30m' })
-      liveSparkData.value[w.id] = (series?.data ?? []).map((p: any) => ({
-        ts:    p.bucket ?? p.ts,
-        value: Number(p.avg ?? p.value),
-      }))
-    } catch { /* silently ignored */ }
+  async function refreshSparklines() {
+    for (const w of sparkWidgets) {
+      try {
+        const series = await api.getTelemetrySeries(w.machineId!, w.field!, { timeRange: '30m' })
+        liveSparkData.value[w.id] = (series?.data ?? []).map((p: any) => ({
+          ts:    p.bucket ?? p.ts,
+          value: Number(p.avg ?? p.value),
+        }))
+      } catch { /* silently ignored */ }
+    }
+  }
+  await refreshSparklines()
+  // Re-fetch every 60s so the sparkline stays aligned with the dashboard chart
+  // (replaces WS-accumulated raw points with proper 1-min bucket averages)
+  if (sparkWidgets.length > 0) {
+    sparkRefreshTimer = setInterval(refreshSparklines, 60_000)
   }
 
   // Single WS handler: updates telemetryStore (metric/gauge/status) + liveSparkData (sparkline)
@@ -212,8 +220,9 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  if (clockTimer)      { clearInterval(clockTimer);      clockTimer      = null }
-  if (dailyCountTimer) { clearInterval(dailyCountTimer); dailyCountTimer = null }
+  if (clockTimer)        { clearInterval(clockTimer);        clockTimer        = null }
+  if (dailyCountTimer)   { clearInterval(dailyCountTimer);   dailyCountTimer   = null }
+  if (sparkRefreshTimer) { clearInterval(sparkRefreshTimer); sparkRefreshTimer = null }
   offSparkTelemetry?.()
   if (liveMachineIds.value.length > 0) {
     wsService.unsubscribe(liveMachineIds.value)
@@ -250,12 +259,13 @@ function resolveWarning(widget: LedWidget): number {
 
 // ─── Sparkline: REST-seeded 30-min rolling data per widget ───────────────────
 const SPARK_WINDOW    = 30   // minutes of history (used for store fallback slice)
-const SPARK_GROUPS    = 10   // display points after grouping
+const SPARK_GROUPS    = 30   // display points — matches dashboard 30m × 1-min-bucket resolution
 const SPARK_WINDOW_MS = 30 * 60 * 1000
 
 const liveSparkData = ref<Record<string | number, Array<{ ts: string; value: number }>>>({})
 let offSparkTelemetry: (() => void) | null = null
 let ownedWsConnection = false
+let sparkRefreshTimer: ReturnType<typeof setInterval> | null = null
 
 function groupSparkHistory(
   values: number[],

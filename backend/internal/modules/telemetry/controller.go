@@ -4,15 +4,21 @@ import (
 	"iot-dashboard/internal/middleware"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 )
 
-type Controller struct {
-	svc *Service
+type Broadcaster interface {
+	BroadcastOne(machineID, machineName, timestamp string, data map[string]interface{})
 }
 
-func NewController() *Controller { return &Controller{svc: NewService()} }
+type Controller struct {
+	svc         *Service
+	broadcaster Broadcaster
+}
+
+func NewController(b Broadcaster) *Controller { return &Controller{svc: NewService(), broadcaster: b} }
 
 func (ctrl *Controller) GetLatestMulti(c *fiber.Ctx) error {
 	idsParam := c.Query("ids")
@@ -83,9 +89,15 @@ func (ctrl *Controller) Ingest(c *fiber.Ctx) error {
 	if err := c.BodyParser(&body); err != nil {
 		return middleware.NewAppError(400, "VALIDATION_ERROR", "Invalid request body")
 	}
-	result, err := ctrl.svc.Ingest(c.Context(), c.Params("machineId"), body, user.OrgId)
+	machineID := c.Params("machineId")
+	result, err := ctrl.svc.Ingest(c.Context(), machineID, body, user.OrgId)
 	if err != nil {
 		return err
+	}
+	// Broadcast immediately so connected clients see the new value without waiting for the next poll
+	if ctrl.broadcaster != nil {
+		ts, _ := result["timestamp"].(time.Time)
+		ctrl.broadcaster.BroadcastOne(machineID, "", ts.UTC().Format(time.RFC3339), body)
 	}
 	return c.Status(201).JSON(fiber.Map{"success": true, "data": result})
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"iot-dashboard/internal/broadcaster"
 	"iot-dashboard/internal/config"
 	"iot-dashboard/internal/database"
 	"iot-dashboard/internal/middleware"
@@ -52,7 +53,11 @@ func main() {
 	defer gateway.Close()
 	fmt.Printf("✅ WebSocket listening on %s\n", ws.ListenAddr(config.Env.WsPort))
 
-	// ── Simulator ─────────────────────────────────────────────────────────────
+	// ── DB Broadcaster — always on; pushes real DB telemetry to WS clients every 30s ──
+	dbBroadcaster := broadcaster.New(gateway, 30*time.Second)
+	dbBroadcaster.Start()
+
+	// ── Simulator (optional — generates synthetic data on top of DB data) ─────
 	sim := simulator.NewSimulator(gateway, 60_000) // 60s ticks
 	if config.Env.SimulatorEnabled {
 		machineRows, err := loadMachines(ctx)
@@ -63,7 +68,7 @@ func main() {
 			sim.Start()
 		}
 	} else {
-		fmt.Println("ℹ️  Simulator disabled (SIMULATOR_ENABLED=false)")
+		fmt.Println("ℹ️  Simulator disabled — DB broadcaster will serve telemetry")
 	}
 
 	// ── Fiber App ─────────────────────────────────────────────────────────────
@@ -115,7 +120,7 @@ func main() {
 	api := app.Group("/api")
 	auth.RegisterRoutes(api.Group("/auth"))
 	machines.RegisterRoutes(api.Group("/machines"))
-	telemetry.RegisterRoutes(api.Group("/telemetry"))
+	telemetry.RegisterRoutes(api.Group("/telemetry"), dbBroadcaster)
 	dashboards.RegisterRoutes(api.Group("/dashboards"))
 	alerts.RegisterRoutes(api.Group("/alerts"))
 	ai.RegisterRoutes(api.Group("/ai"))
@@ -144,6 +149,7 @@ func main() {
 	<-quit
 
 	fmt.Println("\nShutting down gracefully…")
+	dbBroadcaster.Stop()
 	sim.Stop()
 	_ = app.ShutdownWithTimeout(10 * time.Second)
 	fmt.Println("👋 Shutdown complete")

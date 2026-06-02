@@ -9,8 +9,8 @@ export const useAlertStore = defineStore('alerts', () => {
   const liveAlerts = ref<WsAlertPayload[]>([]); // real-time stream
   const loading = ref(false);
 
-  const criticalCount = computed(() => activeEvents.value.filter(e => e.alert.severity === 'critical').length);
-  const warningCount = computed(() => activeEvents.value.filter(e => e.alert.severity === 'warning').length);
+  const criticalCount = computed(() => activeEvents.value.filter(e => e.alert?.severity === 'critical').length);
+  const warningCount = computed(() => activeEvents.value.filter(e => e.alert?.severity === 'warning').length);
   const openCount = computed(() => activeEvents.value.filter(e => e.status === 'open').length);
 
   async function fetchAlerts(machineId?: string) {
@@ -64,6 +64,8 @@ export const useAlertStore = defineStore('alerts', () => {
   function addLiveAlert(alert: WsAlertPayload) {
     liveAlerts.value.unshift(alert);
     if (liveAlerts.value.length > 50) liveAlerts.value.pop();
+    // Immediately refresh DB-backed events so alarm panel shows the new event without waiting for poll
+    fetchActiveEvents();
   }
 
   function clearLiveAlerts() {

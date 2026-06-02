@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue';
+import { computed, onMounted, onUnmounted } from 'vue';
 import type { DashboardWidget } from '@/types';
 import { useAlertStore } from '@/stores/alert.store';
 import { AlertTriangle, ShieldAlert, Bell, CheckCircle2 } from 'lucide-vue-next';
@@ -10,10 +10,13 @@ const alertStore = useAlertStore();
 const maxItems = computed(() => (props.widget.config?.maxItems as number) ?? 10);
 const severities = computed(() => (props.widget.config?.severities as string[]) ?? ['info', 'warning', 'critical']);
 
+// Use activeEvents (DB-backed, fetched on mount + polled every 30s).
+// Previously used liveAlerts which starts empty on every page load → "All Clear" bug.
+// AlertEvent shape: { id, alertId, value, createdAt, alert: { name, field, severity, machine: { id, name } } }
 const displayAlerts = computed(() => {
-  return alertStore.liveAlerts
-    .filter(a => severities.value.includes(a.severity))
-    .filter(a => !props.widget.machineId || a.machineId === props.widget.machineId)
+  return alertStore.activeEvents
+    .filter(e => severities.value.includes(e.alert?.severity ?? ''))
+    .filter(e => !props.widget.machineId || e.alert?.machine?.id === props.widget.machineId)
     .slice(0, maxItems.value);
 });
 
@@ -29,8 +32,15 @@ const severityColor = (s: string) => {
   return 'text-blue-400 bg-blue-500/10';
 };
 
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+
 onMounted(() => {
   alertStore.fetchActiveEvents();
+  pollTimer = setInterval(() => alertStore.fetchActiveEvents(), 30_000);
+});
+
+onUnmounted(() => {
+  if (pollTimer) clearInterval(pollTimer);
 });
 </script>
 
@@ -55,20 +65,20 @@ onMounted(() => {
     <!-- Alert list -->
     <div v-else class="space-y-1.5">
       <div
-        v-for="alert in displayAlerts"
-        :key="alert.alertId + alert.timestamp"
+        v-for="event in displayAlerts"
+        :key="event.id"
         class="flex items-start gap-2 p-2 rounded-lg animate-fade-in"
-        :class="severityColor(alert.severity)"
+        :class="severityColor(event.alert?.severity ?? '')"
       >
-        <component :is="severityIcon(alert.severity)" class="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+        <component :is="severityIcon(event.alert?.severity ?? '')" class="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
         <div class="flex-1 min-w-0">
-          <p class="text-xs font-medium truncate">{{ alert.alertName }}</p>
+          <p class="text-xs font-medium truncate">{{ event.alert?.name }}</p>
           <p class="text-[10px] opacity-70 truncate">
-            {{ alert.machineName }} · {{ alert.field }} = <span class="font-mono">{{ alert.value }}</span>
+            {{ event.alert?.machine?.name }} · {{ event.alert?.field }} = <span class="font-mono">{{ event.value }}</span>
           </p>
         </div>
         <span class="text-[9px] opacity-50 flex-shrink-0">
-          {{ new Date(alert.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) }}
+          {{ new Date(event.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) }}
         </span>
       </div>
     </div>

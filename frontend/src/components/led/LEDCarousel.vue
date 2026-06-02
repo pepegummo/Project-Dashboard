@@ -117,6 +117,7 @@ const warningCount  = computed(() => alertStore.warningCount)
 
 // ── Carousel timer ──────────────────────────────────────────────────────────
 let timer: ReturnType<typeof setInterval> | null = null
+let alertPollTimer: ReturnType<typeof setInterval> | null = null
 const isPaused = ref(false)
 
 function advance() {
@@ -191,12 +192,15 @@ onMounted(async () => {
     } catch { /* non-fatal — WS will populate on next tick */ }
   }
 
+  alertPollTimer = setInterval(() => alertStore.fetchActiveEvents(), 30_000)
+
   if (slides.value.length > 1 && timer === null) timer = setInterval(advance, props.interval)
   window.addEventListener('keydown', handleKeydown)
 })
 
 onUnmounted(() => {
   if (timer !== null) { clearInterval(timer); timer = null }
+  if (alertPollTimer !== null) { clearInterval(alertPollTimer); alertPollTimer = null }
   window.removeEventListener('keydown', handleKeydown)
   const machineIds = machineStore.machines.map(m => m.id)
   if (machineIds.length > 0) wsService.unsubscribe(machineIds)
