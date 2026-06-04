@@ -187,6 +187,12 @@ onMounted(async () => {
     sparkRefreshTimer = setInterval(refreshSparklines, 5 * 60_000)
   }
 
+  // Seed daily-count widgets from REST; refresh every 5 min
+  await fetchDailyCountWidgets()
+  if (displayWidgets.value.some(w => w.type === 'daily-count' && w.machineId)) {
+    dailyCountTimer = setInterval(fetchDailyCountWidgets, 5 * 60_000)
+  }
+
   // WS handler: drives metric/gauge/status AND appends live points to sparklines
   const WINDOW_MS = 30 * 60 * 1000
   offSparkTelemetry = wsService.onTelemetry('*', (payload) => {

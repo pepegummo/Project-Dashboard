@@ -7,6 +7,10 @@ import (
 	"time"
 )
 
+type DashCount struct {
+	Widgets int `json:"widgets"`
+}
+
 type Dashboard struct {
 	ID             string          `json:"id"`
 	Name           string          `json:"name"`
@@ -14,8 +18,11 @@ type Dashboard struct {
 	OrganizationID string          `json:"organizationId"`
 	UserID         string          `json:"userId"`
 	IsPublic       bool            `json:"isPublic"`
+	IsDefault      bool            `json:"isDefault"`
 	Tags           []string        `json:"tags"`
 	CreatedAt      time.Time       `json:"createdAt"`
+	UpdatedAt      time.Time       `json:"updatedAt"`
+	Count          *DashCount      `json:"_count,omitempty"`
 	Widgets        []Widget        `json:"widgets,omitempty"`
 }
 
@@ -53,8 +60,12 @@ type Repository struct{}
 
 func (r *Repository) FindAll(ctx context.Context, orgID, userID string) ([]Dashboard, error) {
 	rows, err := database.Pool.Query(ctx, `
-		SELECT id, name, description, organization_id, user_id, is_public, tags, created_at
-		FROM dashboards WHERE organization_id = $1 ORDER BY created_at DESC
+		SELECT d.id, d.name, d.description, d.organization_id, d.user_id,
+		       d.is_public, d.is_default, d.tags, d.created_at, d.updated_at,
+		       (SELECT COUNT(*) FROM dashboard_widgets WHERE dashboard_id = d.id) AS widget_count
+		FROM dashboards d
+		WHERE d.organization_id = $1
+		ORDER BY d.created_at DESC
 	`, orgID)
 	if err != nil {
 		return nil, err
@@ -65,7 +76,12 @@ func (r *Repository) FindAll(ctx context.Context, orgID, userID string) ([]Dashb
 	for rows.Next() {
 		var d Dashboard
 		var tags []string
-		if err := rows.Scan(&d.ID, &d.Name, &d.Description, &d.OrganizationID, &d.UserID, &d.IsPublic, &tags, &d.CreatedAt); err != nil {
+		var widgetCount int
+		if err := rows.Scan(
+			&d.ID, &d.Name, &d.Description, &d.OrganizationID, &d.UserID,
+			&d.IsPublic, &d.IsDefault, &tags, &d.CreatedAt, &d.UpdatedAt,
+			&widgetCount,
+		); err != nil {
 			return nil, err
 		}
 		if tags != nil {
@@ -73,6 +89,7 @@ func (r *Repository) FindAll(ctx context.Context, orgID, userID string) ([]Dashb
 		} else {
 			d.Tags = []string{}
 		}
+		d.Count = &DashCount{Widgets: widgetCount}
 		dashboards = append(dashboards, d)
 	}
 	return dashboards, nil
@@ -80,13 +97,20 @@ func (r *Repository) FindAll(ctx context.Context, orgID, userID string) ([]Dashb
 
 func (r *Repository) FindByID(ctx context.Context, id string) (*Dashboard, error) {
 	row := database.Pool.QueryRow(ctx, `
-		SELECT id, name, description, organization_id, user_id, is_public, tags, created_at
-		FROM dashboards WHERE id = $1
+		SELECT d.id, d.name, d.description, d.organization_id, d.user_id,
+		       d.is_public, d.is_default, d.tags, d.created_at, d.updated_at,
+		       (SELECT COUNT(*) FROM dashboard_widgets WHERE dashboard_id = d.id) AS widget_count
+		FROM dashboards d WHERE d.id = $1
 	`, id)
 
 	var d Dashboard
 	var tags []string
-	if err := row.Scan(&d.ID, &d.Name, &d.Description, &d.OrganizationID, &d.UserID, &d.IsPublic, &tags, &d.CreatedAt); err != nil {
+	var widgetCount int
+	if err := row.Scan(
+		&d.ID, &d.Name, &d.Description, &d.OrganizationID, &d.UserID,
+		&d.IsPublic, &d.IsDefault, &tags, &d.CreatedAt, &d.UpdatedAt,
+		&widgetCount,
+	); err != nil {
 		return nil, err
 	}
 	if tags != nil {
@@ -94,6 +118,7 @@ func (r *Repository) FindByID(ctx context.Context, id string) (*Dashboard, error
 	} else {
 		d.Tags = []string{}
 	}
+	d.Count = &DashCount{Widgets: widgetCount}
 
 	widgets, _ := r.GetWidgets(ctx, d.ID)
 	d.Widgets = widgets
@@ -232,6 +257,13 @@ func (r *Repository) fetchMachinesWithFields(ctx context.Context, ids map[string
 	return machines, nil
 }
 
+// touchDashboard bumps updated_at on the dashboard so the list page shows
+// an accurate "last modified" time after any widget mutation.
+func (r *Repository) touchDashboard(ctx context.Context, dashboardID string) {
+	_, _ = database.Pool.Exec(ctx,
+		`UPDATE dashboards SET updated_at = NOW() WHERE id = $1`, dashboardID)
+}
+
 func (r *Repository) AddWidget(ctx context.Context, dashboardID string, w Widget) (*Widget, error) {
 	if w.Layout == nil {
 		w.Layout = json.RawMessage("{}")
@@ -247,6 +279,9 @@ func (r *Repository) AddWidget(ctx context.Context, dashboardID string, w Widget
 
 	var out Widget
 	err := row.Scan(&out.ID, &out.DashboardID, &out.MachineID, &out.WidgetType, &out.Title, &out.Layout, &out.Config, &out.CreatedAt)
+	if err == nil {
+		r.touchDashboard(ctx, dashboardID)
+	}
 	return &out, err
 }
 
@@ -272,16 +307,31 @@ func (r *Repository) UpdateWidget(ctx context.Context, widgetID string, data map
 	if widgetType, ok := data["widgetType"].(string); ok && widgetType != "" {
 		_, _ = database.Pool.Exec(ctx, `UPDATE dashboard_widgets SET widget_type=$1, updated_at=NOW() WHERE id=$2`, widgetType, widgetID)
 	}
+	// Bump parent dashboard timestamp
+	_, _ = database.Pool.Exec(ctx,
+		`UPDATE dashboards SET updated_at = NOW()
+		 WHERE id = (SELECT dashboard_id FROM dashboard_widgets WHERE id = $1)`, widgetID)
 	return nil
 }
 
 func (r *Repository) BulkUpdateLayout(ctx context.Context, widgets []map[string]interface{}) error {
+	widgetIDs := make([]string, 0, len(widgets))
 	for _, w := range widgets {
 		id, _ := w["id"].(string)
 		if layout, ok := w["layout"]; ok {
 			b, _ := json.Marshal(layout)
 			_, _ = database.Pool.Exec(ctx, `UPDATE dashboard_widgets SET layout=$1, updated_at=NOW() WHERE id=$2`, string(b), id)
 		}
+		if id != "" {
+			widgetIDs = append(widgetIDs, id)
+		}
+	}
+	// Touch all affected dashboards in a single query
+	if len(widgetIDs) > 0 {
+		_, _ = database.Pool.Exec(ctx,
+			`UPDATE dashboards SET updated_at = NOW()
+			 WHERE id IN (SELECT DISTINCT dashboard_id FROM dashboard_widgets WHERE id = ANY($1))`,
+			widgetIDs)
 	}
 	return nil
 }
@@ -301,6 +351,12 @@ func (r *Repository) FindWidget(ctx context.Context, widgetID string) (*Widget, 
 }
 
 func (r *Repository) DeleteWidget(ctx context.Context, widgetID string) error {
+	var dashboardID string
+	_ = database.Pool.QueryRow(ctx,
+		`SELECT dashboard_id FROM dashboard_widgets WHERE id = $1`, widgetID).Scan(&dashboardID)
 	_, err := database.Pool.Exec(ctx, `DELETE FROM dashboard_widgets WHERE id=$1`, widgetID)
+	if err == nil && dashboardID != "" {
+		r.touchDashboard(ctx, dashboardID)
+	}
 	return err
 }
