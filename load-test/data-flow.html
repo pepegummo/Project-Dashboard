@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>IoT Dashboard — Data Flow</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #0f1117;
+    color: #e2e8f0;
+    padding: 40px 24px;
+    min-height: 100vh;
+  }
+
+  h1 {
+    text-align: center;
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: #f8fafc;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .subtitle {
+    text-align: center;
+    font-size: 0.82rem;
+    color: #64748b;
+    margin-bottom: 48px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .flow {
+    max-width: 1100px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+  }
+
+  /* ── A row holds 1-2 boxes side by side ─────────────────────────── */
+  .row {
+    display: flex;
+    gap: 28px;
+    justify-content: center;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  /* ── Box (a node in the flow) ───────────────────────────────────── */
+  .box {
+    background: #1e2330;
+    border: 1px solid #2d3748;
+    border-radius: 14px;
+    padding: 20px 26px;
+    min-width: 280px;
+    max-width: 360px;
+    flex: 1;
+  }
+  .box .tag {
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .box .name {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #f8fafc;
+    margin-bottom: 6px;
+  }
+  .box .desc {
+    font-size: 0.8rem;
+    color: #94a3b8;
+    line-height: 1.5;
+  }
+  .box .meta {
+    margin-top: 10px;
+    font-size: 0.7rem;
+    color: #64748b;
+    font-family: 'Consolas', monospace;
+  }
+
+  /* ── Colour accents per layer ───────────────────────────────────── */
+  .src   { border-color: #f59e0b55; } .src   .tag { color: #f59e0b; }
+  .db    { border-color: #38bdf855; } .db    .tag { color: #38bdf8; }
+  .back  { border-color: #a78bfa55; } .back  .tag { color: #a78bfa; }
+  .pipe  { border-color: #34d39955; } .pipe  .tag { color: #34d399; }
+  .front { border-color: #f472b655; } .front .tag { color: #f472b6; }
+
+  /* ── Arrow connector ────────────────────────────────────────────── */
+  .arrow {
+    width: 2px;
+    height: 34px;
+    background: #475569;
+    position: relative;
+    margin: 6px 0;
+  }
+  .arrow::after {
+    content: '';
+    position: absolute;
+    bottom: -1px; left: 50%;
+    transform: translateX(-50%);
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-top: 8px solid #475569;
+  }
+  .arrow .lbl {
+    position: absolute;
+    left: 14px; top: 50%;
+    transform: translateY(-50%);
+    white-space: nowrap;
+    font-size: 0.68rem;
+    color: #94a3b8;
+    background: #0f1117;
+    padding: 2px 8px;
+    border-radius: 6px;
+    border: 1px solid #2d3748;
+  }
+
+  /* ── Two-channel split (REST + WS) ──────────────────────────────── */
+  .channels {
+    display: flex;
+    gap: 60px;
+    justify-content: center;
+    width: 100%;
+    position: relative;
+  }
+  .channel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex: 1;
+    max-width: 380px;
+  }
+
+  .legend {
+    max-width: 1100px;
+    margin: 56px auto 0;
+    display: flex;
+    gap: 24px;
+    justify-content: center;
+    flex-wrap: wrap;
+    font-size: 0.75rem;
+    color: #94a3b8;
+  }
+  .legend span { display: flex; align-items: center; gap: 7px; }
+  .dot { width: 11px; height: 11px; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+  <h1>IoT Dashboard — Data Flow</h1>
+  <p class="subtitle">From data generation to the screen</p>
+
+  <div class="flow">
+
+    <!-- ── SOURCES ─────────────────────────────────────────────── -->
+    <div class="row">
+      <div class="box src">
+        <div class="tag">① Source · Historical</div>
+        <div class="name">Backfill</div>
+        <div class="desc">One-time generator. Writes ~2.3M rows of past telemetry (1 point / minute).</div>
+        <div class="meta">cmd/backfill · Random Telegraph Pulse</div>
+      </div>
+      <div class="box src">
+        <div class="tag">① Source · Live</div>
+        <div class="name">Simulator</div>
+        <div class="desc">Optional. Generates fresh telemetry every 60s (pulse wave).</div>
+        <div class="meta">internal/simulator · SIMULATOR_ENABLED</div>
+      </div>
+    </div>
+
+    <div class="arrow"><span class="lbl">INSERT rows</span></div>
+
+    <!-- ── DATABASE ────────────────────────────────────────────── -->
+    <div class="row">
+      <div class="box db">
+        <div class="tag">② Storage</div>
+        <div class="name">PostgreSQL + TimescaleDB</div>
+        <div class="desc">Hypertable <b>telemetry_raw</b>. Data stored as JSONB, bucketed by time for fast queries.</div>
+        <div class="meta">time_bucket() · 7-day chunks</div>
+      </div>
+    </div>
+
+    <div class="arrow"><span class="lbl">read</span></div>
+
+    <!-- ── BACKEND ─────────────────────────────────────────────── -->
+    <div class="row">
+      <div class="box back">
+        <div class="tag">③ Backend · Go / Fiber</div>
+        <div class="name">API Server</div>
+        <div class="desc">Two ways to deliver data to the frontend — a request channel and a push channel.</div>
+        <div class="meta">:4000 REST · :4001 WebSocket</div>
+      </div>
+    </div>
+
+    <div class="arrow"></div>
+
+    <!-- ── TWO CHANNELS ────────────────────────────────────────── -->
+    <div class="channels">
+      <div class="channel">
+        <div class="box pipe">
+          <div class="tag">REST · Pull</div>
+          <div class="name">HTTP Request</div>
+          <div class="desc">Frontend asks for a time range; gets back averaged buckets. Used for charts &amp; history.</div>
+          <div class="meta">GET /telemetry/:id/series</div>
+        </div>
+        <div class="arrow"><span class="lbl">every 60s (poll)</span></div>
+      </div>
+
+      <div class="channel">
+        <div class="box pipe">
+          <div class="tag">WebSocket · Push</div>
+          <div class="name">DB Broadcaster</div>
+          <div class="desc">Server pushes the latest value to all clients. No request needed — instant updates.</div>
+          <div class="meta">broadcast every 30s</div>
+        </div>
+        <div class="arrow"><span class="lbl">push (live)</span></div>
+      </div>
+    </div>
+
+    <!-- ── FRONTEND ────────────────────────────────────────────── -->
+    <div class="row">
+      <div class="box front">
+        <div class="tag">④ Frontend · Vue 3</div>
+        <div class="name">Dashboard &amp; LED Screen</div>
+        <div class="desc">
+          <b>Big number</b> updates instantly via WebSocket.<br>
+          <b>Charts / sparklines</b> refill from REST, with live WS points in between.
+        </div>
+        <div class="meta">LedView.vue · widgets/*</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── LEGEND ─────────────────────────────────────────────────── -->
+  <div class="legend">
+    <span><i class="dot" style="background:#f59e0b"></i> Source</span>
+    <span><i class="dot" style="background:#38bdf8"></i> Database</span>
+    <span><i class="dot" style="background:#a78bfa"></i> Backend</span>
+    <span><i class="dot" style="background:#34d399"></i> Delivery channel</span>
+    <span><i class="dot" style="background:#f472b6"></i> Frontend</span>
+  </div>
+
+</body>
+</html>

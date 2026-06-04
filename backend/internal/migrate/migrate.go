@@ -246,6 +246,26 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool) error {
 		}
 	}
 
+	// Apply schema migrations for alert_events columns added after the initial release.
+	// CREATE TABLE IF NOT EXISTS never alters existing tables, so we patch here idempotently.
+	alertEventsMigrations := []string{
+		// Rename created_at → triggered_at (old column name)
+		`DO $$ BEGIN
+			IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='alert_events' AND column_name='created_at')
+			THEN ALTER TABLE alert_events RENAME COLUMN created_at TO triggered_at; END IF;
+		END $$`,
+		// Add columns that may be missing from older DB instances
+		`ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ`,
+		`ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS acknowledged_by TEXT`,
+		`ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS resolved_at     TIMESTAMPTZ`,
+		`ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS resolved_by     TEXT`,
+	}
+	for _, stmt := range alertEventsMigrations {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			fmt.Printf("⚠️  alert_events migration skipped: %v\n", err)
+		}
+	}
+
 	// TimescaleDB hypertable (non-fatal if TimescaleDB is not available)
 	_, err := pool.Exec(ctx, `
 		SELECT create_hypertable(
@@ -294,8 +314,8 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool) error {
 		// alerts
 		`CREATE INDEX IF NOT EXISTS idx_alerts_machine ON alerts (machine_id, is_active)`,
 		// alert_events
-		`CREATE INDEX IF NOT EXISTS idx_ae_alert_ts ON alert_events (alert_id, created_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_ae_open     ON alert_events (created_at DESC) WHERE status = 'open'`,
+		`CREATE INDEX IF NOT EXISTS idx_ae_alert_ts ON alert_events (alert_id, triggered_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_ae_open     ON alert_events (triggered_at DESC) WHERE status = 'open'`,
 		// ai
 		`CREATE INDEX IF NOT EXISTS idx_aiconv_user ON ai_conversations (user_id, updated_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_aimsg_conv  ON ai_messages (conversation_id, created_at ASC)`,

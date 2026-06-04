@@ -154,6 +154,9 @@ func (r *Repository) GetActiveAlerts(ctx context.Context, orgID *string) ([]Aler
 		}
 		events = append(events, e)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return events, nil
 }
 

@@ -17,7 +17,19 @@ func Connect(ctx context.Context) error {
 
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		pool, err := pgxpool.New(ctx, config.Env.DatabaseURL)
+		poolConfig, parseErr := pgxpool.ParseConfig(config.Env.DatabaseURL)
+		if parseErr != nil {
+			lastErr = fmt.Errorf("failed to parse pool config: %w", parseErr)
+			fmt.Printf("⏳ DB not ready (attempt %d/%d): %v — retrying in %v\n", attempt, maxAttempts, lastErr, retryDelay)
+			time.Sleep(retryDelay)
+			continue
+		}
+		poolConfig.MaxConns = 50
+		poolConfig.MinConns = 5
+		poolConfig.MaxConnLifetime = 30 * time.Minute
+		poolConfig.MaxConnIdleTime = 5 * time.Minute
+
+		pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 		if err == nil {
 			if pingErr := pool.Ping(ctx); pingErr == nil {
 				Pool = pool
