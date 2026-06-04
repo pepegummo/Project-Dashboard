@@ -182,27 +182,25 @@ onMounted(async () => {
     }
   }
   await refreshSparklines()
-  // Re-fetch every 60s so the sparkline stays aligned with the dashboard chart
-  // (replaces WS-accumulated raw points with proper 1-min bucket averages)
+  // Re-anchor from REST every 5 min — WS handles live points between refreshes
   if (sparkWidgets.length > 0) {
-    sparkRefreshTimer = setInterval(refreshSparklines, 60_000)
+    sparkRefreshTimer = setInterval(refreshSparklines, 5 * 60_000)
   }
 
-  // WS handler: drives metric / gauge / status cells only — sparklines are REST-only
+  // WS handler: drives metric/gauge/status AND appends live points to sparklines
+  const WINDOW_MS = 30 * 60 * 1000
   offSparkTelemetry = wsService.onTelemetry('*', (payload) => {
     telemetryStore.updateSnapshot(payload.machineId, payload.timestamp, payload.data as any)
+    const cutoff = Date.now() - WINDOW_MS
+    for (const w of sparkWidgets) {
+      if (w.machineId !== payload.machineId) continue
+      const val = payload.data[w.field!]
+      if (val == null) continue
+      const arr = liveSparkData.value[w.id] ?? []
+      arr.push({ ts: payload.timestamp, value: Number(val) })
+      liveSparkData.value[w.id] = arr.filter(p => new Date(p.ts).getTime() > cutoff)
+    }
   })
-
-  // Preload alert event counts (non-blocking)
-  if (alertStore.activeEvents.length === 0) {
-    alertStore.fetchActiveEvents().catch(() => {})
-  }
-
-  // Fetch daily-count widget data; refresh every 60 s (daily data changes slowly)
-  if (displayWidgets.value.some(w => w.type === 'daily-count')) {
-    await fetchDailyCountWidgets()
-    dailyCountTimer = setInterval(fetchDailyCountWidgets, 60_000)
-  }
 })
 
 onUnmounted(() => {
@@ -479,6 +477,7 @@ const gridStyle = computed(() => ({
   display: 'grid',
   gridTemplateColumns: `repeat(${columns.value}, 1fr)`,
   gridTemplateRows: `repeat(${rows.value}, 1fr)`,
+  gridAutoFlow: 'dense',  // backfill gaps left by wide widgets
   gap: '1px',
   height: '292px',        // 320px total − 28px header
   background: 'rgba(255,255,255,0.07)', // divider colour bleeding through gap
@@ -632,7 +631,7 @@ function trendClass(t?: string): string {
         <div class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" style="transform: translateY(-0.05em);"></div>
 
         <span
-          class="text-gray-400 uppercase font-bold leading-none"
+          class="text-gray-200 led-label-shadow uppercase font-bold leading-none"
           style="font-size: 0.65rem; letter-spacing: 0.18em;"
         >
           CPF · LED View
@@ -707,7 +706,7 @@ function trendClass(t?: string): string {
         <template v-if="widget.type === 'metric'">
           <!-- Title label -->
           <p
-            class="text-gray-300 uppercase font-bold truncate max-w-full text-center leading-none"
+            class="text-gray-100 led-label-shadow uppercase font-bold truncate max-w-full text-center leading-none"
             :style="{ fontSize: titleSize, letterSpacing: '0.16em', marginBottom: '0.35em' }"
           >
             {{ widget.title }}
@@ -728,7 +727,7 @@ function trendClass(t?: string): string {
           <!-- Unit -->
           <p
             v-if="widget.unit"
-            class="text-gray-300 uppercase font-semibold text-center leading-none"
+            class="text-gray-200 led-label-shadow uppercase font-semibold text-center leading-none"
             :style="{ fontSize: unitSize, letterSpacing: '0.14em', marginTop: '0.4em' }"
           >
             {{ widget.unit }}
@@ -751,7 +750,7 @@ function trendClass(t?: string): string {
         <template v-else-if="widget.type === 'sparkline'">
           <!-- Title label -->
           <p
-            class="text-gray-300 uppercase font-bold truncate max-w-full text-center leading-none"
+            class="text-gray-100 led-label-shadow uppercase font-bold truncate max-w-full text-center leading-none"
             :style="{ fontSize: titleSize, letterSpacing: '0.16em', marginBottom: '0.35em' }"
           >
             {{ widget.title }}
@@ -772,7 +771,7 @@ function trendClass(t?: string): string {
           <!-- Unit -->
           <p
             v-if="widget.unit"
-            class="text-gray-300 uppercase font-semibold text-center leading-none"
+            class="text-gray-200 led-label-shadow uppercase font-semibold text-center leading-none"
             :style="{ fontSize: unitSize, letterSpacing: '0.14em', marginTop: '0.35em' }"
           >
             {{ widget.unit }}
@@ -849,7 +848,7 @@ function trendClass(t?: string): string {
         <template v-else-if="widget.type === 'status'">
           <!-- Title label -->
           <p
-            class="text-gray-300 uppercase font-bold truncate max-w-full text-center leading-none"
+            class="text-gray-100 led-label-shadow uppercase font-bold truncate max-w-full text-center leading-none"
             :style="{ fontSize: titleSize, letterSpacing: '0.16em', marginBottom: '0.55em' }"
           >
             {{ widget.title }}
@@ -892,7 +891,7 @@ function trendClass(t?: string): string {
         <template v-else-if="widget.type === 'alarm'">
           <!-- Title label -->
           <p
-            class="text-gray-300 uppercase font-bold truncate max-w-full text-center leading-none"
+            class="text-gray-100 led-label-shadow uppercase font-bold truncate max-w-full text-center leading-none"
             :style="{ fontSize: titleSize, letterSpacing: '0.16em', marginBottom: '0.6em' }"
           >
             {{ widget.title }}
@@ -981,7 +980,7 @@ function trendClass(t?: string): string {
         <template v-else-if="widget.type === 'gauge'">
           <!-- Title label -->
           <p
-            class="text-gray-300 uppercase font-bold truncate max-w-full text-center leading-none"
+            class="text-gray-100 led-label-shadow uppercase font-bold truncate max-w-full text-center leading-none"
             :style="{ fontSize: titleSize, letterSpacing: '0.16em', marginBottom: '0.25em' }"
           >
             {{ widget.title }}
@@ -1039,7 +1038,7 @@ function trendClass(t?: string): string {
               font-family="monospace"
               font-weight="bold"
               font-size="8"
-              fill="rgba(255,255,255,0.55)"
+              fill="rgba(255,255,255,0.88)"
             >{{ widget.unit ?? '' }}</text>
 
             <!-- Min label -->
@@ -1048,7 +1047,7 @@ function trendClass(t?: string): string {
               text-anchor="start"
               font-family="monospace"
               font-size="7"
-              fill="rgba(255,255,255,0.4)"
+              fill="rgba(255,255,255,0.72)"
             >{{ widget.gaugeMin ?? 0 }}</text>
 
             <!-- Max label -->
@@ -1057,7 +1056,7 @@ function trendClass(t?: string): string {
               text-anchor="end"
               font-family="monospace"
               font-size="7"
-              fill="rgba(255,255,255,0.4)"
+              fill="rgba(255,255,255,0.72)"
             >{{ widget.gaugeMax ?? 100 }}</text>
           </svg>
         </template>
@@ -1125,6 +1124,14 @@ function trendClass(t?: string): string {
     rgba(255, 255, 255, 1) 2px,
     rgba(255, 255, 255, 1) 3px
   );
+}
+
+/* ── Dark backing shadow for metadata text (titles, units, labels) ──────────
+   Punches a dark halo behind each glyph so scanline lines can't bisect it.  */
+.led-label-shadow {
+  text-shadow:
+    0 1px 4px rgba(0, 0, 0, 0.95),
+    0 0 10px rgba(0, 0, 0, 0.85);
 }
 
 /* ── Error-state blink (fast) ─────────────────────────────────────────────── */
