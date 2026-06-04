@@ -2,13 +2,38 @@
 import { onMounted, computed, ref } from 'vue';
 import { useAlertStore } from '@/stores/alert.store';
 import { useMachineStore } from '@/stores/machine.store';
-import { Bell, AlertTriangle, CheckCircle2, Clock, ShieldAlert } from 'lucide-vue-next';
-import type { AlertSeverity } from '@/types';
+import { Bell, AlertTriangle, CheckCircle2, Clock, ShieldAlert, Plus, Pencil, Trash2 } from 'lucide-vue-next';
+import type { Alert, AlertSeverity } from '@/types';
+import AlertRuleModal from '@/components/alerts/AlertRuleModal.vue';
 
 const alertStore = useAlertStore();
 const machineStore = useMachineStore();
 
 const activeTab = ref<'events' | 'rules' | 'live'>('events');
+
+const showModal = ref(false);
+const editingAlert = ref<Alert | null>(null);
+const deletingId = ref<string | null>(null);
+
+function openCreate() {
+  editingAlert.value = null;
+  showModal.value = true;
+}
+
+function openEdit(alert: Alert) {
+  editingAlert.value = alert;
+  showModal.value = true;
+}
+
+async function confirmDelete(alert: Alert) {
+  if (!confirm(`Delete rule "${alert.name}"? This cannot be undone.`)) return;
+  deletingId.value = alert.id;
+  try {
+    await alertStore.deleteAlert(alert.id);
+  } finally {
+    deletingId.value = null;
+  }
+}
 
 onMounted(async () => {
   await Promise.all([
@@ -47,6 +72,9 @@ const fmt = (ts: string) => new Date(ts).toLocaleString('en-US', { month: 'short
         <h1 class="page-title">Alerts</h1>
         <p class="page-subtitle">Monitor alert rules and active events</p>
       </div>
+      <button class="btn-primary flex items-center gap-2" @click="openCreate">
+        <Plus class="w-4 h-4" /> New Rule
+      </button>
     </div>
 
     <!-- Summary cards -->
@@ -156,12 +184,13 @@ const fmt = (ts: string) => new Date(ts).toLocaleString('en-US', { month: 'short
               <th>Severity</th>
               <th>Status</th>
               <th>Events</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="alert in alertStore.alerts" :key="alert.id">
               <td class="font-medium text-white">{{ alert.name }}</td>
-              <td class="text-gray-400">{{ alert.machine?.name ?? '—' }}</td>
+              <td class="text-gray-400">{{ alert.machine?.name ?? machineStore.machineById(alert.machineId)?.name ?? '—' }}</td>
               <td><code class="text-xs bg-surface-300 px-1.5 py-0.5 rounded text-cyan-400">{{ alert.field }}</code></td>
               <td class="text-gray-400">
                 {{ alert.condition }} {{ alert.threshold }}
@@ -175,6 +204,21 @@ const fmt = (ts: string) => new Date(ts).toLocaleString('en-US', { month: 'short
                 </div>
               </td>
               <td class="text-gray-400">{{ alert._count?.events ?? 0 }}</td>
+              <td>
+                <div class="flex items-center gap-1">
+                  <button class="btn-sm btn-ghost text-gray-400 hover:text-white" title="Edit" @click="openEdit(alert)">
+                    <Pencil class="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    class="btn-sm btn-ghost text-gray-400 hover:text-red-400"
+                    title="Delete"
+                    :disabled="deletingId === alert.id"
+                    @click="confirmDelete(alert)"
+                  >
+                    <Trash2 class="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -216,5 +260,13 @@ const fmt = (ts: string) => new Date(ts).toLocaleString('en-US', { month: 'short
         </div>
       </div>
     </template>
+
+    <!-- Create / Edit modal -->
+    <AlertRuleModal
+      v-if="showModal"
+      :alert="editingAlert"
+      @close="showModal = false"
+      @saved="alertStore.fetchAlerts()"
+    />
   </div>
 </template>
