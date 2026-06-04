@@ -438,63 +438,108 @@ function buildLedDailyData(widget: LedWidget): LedDailyData | undefined {
   return { machineName, todayCount, avgPerDay, weeklyData }
 }
 
-// ─── Layout engine ─────────────────────────────────────────────────────────────
-/**
- * Column count by widget count:
- *   1 → 1 col (full-width)
- *   2 → 2 cols (50/50)
- *   3 → 3 cols (33/33/33)
- *   4 → 2×2 grid
- *   5-6 → 3-col × 2-row
- *   7-8 → 4-col × 2-row
- *   9+  → 4-col × wrapping rows (very tight — best effort)
- */
+// ─── Layout engine — rectangle packing ────────────────────────────────────────
+// daily-count = 2×1 (wide), all others = 1×1.
+// chooseColumns() tries cols 2–4 and picks the one that maximises
+// min(cellW, cellH) so cells stay as square as possible.
+
 const count = computed(() => displayWidgets.value.length)
 
-function colsForCount(n: number): number {
-  if (n <= 1) return 1
-  if (n <= 2) return 2
-  if (n <= 3) return 3
-  if (n <= 4) return 2
-  if (n <= 6) return 3
-  return 4
+interface PlacedWidget {
+  widget: LedWidget
+  col: number
+  row: number
+  w: number
+  h: number
 }
 
-const columns = computed(() => colsForCount(count.value))
-
-// Effective column span for a widget. `daily-count` is wide by design — its
-// 8-hour bar chart needs two cells to breathe — so it defaults to span 2 even
-// when an older exported URL omits colSpan. Spans are clamped to the column
-// count so a wide widget never overflows the grid.
-function effectiveSpan(w: LedWidget): number {
-  const span = w.type === 'daily-count' ? (w.colSpan ?? 2) : (w.colSpan ?? 1)
-  return Math.min(Math.max(span, 1), columns.value)
+function widgetGridSize(w: LedWidget): { w: number; h: number } {
+  return w.type === 'daily-count' ? { w: 2, h: 1 } : { w: 1, h: 1 }
 }
 
-// Total grid cells occupied once colSpans are taken into account.
-const totalUnits = computed(() =>
-  displayWidgets.value.reduce((sum, w) => sum + effectiveSpan(w), 0),
-)
+function packWidgets(widgets: LedWidget[], cols: number): PlacedWidget[] {
+  const sorted = [...widgets].sort((a, b) => {
+    const sa = widgetGridSize(a); const sb = widgetGridSize(b)
+    return (sb.w * sb.h) - (sa.w * sa.h)
+  })
+  const placements: PlacedWidget[] = []
+  const occupied = new Set<string>()
+  const key = (c: number, r: number) => `${c},${r}`
+  for (const widget of sorted) {
+    const { w, h } = widgetGridSize(widget)
+    let placed = false
+    outer: for (let r = 0; r < 8; r++) {
+      for (let c = 0; c <= cols - w; c++) {
+        let fits = true
+        for (let dr = 0; dr < h && fits; dr++)
+          for (let dc = 0; dc < w && fits; dc++)
+            if (occupied.has(key(c + dc, r + dr))) fits = false
+        if (fits) {
+          for (let dr = 0; dr < h; dr++)
+            for (let dc = 0; dc < w; dc++)
+              occupied.add(key(c + dc, r + dr))
+          placements.push({ widget, col: c, row: r, w, h })
+          placed = true
+          break outer
+        }
+      }
+    }
+    if (!placed) placements.push({ widget, col: 0, row: placements.length, w, h })
+  }
+  return placements
+}
 
-const rows = computed(() => (count.value === 0 ? 1 : Math.ceil(totalUnits.value / columns.value)))
+function chooseColumns(widgets: LedWidget[]): number {
+  if (!widgets.length) return 2
+  const minCols = widgets.some(w => w.type === 'daily-count') ? 2 : 1
+  let bestCols = minCols, bestScore = -1
+  for (let cols = minCols; cols <= 4; cols++) {
+    const pls = packWidgets(widgets, cols)
+    if (!pls.length) continue
+    const rowCount = Math.max(...pls.map(p => p.row + p.h))
+    if (rowCount > 4) continue
+    const score = Math.min(Math.floor(640 / cols), Math.floor(292 / rowCount))
+    if (score > bestScore) { bestScore = score; bestCols = cols }
+  }
+  return bestCols
+}
 
-/** CSS Grid container style — gap creates the 1-px divider via wrapper bg */
+const packedLayout = computed(() => {
+  const widgets = displayWidgets.value
+  if (!widgets.length) return { placements: [] as PlacedWidget[], cols: 2, rows: 1 }
+  const cols = chooseColumns(widgets)
+  const placements = packWidgets(widgets, cols)
+  const rows = placements.length ? Math.max(...placements.map(p => p.row + p.h)) : 1
+  return { placements, cols, rows }
+})
+
+const columns = computed(() => packedLayout.value.cols)
+const rows    = computed(() => packedLayout.value.rows)
+
+// Empty grid cells left after packing — filled black so gap colour doesn't bleed.
+const emptySlots = computed(() => {
+  const { placements, cols, rows } = packedLayout.value
+  const occupied = new Set<string>()
+  for (const p of placements)
+    for (let dr = 0; dr < p.h; dr++)
+      for (let dc = 0; dc < p.w; dc++)
+        occupied.add(`${p.col + dc},${p.row + dr}`)
+  const slots: Array<{ col: number; row: number }> = []
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++)
+      if (!occupied.has(`${c},${r}`)) slots.push({ col: c, row: r })
+  return slots
+})
+
+/** CSS Grid container — explicit positions, no auto-flow */
 const gridStyle = computed(() => ({
   display: 'grid',
   gridTemplateColumns: `repeat(${columns.value}, 1fr)`,
   gridTemplateRows: `repeat(${rows.value}, 1fr)`,
-  gridAutoFlow: 'dense',  // backfill gaps left by wide widgets
   gap: '1px',
   height: '292px',        // 320px total − 28px header
   background: 'rgba(255,255,255,0.07)', // divider colour bleeding through gap
 }))
-
-/** Empty cells needed to fill the last row of the grid */
-const emptySlotCount = computed(() => {
-  if (count.value === 0) return 0
-  const total = columns.value * rows.value
-  return Math.max(0, total - totalUnits.value)
-})
 
 // ─── Per-cell typography — shrinks as more widgets appear ─────────────────────
 const valueSize = computed(() => {
@@ -692,12 +737,13 @@ function trendClass(t?: string): string {
         └─────────────────────────────────────────────────┘
       -->
       <div
-        v-for="widget in displayWidgets"
+        v-for="{ widget, col, row, w: wSpan, h: hSpan } in packedLayout.placements"
         :key="widget.id"
         class="bg-black relative flex flex-col items-center justify-center overflow-hidden"
         :style="{
           padding:    widget.type === 'daily-count' ? '0' : cellPad,
-          gridColumn: effectiveSpan(widget) > 1 ? `span ${effectiveSpan(widget)}` : undefined,
+          gridColumn: `${col + 1} / span ${wSpan}`,
+          gridRow:    `${row + 1} / span ${hSpan}`,
         }"
       >
         <!-- Per-cell pixel-level scanlines (very faint) -->
@@ -1103,14 +1149,15 @@ function trendClass(t?: string): string {
 
       </div><!-- /.widget cell -->
 
-      <!--
-        Fill trailing empty grid cells so the 1px gap background
-        doesn't create visible grey strips in the last row.
-      -->
+      <!-- Fill any unpacked cells black so the gap background doesn't bleed through -->
       <div
-        v-for="i in emptySlotCount"
-        :key="`empty-${i}`"
+        v-for="slot in emptySlots"
+        :key="`empty-${slot.col}-${slot.row}`"
         class="bg-black"
+        :style="{
+          gridColumn: `${slot.col + 1}`,
+          gridRow:    `${slot.row + 1}`,
+        }"
       />
 
     </div><!-- /.widget grid -->
