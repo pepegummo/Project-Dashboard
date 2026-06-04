@@ -205,6 +205,38 @@ func (r *Repository) GetDailyCount(ctx context.Context, machineID string, days i
 	return result, nil
 }
 
+func (r *Repository) GetHourlyCount(ctx context.Context, machineID string, hours int) ([]TelemetryPoint, error) {
+	from := time.Now().Add(-time.Duration(hours) * time.Hour)
+
+	rows, err := database.Pool.Query(ctx, `
+		SELECT
+			time_bucket('1 hour', timestamp) AS bucket,
+			COUNT(*) AS count
+		FROM telemetry_raw
+		WHERE machine_id = $1
+		  AND timestamp >= $2
+		  AND timestamp <= NOW()
+		GROUP BY bucket
+		ORDER BY bucket ASC
+	`, machineID, from)
+	if err != nil {
+		return []TelemetryPoint{}, nil
+	}
+	defer rows.Close()
+
+	var result []TelemetryPoint
+	for rows.Next() {
+		var p TelemetryPoint
+		var count int64
+		if err := rows.Scan(&p.Bucket, &count); err != nil {
+			continue
+		}
+		p.Count = int(count)
+		result = append(result, p)
+	}
+	return result, nil
+}
+
 func (r *Repository) GetTotalCount(ctx context.Context, machineID string) (*TotalCount, error) {
 	row := database.Pool.QueryRow(ctx, `
 		SELECT COUNT(*) AS total, MIN(timestamp) AS since

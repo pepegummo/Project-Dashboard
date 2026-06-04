@@ -75,6 +75,15 @@ func (ctrl *Controller) GetDailyCount(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "data": result})
 }
 
+func (ctrl *Controller) GetHourlyCount(c *fiber.Ctx) error {
+	hours, _ := strconv.Atoi(c.Query("hours", "8"))
+	result, err := ctrl.svc.GetHourlyCount(c.Context(), c.Params("machineId"), hours, nil)
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"success": true, "data": result})
+}
+
 func (ctrl *Controller) GetTotalCount(c *fiber.Ctx) error {
 	result, err := ctrl.svc.GetTotalCount(c.Context(), c.Params("machineId"), nil)
 	if err != nil {

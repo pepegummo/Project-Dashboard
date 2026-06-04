@@ -170,6 +170,19 @@ func (s *Service) GetDailyCount(ctx context.Context, machineID string, days int,
 	return map[string]interface{}{"machineId": machineID, "days": days, "data": data}, nil
 }
 
+func (s *Service) GetHourlyCount(ctx context.Context, machineID string, hours int, orgID *string) (map[string]interface{}, error) {
+	if orgID != nil {
+		if err := s.requireMachineInOrg(ctx, machineID, *orgID); err != nil {
+			return nil, err
+		}
+	}
+	data, err := s.repo.GetHourlyCount(ctx, machineID, hours)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{"machineId": machineID, "hours": hours, "data": data}, nil
+}
+
 func (s *Service) GetTotalCount(ctx context.Context, machineID string, orgID *string) (*TotalCount, error) {
 	if orgID != nil {
 		if err := s.requireMachineInOrg(ctx, machineID, *orgID); err != nil {

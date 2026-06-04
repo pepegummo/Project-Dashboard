@@ -149,6 +149,15 @@ class ApiService {
     return data.data;
   }
 
+  async getHourlyCount(machineId: string, hours = 8) {
+    const { data } = await this.client.get<ApiResponse<{
+      machineId: string;
+      hours: number;
+      data: Array<{ bucket: string; count: number }>;
+    }>>(`/telemetry/${machineId}/hourly-count`, { params: { hours } });
+    return data.data;
+  }
+
   async getMultiLatestTelemetry(machineIds: string[]) {
     const { data } = await this.client.get<ApiResponse<Record<string, TelemetrySnapshot>>>('/telemetry/latest', {
       params: { ids: machineIds.join(',') },

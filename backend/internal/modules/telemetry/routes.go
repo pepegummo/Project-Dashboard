@@ -14,6 +14,7 @@ func RegisterRoutes(router fiber.Router, broadcaster Broadcaster) {
 	router.Get("/:machineId/latest", ctrl.GetLatest)
 	router.Get("/:machineId/series", ctrl.GetSeries)
 	router.Get("/:machineId/daily-count", ctrl.GetDailyCount)
+	router.Get("/:machineId/hourly-count", ctrl.GetHourlyCount)
 	router.Get("/:machineId/total-count", ctrl.GetTotalCount)
 
 	// Protected endpoints
