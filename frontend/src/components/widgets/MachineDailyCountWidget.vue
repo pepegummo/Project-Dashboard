@@ -19,6 +19,7 @@ export interface LedDailyData {
   todayCount: number;
   avgPerDay: number;
   weeklyData: LedWeekDay[];
+  hourlyData?: Array<{ hour: string; count: number }>;
 }
 
 const props = defineProps<{
@@ -236,12 +237,16 @@ function fmtCount(n: number) {
 const HOUR_SPREADS = [1, 1, 1, 1, 1, 1, 1, 1] as const
 
 const eightHourCount = computed(() => {
+  const h = props.data?.hourlyData;
+  if (h?.length) return hourlyBars.value.reduce((s, b) => s + b.count, 0);
   const daily = props.data?.todayCount ?? props.data?.avgPerDay ?? 0;
   return Math.round(daily * (8 / 24));
 });
-const avgPerHour = computed(() =>
-  Math.round((props.data?.avgPerDay ?? 0) / 24),
-);
+const avgPerHour = computed(() => {
+  const h = props.data?.hourlyData;
+  if (h?.length) return Math.round(eightHourCount.value / 8);
+  return Math.round((props.data?.avgPerDay ?? 0) / 24);
+});
 
 const formattedEightHour = computed(() =>
   eightHourCount.value.toLocaleString(),
@@ -249,16 +254,29 @@ const formattedEightHour = computed(() =>
 const formattedAvgHour = computed(() => avgPerHour.value.toLocaleString());
 
 const hourlyBars = computed(() => {
-  const perHour = (props.data?.avgPerDay ?? 0) / 24;
   const curHour = new Date().getHours();
-  return Array.from({ length: 8 }, (_, i) => {
+  const bars = Array.from({ length: 8 }, (_, i) => {
     const hour = (curHour - 7 + i + 24) % 24;
     return {
       label: `${String(hour).padStart(2, "0")}:00`,
-      count: Math.round(perHour * HOUR_SPREADS[i]),
+      count: 0,
       isCurrent: i === 7,
     };
   });
+
+  const hourlyData = props.data?.hourlyData;
+  if (hourlyData?.length) {
+    for (const p of hourlyData) {
+      const localH = new Date(p.hour).getHours();
+      const bar = bars.find(b => b.label === `${String(localH).padStart(2, "0")}:00`);
+      if (bar) bar.count = p.count;
+    }
+    return bars;
+  }
+
+  // fallback: estimate from daily average
+  const perHour = (props.data?.avgPerDay ?? 0) / 24;
+  return bars.map((b, i) => ({ ...b, count: Math.round(perHour * HOUR_SPREADS[i]) }));
 });
 
 const maxHourly = computed(() =>
@@ -599,43 +617,46 @@ const liveOption = computed<EChartsOption>(() => {
       class="flex-1 min-h-0 w-full flex flex-col justify-end"
       style="margin-top: 0.5em"
     >
-      <svg
-        class="w-full"
-        style="flex: 1 1 0; min-height: 0"
-        viewBox="0 0 100 100"
-        preserveAspectRatio="none"
-      >
-        <!-- Baseline -->
-        <line x1="0" y1="99" x2="100" y2="99" stroke="rgba(255,255,255,0.12)" stroke-width="0.6" />
+      <!-- relative wrapper so the HTML label overlay sits over the SVG -->
+      <div class="relative flex-1 min-h-0 w-full">
+        <svg
+          class="w-full h-full"
+          style="display: block"
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+        >
+          <!-- Baseline -->
+          <line x1="0" y1="99" x2="100" y2="99" stroke="rgba(255,255,255,0.12)" stroke-width="0.6" />
 
-        <!-- Bars + data labels grouped per hour -->
-        <g v-for="(bar, i) in hourlyBars" :key="bar.label">
-          <rect
-            :x="i * 12.5 + 2.5"
-            :y="99 - hourBarPct(bar.count) * 85"
-            width="7.5"
-            :height="hourBarPct(bar.count) * 85"
-            rx="1.2"
-            fill="#10b981"
-            :fill-opacity="bar.isCurrent ? 1 : 0.3"
-          />
-          <text
-            v-if="bar.count > 0"
-            :x="i * 12.5 + 6.25"
-            :y="99 - hourBarPct(bar.count) * 85 - 2.5"
-            text-anchor="middle"
-            fill="white"
-            stroke="rgba(0,0,0,0.7)"
-            stroke-width="2"
-            paint-order="stroke fill"
-            font-size="5"
-            font-family="monospace"
-            font-weight="bold"
-          >
-            {{ bar.count }}
-          </text>
-        </g>
-      </svg>
+          <!-- Bars only — count labels are in the HTML overlay below -->
+          <g v-for="(bar, i) in hourlyBars" :key="bar.label">
+            <rect
+              :x="i * 12.5 + 2.5"
+              :y="99 - hourBarPct(bar.count) * 85"
+              width="7.5"
+              :height="hourBarPct(bar.count) * 85"
+              rx="1.2"
+              fill="#10b981"
+              :fill-opacity="bar.isCurrent ? 1 : 0.3"
+            />
+          </g>
+        </svg>
+
+        <!-- Count labels as HTML — immune to SVG preserveAspectRatio="none" distortion -->
+        <div class="absolute inset-0 pointer-events-none">
+          <template v-for="(bar, i) in hourlyBars" :key="`cnt-${bar.label}`">
+            <span
+              v-if="bar.count > 0"
+              class="absolute text-white font-bold font-mono leading-none"
+              style="font-size: 0.5rem; text-align: center; transform: translateX(-50%); text-shadow: 0 0 3px rgba(0,0,0,0.9), 0 1px 2px rgba(0,0,0,0.8);"
+              :style="{
+                left:   `${i * 12.5 + 6.25}%`,
+                bottom: `${hourBarPct(bar.count) * 85 + 1}%`,
+              }"
+            >{{ bar.count }}</span>
+          </template>
+        </div>
+      </div>
 
       <!-- Hour labels (HTML for crisp, undistorted text) -->
       <div class="flex w-full" style="margin-top: 3px">

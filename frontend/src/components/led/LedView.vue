@@ -189,8 +189,12 @@ onMounted(async () => {
 
   // Seed daily-count widgets from REST; refresh every 5 min
   await fetchDailyCountWidgets()
+  await fetchHourlyCountWidgets()
   if (displayWidgets.value.some(w => w.type === 'daily-count' && w.machineId)) {
-    dailyCountTimer = setInterval(fetchDailyCountWidgets, 5 * 60_000)
+    dailyCountTimer = setInterval(() => {
+      fetchDailyCountWidgets()
+      fetchHourlyCountWidgets()
+    }, 5 * 60_000)
   }
 
   // WS handler: drives metric/gauge/status AND appends live points to sparklines
@@ -262,6 +266,7 @@ function resolveSparkHistory(widget: LedWidget): { values: number[]; timestamps:
 // ─── Daily count data ─────────────────────────────────────────────────────────
 interface DayPoint { date: string; count: number }
 const dailyCountData = ref<Record<string | number, DayPoint[]>>({})
+const hourlyCountData = ref<Record<string | number, Array<{ hour: string; count: number }>>>({})
 let dailyCountTimer: ReturnType<typeof setInterval> | null = null
 
 async function fetchDailyCountWidgets() {
@@ -272,6 +277,19 @@ async function fetchDailyCountWidgets() {
       dailyCountData.value = {
         ...dailyCountData.value,
         [w.id]: (result?.data ?? []).map((r: any) => ({ date: r.date, count: r.count })),
+      }
+    } catch { /* silently ignored — non-critical display data */ }
+  }
+}
+
+async function fetchHourlyCountWidgets() {
+  const dcWidgets = displayWidgets.value.filter(w => w.type === 'daily-count' && w.machineId)
+  for (const w of dcWidgets) {
+    try {
+      const result = await api.getHourlyCount(w.machineId!, 8)
+      hourlyCountData.value = {
+        ...hourlyCountData.value,
+        [w.id]: (result?.data ?? []).map((r: any) => ({ hour: r.bucket, count: r.count })),
       }
     } catch { /* silently ignored — non-critical display data */ }
   }
@@ -435,7 +453,7 @@ function buildLedDailyData(widget: LedWidget): LedDailyData | undefined {
     ? Math.round(pastDays.reduce((s, d) => s + d.count, 0) / pastDays.length)
     : 0
 
-  return { machineName, todayCount, avgPerDay, weeklyData }
+  return { machineName, todayCount, avgPerDay, weeklyData, hourlyData: hourlyCountData.value[widget.id] }
 }
 
 // ─── Layout engine — rectangle packing ────────────────────────────────────────
