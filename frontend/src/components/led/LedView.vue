@@ -197,9 +197,9 @@ onMounted(async () => {
   }
 
   // Seed daily-count widgets from REST; refresh every 5 min
-  // Seed daily-count and hourly-count once from REST; WS increments today's bar live.
-  await fetchDailyCountWidgets()
-  await fetchHourlyCountWidgets()
+  // Seed daily-count and hourly-count in parallel so the widget never mounts
+  // with hourlyData undefined and falls back to the estimated formula.
+  await Promise.all([fetchDailyCountWidgets(), fetchHourlyCountWidgets()])
 
   // WS telemetry: increment today's daily-count bar only when a NEW DB row arrives.
   // The broadcaster re-sends the same row every 30s; guard by timestamp to avoid double-counting.

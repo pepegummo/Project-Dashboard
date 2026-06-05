@@ -80,8 +80,8 @@ let offDailyTelemetry: (() => void) | null = null;
 const lastDailyTs = ref('');
 
 onMounted(async () => {
-  // Await the REST seed so rows.value is populated before the WS handler
-  // can fire — prevents a race where WS pushes count:1 and load() overwrites it.
+  // In LED mode LedView owns all data fetching and WS subscriptions.
+  if (props.ledMode) return;
   await load();
   if (machineId.value) {
     wsService.subscribe([machineId.value]);
