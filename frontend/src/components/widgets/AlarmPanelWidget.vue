@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue';
+import { computed, onMounted } from 'vue';
 import type { DashboardWidget } from '@/types';
 import { useAlertStore } from '@/stores/alert.store';
 import { AlertTriangle, ShieldAlert, Bell, CheckCircle2 } from 'lucide-vue-next';
@@ -32,15 +32,9 @@ const severityColor = (s: string) => {
   return 'text-blue-400 bg-blue-500/10';
 };
 
-let pollTimer: ReturnType<typeof setInterval> | null = null;
-
 onMounted(() => {
+  // Seed active events once from REST; subsequent updates arrive via WS → alert store.
   alertStore.fetchActiveEvents();
-  pollTimer = setInterval(() => alertStore.fetchActiveEvents(), 30_000);
-});
-
-onUnmounted(() => {
-  if (pollTimer) clearInterval(pollTimer);
 });
 </script>
 

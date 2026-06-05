@@ -98,11 +98,15 @@ func (s *Service) EvaluateTelemetry(ctx context.Context, machineID string, data 
 			continue
 		}
 
-		// Cooldown check (thread-safe)
+		// Cooldown check (thread-safe).
+		// Subtract 500ms grace to absorb Go ticker jitter — without this, a
+		// 30s cooldown paired with a 30s broadcaster interval occasionally
+		// measures 29.998s elapsed and blocks the alert unexpectedly.
+		const timerGrace = 500 * time.Millisecond
 		s.lastFiredMu.Lock()
 		last := s.lastFiredAt[rule.ID]
 		cooldown := time.Duration(rule.CooldownSec) * time.Second
-		if now.Sub(last) < cooldown {
+		if now.Sub(last) < (cooldown - timerGrace) {
 			s.lastFiredMu.Unlock()
 			continue
 		}
