@@ -158,6 +158,10 @@ async function fetchAllLatest() {
 onMounted(async () => {
   clockTimer = setInterval(() => { now.value = new Date() }, 1000)
 
+  // Seed alert counts immediately and keep them live (public endpoint, no auth needed)
+  await alertStore.fetchActiveEvents()
+  alertPollTimer = setInterval(() => alertStore.fetchActiveEvents(), 30_000)
+
   if (!wsService.isConnected) {
     wsService.connect(null)  // public kiosk — no token needed
     ownedWsConnection = true
@@ -197,6 +201,11 @@ onMounted(async () => {
     }, 5 * 60_000)
   }
 
+  // WS alert handler: immediately refresh active events when a new alert fires
+  offAlert = wsService.onAlert(() => {
+    alertStore.fetchActiveEvents()
+  })
+
   // WS handler: drives metric/gauge/status AND appends live points to sparklines
   const WINDOW_MS = 30 * 60 * 1000
   offSparkTelemetry = wsService.onTelemetry('*', (payload) => {
@@ -217,7 +226,9 @@ onUnmounted(() => {
   if (clockTimer)        { clearInterval(clockTimer);        clockTimer        = null }
   if (dailyCountTimer)   { clearInterval(dailyCountTimer);   dailyCountTimer   = null }
   if (sparkRefreshTimer) { clearInterval(sparkRefreshTimer); sparkRefreshTimer = null }
+  if (alertPollTimer)    { clearInterval(alertPollTimer);    alertPollTimer    = null }
   offSparkTelemetry?.()
+  offAlert?.()
   if (liveMachineIds.value.length > 0) {
     wsService.unsubscribe(liveMachineIds.value)
   }
@@ -254,8 +265,10 @@ function resolveWarning(widget: LedWidget): number {
 // ─── Sparkline: REST-seeded 30-min rolling data per widget ───────────────────
 const liveSparkData = ref<Record<string | number, Array<{ ts: string; value: number }>>>({})
 let offSparkTelemetry: (() => void) | null = null
+let offAlert: (() => void) | null = null
 let ownedWsConnection = false
 let sparkRefreshTimer: ReturnType<typeof setInterval> | null = null
+let alertPollTimer: ReturnType<typeof setInterval> | null = null
 
 function resolveSparkHistory(widget: LedWidget): { values: number[]; timestamps: string[] } {
   const live = liveSparkData.value[widget.id]

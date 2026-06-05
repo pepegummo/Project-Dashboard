@@ -16,7 +16,7 @@ export const useAlertStore = defineStore('alerts', () => {
   async function fetchAlerts(machineId?: string) {
     loading.value = true;
     try {
-      alerts.value = await api.getAlerts(machineId);
+      alerts.value = await api.getAlerts(machineId) ?? [];
     } finally {
       loading.value = false;
     }
@@ -25,7 +25,7 @@ export const useAlertStore = defineStore('alerts', () => {
   async function fetchActiveEvents() {
     loading.value = true;
     try {
-      activeEvents.value = await api.getActiveAlertEvents();
+      activeEvents.value = await api.getActiveAlertEvents() ?? [];
     } finally {
       loading.value = false;
     }

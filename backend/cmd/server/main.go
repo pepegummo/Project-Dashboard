@@ -14,7 +14,6 @@ import (
 	"iot-dashboard/internal/modules/dashboards"
 	"iot-dashboard/internal/modules/machines"
 	"iot-dashboard/internal/modules/telemetry"
-	"iot-dashboard/internal/simulator"
 	ws "iot-dashboard/internal/websocket"
 	"os"
 	"os/signal"
@@ -28,6 +27,34 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/limiter"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 )
+
+// alertEvalAdapter evaluates alert rules and broadcasts triggered events over WS.
+type alertEvalAdapter struct {
+	svc     *alerts.Service
+	gateway *ws.Gateway
+}
+
+func (a *alertEvalAdapter) EvaluateAndBroadcast(ctx context.Context, machineID, machineName string, data map[string]interface{}) {
+	triggered, err := a.svc.EvaluateTelemetry(ctx, machineID, data)
+	if err != nil {
+		return
+	}
+	for _, t := range triggered {
+		a.gateway.BroadcastAlert(ws.AlertPayload{
+			AlertID:     t.AlertID,
+			AlertName:   t.AlertName,
+			MachineID:   machineID,
+			MachineName: machineName,
+			Field:       t.Field,
+			Value:       t.Value,
+			Threshold:   t.Threshold,
+			Condition:   t.Condition,
+			Severity:    t.Severity,
+			Message:     t.Message,
+			Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		})
+	}
+}
 
 func main() {
 	// ── Config ────────────────────────────────────────────────────────────────
@@ -53,23 +80,12 @@ func main() {
 	defer gateway.Close()
 	fmt.Printf("✅ WebSocket listening on %s\n", ws.ListenAddr(config.Env.WsPort))
 
-	// ── DB Broadcaster — always on; pushes real DB telemetry to WS clients every 30s ──
-	dbBroadcaster := broadcaster.New(gateway, 30*time.Second)
-	dbBroadcaster.Start()
+	// ── Alert evaluator — shared by broadcaster (periodic) and ingest (on-demand) ──
+	alertEval := &alertEvalAdapter{svc: alerts.NewService(), gateway: gateway}
 
-	// ── Simulator (optional — generates synthetic data on top of DB data) ─────
-	sim := simulator.NewSimulator(gateway, 60_000) // 60s ticks
-	if config.Env.SimulatorEnabled {
-		machineRows, err := loadMachines(ctx)
-		if err != nil || len(machineRows) == 0 {
-			fmt.Println("⚠️  No machines found. Run db:seed first.")
-		} else {
-			sim.ConfigureMachines(machineRows)
-			sim.Start()
-		}
-	} else {
-		fmt.Println("ℹ️  Simulator disabled — DB broadcaster will serve telemetry")
-	}
+	// ── DB Broadcaster — pushes latest DB telemetry to WS clients every 30s, evaluates alerts ──
+	dbBroadcaster := broadcaster.New(gateway, 30*time.Second, alertEval)
+	dbBroadcaster.Start()
 
 	// ── Fiber App ─────────────────────────────────────────────────────────────
 	app := fiber.New(fiber.Config{
@@ -120,7 +136,7 @@ func main() {
 	api := app.Group("/api")
 	auth.RegisterRoutes(api.Group("/auth"))
 	machines.RegisterRoutes(api.Group("/machines"))
-	telemetry.RegisterRoutes(api.Group("/telemetry"), dbBroadcaster)
+	telemetry.RegisterRoutes(api.Group("/telemetry"), dbBroadcaster, alertEval)
 	dashboards.RegisterRoutes(api.Group("/dashboards"))
 	alerts.RegisterRoutes(api.Group("/alerts"))
 	ai.RegisterRoutes(api.Group("/ai"))
@@ -150,27 +166,8 @@ func main() {
 
 	fmt.Println("\nShutting down gracefully…")
 	dbBroadcaster.Stop()
-	sim.Stop()
 	_ = app.ShutdownWithTimeout(10 * time.Second)
 	fmt.Println("👋 Shutdown complete")
-}
-
-func loadMachines(ctx context.Context) ([]simulator.MachineConfig, error) {
-	rows, err := database.Pool.Query(ctx, `SELECT id, name, type FROM machines`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var machines []simulator.MachineConfig
-	for rows.Next() {
-		var m simulator.MachineConfig
-		if err := rows.Scan(&m.ID, &m.Name, &m.Type); err != nil {
-			continue
-		}
-		machines = append(machines, m)
-	}
-	return machines, nil
 }
 
 func printRoutes() {

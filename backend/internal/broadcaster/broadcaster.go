@@ -17,15 +17,22 @@ type machineRow struct {
 	name string
 }
 
+// AlertEvaluator evaluates alert rules against telemetry and broadcasts triggered events.
+type AlertEvaluator interface {
+	EvaluateAndBroadcast(ctx context.Context, machineID, machineName string, data map[string]interface{})
+}
+
 type Broadcaster struct {
 	gateway      *ws.Gateway
+	alertEval    AlertEvaluator
 	pollInterval time.Duration
 	stop         chan struct{}
 }
 
-func New(gateway *ws.Gateway, pollInterval time.Duration) *Broadcaster {
+func New(gateway *ws.Gateway, pollInterval time.Duration, alertEval AlertEvaluator) *Broadcaster {
 	return &Broadcaster{
 		gateway:      gateway,
+		alertEval:    alertEval,
 		pollInterval: pollInterval,
 		stop:         make(chan struct{}),
 	}
@@ -104,6 +111,9 @@ func (b *Broadcaster) broadcast() {
 			Timestamp:   ts.UTC().Format(time.RFC3339),
 			Data:        data,
 		})
+		if b.alertEval != nil {
+			b.alertEval.EvaluateAndBroadcast(ctx, machineID, nameByID[machineID], data)
+		}
 	}
 }
 
