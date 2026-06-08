@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IoT Dashboard — REST Load Test Report</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;padding:24px}
+  h1{font-size:1.5rem;font-weight:700;color:#f8fafc;margin-bottom:4px}
+  .meta{font-size:.85rem;color:#94a3b8;margin-bottom:28px}
+  .meta span{margin-right:20px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px}
+  .card{background:#1e293b;border-radius:12px;padding:20px}
+  .card.full{grid-column:1/-1}
+  .card h2{font-size:.95rem;font-weight:600;color:#cbd5e1;margin-bottom:16px;text-transform:uppercase;letter-spacing:.05em}
+  canvas{max-height:260px}
+  table{width:100%;border-collapse:collapse;font-size:.82rem}
+  th{background:#0f172a;color:#94a3b8;font-weight:600;text-align:left;padding:8px 12px;border-bottom:1px solid #334155}
+  td{padding:7px 12px;border-bottom:1px solid #1e293b;color:#cbd5e1}
+  tr:hover td{background:#1e293b}
+  .ok{color:#4ade80} .warn{color:#fb923c} .bad{color:#f87171}
+  .tag{display:inline-block;font-size:.72rem;padding:1px 6px;border-radius:4px;margin:1px;background:#0f172a}
+</style>
+</head>
+<body>
+<h1>IoT Dashboard — REST Load Test Report</h1>
+<div class="meta">
+  <span>🕐 2026-06-04 11:47:53</span>
+  <span>⏱ Duration: 7m34s</span>
+  <span>🎯 Target: http://localhost:4000</span>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>Success Rate (%) per Phase</h2>
+    <canvas id="successChart"></canvas>
+  </div>
+  <div class="card">
+    <h2>Throughput (req/s) per Phase</h2>
+    <canvas id="throughputChart"></canvas>
+  </div>
+  <div class="card full">
+    <h2>Latency per Phase (ms)</h2>
+    <canvas id="latencyChart"></canvas>
+  </div>
+  <div class="card full">
+    <h2>Full Results Table</h2>
+    <table>
+      <thead><tr>
+        <th>Phase</th><th>Rate RPS</th><th>Requests</th>
+        <th>Throughput</th><th>Success</th>
+        <th>p50</th><th>p95</th><th>p99</th><th>Max</th><th>Status Codes</th>
+      </tr></thead>
+      <tbody id="tableBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const phases = [{"name":"PHASE 1  SMOKE","rateRPS":5,"requests":150,"throughput":5.032864487670987,"successPct":100,"p50Ms":3,"p95Ms":883,"p99Ms":966,"maxMs":984,"codes":{"200":150}},{"name":"PHASE 2  RAMP 10 RPS","rateRPS":10,"requests":300,"throughput":9.989414018176658,"successPct":100,"p50Ms":3,"p95Ms":858,"p99Ms":886,"maxMs":919,"codes":{"200":300}},{"name":"PHASE 2  RAMP 25 RPS","rateRPS":25,"requests":750,"throughput":24.495907377303084,"successPct":100,"p50Ms":3,"p95Ms":963,"p99Ms":1027,"maxMs":1081,"codes":{"200":750}},{"name":"PHASE 2  RAMP 50 RPS","rateRPS":50,"requests":1500,"throughput":48.412794129146995,"successPct":100,"p50Ms":5,"p95Ms":1541,"p99Ms":1672,"maxMs":1744,"codes":{"200":1500}},{"name":"PHASE 2  RAMP 100 RPS","rateRPS":100,"requests":3000,"throughput":52.935198809970146,"successPct":100,"p50Ms":15767,"p95Ms":40382,"p99Ms":45033,"maxMs":47158,"codes":{"200":3000}},{"name":"PHASE 3  SUSTAINED LOAD","rateRPS":100,"requests":18000,"throughput":47.1170331688313,"successPct":52.26666666666666,"p50Ms":11208,"p95Ms":55259,"p99Ms":60001,"maxMs":60599,"codes":{"0":8592,"200":9408}},{"name":"PHASE 4  SPIKE","rateRPS":300,"requests":9000,"throughput":43.43844677631468,"successPct":21.766666666666666,"p50Ms":6,"p95Ms":27129,"p99Ms":38958,"maxMs":40662,"codes":{"0":7041,"200":1959}},{"name":"PHASE 5  COOL DOWN","rateRPS":50,"requests":1500,"throughput":48.08962798671695,"successPct":100,"p50Ms":5,"p95Ms":1920,"p99Ms":2184,"maxMs":2306,"codes":{"200":1500}}];
+
+const labels = phases.map(p => p.name.replace(/PHASE \d+\s+/,''));
+const successColors = phases.map(p =>
+  p.successPct >= 99 ? '#4ade80' : p.successPct >= 95 ? '#fb923c' : '#f87171'
+);
+
+new Chart(document.getElementById('successChart'), {
+  type: 'bar',
+  data: {
+    labels,
+    datasets: [{
+      label: 'Success %',
+      data: phases.map(p => p.successPct.toFixed(2)),
+      backgroundColor: successColors,
+      borderRadius: 4,
+    }]
+  },
+  options: {
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { ticks: { color: '#94a3b8', maxRotation: 35 }, grid: { color: '#1e293b' } },
+      y: { min: 0, max: 100, ticks: { color: '#94a3b8' }, grid: { color: '#334155' } }
+    }
+  }
+});
+
+new Chart(document.getElementById('throughputChart'), {
+  type: 'line',
+  data: {
+    labels,
+    datasets: [{
+      label: 'req/s',
+      data: phases.map(p => p.throughput.toFixed(1)),
+      borderColor: '#38bdf8',
+      backgroundColor: 'rgba(56,189,248,.15)',
+      fill: true,
+      tension: 0.3,
+      pointRadius: 5,
+    }]
+  },
+  options: {
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { ticks: { color: '#94a3b8', maxRotation: 35 }, grid: { color: '#1e293b' } },
+      y: { ticks: { color: '#94a3b8' }, grid: { color: '#334155' } }
+    }
+  }
+});
+
+new Chart(document.getElementById('latencyChart'), {
+  type: 'bar',
+  data: {
+    labels,
+    datasets: [
+      { label: 'p50', data: phases.map(p => p.p50Ms), backgroundColor: '#4ade80', borderRadius: 3 },
+      { label: 'p95', data: phases.map(p => p.p95Ms), backgroundColor: '#fb923c', borderRadius: 3 },
+      { label: 'p99', data: phases.map(p => p.p99Ms), backgroundColor: '#f87171', borderRadius: 3 },
+    ]
+  },
+  options: {
+    plugins: { legend: { labels: { color: '#94a3b8' } } },
+    scales: {
+      x: { ticks: { color: '#94a3b8', maxRotation: 35 }, grid: { color: '#1e293b' } },
+      y: { ticks: { color: '#94a3b8', callback: v => v+'ms' }, grid: { color: '#334155' } }
+    }
+  }
+});
+
+const tbody = document.getElementById('tableBody');
+phases.forEach(p => {
+  const cls = p.successPct >= 99 ? 'ok' : p.successPct >= 95 ? 'warn' : 'bad';
+  const codes = Object.entries(p.codes || {})
+    .map(([k,v]) => '<span class="tag">' + k + ': ' + v + '</span>').join('');
+  const rps = p.rateRPS === 0 ? 'unlimited' : p.rateRPS;
+  tbody.innerHTML +=
+    '<tr>' +
+    '<td>' + p.name + '</td>' +
+    '<td>' + rps + '</td>' +
+    '<td>' + p.requests.toLocaleString() + '</td>' +
+    '<td>' + p.throughput.toFixed(1) + '</td>' +
+    '<td class="' + cls + '">' + p.successPct.toFixed(2) + '%</td>' +
+    '<td>' + p.p50Ms + 'ms</td>' +
+    '<td>' + p.p95Ms + 'ms</td>' +
+    '<td class="' + cls + '">' + p.p99Ms + 'ms</td>' +
+    '<td>' + p.maxMs + 'ms</td>' +
+    '<td>' + codes + '</td>' +
+    '</tr>';
+});
+</script>
+</body>
+</html>

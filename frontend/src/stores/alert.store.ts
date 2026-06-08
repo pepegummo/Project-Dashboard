@@ -16,7 +16,7 @@ export const useAlertStore = defineStore('alerts', () => {
   async function fetchAlerts(machineId?: string) {
     loading.value = true;
     try {
-      alerts.value = await api.getAlerts(machineId);
+      alerts.value = await api.getAlerts(machineId) ?? [];
     } finally {
       loading.value = false;
     }
@@ -25,7 +25,7 @@ export const useAlertStore = defineStore('alerts', () => {
   async function fetchActiveEvents() {
     loading.value = true;
     try {
-      activeEvents.value = await api.getActiveAlertEvents();
+      activeEvents.value = await api.getActiveAlertEvents() ?? [];
     } finally {
       loading.value = false;
     }
@@ -61,10 +61,17 @@ export const useAlertStore = defineStore('alerts', () => {
     activeEvents.value = activeEvents.value.filter(e => e.id !== eventId);
   }
 
+  async function resolveAll() {
+    const ids = activeEvents.value.map(e => e.id);
+    await Promise.allSettled(ids.map(id => api.resolveAlertEvent(id)));
+    activeEvents.value = [];
+  }
+
   function addLiveAlert(alert: WsAlertPayload) {
     liveAlerts.value.unshift(alert);
     if (liveAlerts.value.length > 50) liveAlerts.value.pop();
-    // Immediately refresh DB-backed events so alarm panel shows the new event without waiting for poll
+    // The backend writes the DB event before broadcasting WS, so fetching here
+    // always returns the real event with a real UUID — resolve/acknowledge work correctly.
     fetchActiveEvents();
   }
 
@@ -77,7 +84,7 @@ export const useAlertStore = defineStore('alerts', () => {
     criticalCount, warningCount, openCount,
     fetchAlerts, fetchActiveEvents,
     createAlert, updateAlert, deleteAlert,
-    acknowledgeEvent, resolveEvent,
+    acknowledgeEvent, resolveEvent, resolveAll,
     addLiveAlert, clearLiveAlerts,
   };
 });

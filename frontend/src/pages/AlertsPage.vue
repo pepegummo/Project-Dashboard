@@ -2,7 +2,7 @@
 import { onMounted, computed, ref } from 'vue';
 import { useAlertStore } from '@/stores/alert.store';
 import { useMachineStore } from '@/stores/machine.store';
-import { Bell, AlertTriangle, CheckCircle2, Clock, ShieldAlert, Plus, Pencil, Trash2 } from 'lucide-vue-next';
+import { Bell, AlertTriangle, CheckCircle2, Clock, ShieldAlert, Plus, Pencil, Trash2, CheckCheck } from 'lucide-vue-next';
 import type { Alert, AlertSeverity } from '@/types';
 import AlertRuleModal from '@/components/alerts/AlertRuleModal.vue';
 
@@ -14,6 +14,17 @@ const activeTab = ref<'events' | 'rules' | 'live'>('events');
 const showModal = ref(false);
 const editingAlert = ref<Alert | null>(null);
 const deletingId = ref<string | null>(null);
+const resolvingAll = ref(false);
+
+async function resolveAll() {
+  if (!confirm(`Resolve all ${alertStore.activeEvents.length} active events?`)) return;
+  resolvingAll.value = true;
+  try {
+    await alertStore.resolveAll();
+  } finally {
+    resolvingAll.value = false;
+  }
+}
 
 function openCreate() {
   editingAlert.value = null;
@@ -122,6 +133,16 @@ const fmt = (ts: string) => new Date(ts).toLocaleString('en-US', { month: 'short
 
     <!-- Active Events Tab -->
     <template v-if="activeTab === 'events'">
+      <div v-if="alertStore.activeEvents.length" class="flex justify-end mb-3">
+        <button
+          class="btn-sm flex items-center gap-1.5 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/10 rounded-md px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50"
+          :disabled="resolvingAll"
+          @click="resolveAll"
+        >
+          <CheckCheck class="w-3.5 h-3.5" />
+          {{ resolvingAll ? 'Resolving…' : 'Resolve All' }}
+        </button>
+      </div>
       <div v-if="alertStore.loading" class="flex justify-center py-12"><div class="spinner" /></div>
       <div v-else-if="!alertStore.activeEvents.length" class="flex flex-col items-center py-16 text-gray-500">
         <CheckCircle2 class="w-10 h-10 mb-3 text-emerald-500/50" />

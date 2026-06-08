@@ -66,13 +66,59 @@ func (ctrl *Controller) Delete(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "data": nil})
 }
 
+type alertMachineResp struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type alertInfoResp struct {
+	ID        string           `json:"id"`
+	Name      string           `json:"name"`
+	Field     string           `json:"field"`
+	Severity  string           `json:"severity"`
+	Threshold float64          `json:"threshold"`
+	Machine   alertMachineResp `json:"machine"`
+}
+
+type alertEventResp struct {
+	ID        string        `json:"id"`
+	AlertID   string        `json:"alertId"`
+	Value     float64       `json:"value"`
+	Message   string        `json:"message,omitempty"`
+	Status    string        `json:"status"`
+	CreatedAt string        `json:"createdAt"`
+	Alert     alertInfoResp `json:"alert"`
+}
+
 func (ctrl *Controller) GetActiveEvents(c *fiber.Ctx) error {
 	// Public — no auth required (LED kiosk)
 	events, err := ctrl.svc.GetActiveEvents(c.Context(), nil)
 	if err != nil {
 		return err
 	}
-	return c.JSON(fiber.Map{"success": true, "data": events})
+	resp := make([]alertEventResp, 0, len(events))
+	for _, e := range events {
+		resp = append(resp, alertEventResp{
+			ID:        e.ID,
+			AlertID:   e.AlertID,
+			Value:     e.Value,
+			Message:   e.Message,
+			Status:    e.Status,
+			CreatedAt: e.TriggeredAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
+			Alert: alertInfoResp{
+				ID:        e.AlertID,
+				Name:      e.AlertName,
+				Field:     e.Field,
+				Severity:  e.Severity,
+				Threshold: e.Threshold,
+				Machine: alertMachineResp{
+					ID:   e.MachineID,
+					Name: e.MachineName,
+				},
+			},
+		})
+	}
+	return c.JSON(fiber.Map{"success": true, "data": resp})
 }
 
 func (ctrl *Controller) AcknowledgeEvent(c *fiber.Ctx) error {

@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"context"
 	"iot-dashboard/internal/middleware"
 	"strconv"
 	"strings"
@@ -13,12 +14,19 @@ type Broadcaster interface {
 	BroadcastOne(machineID, machineName, timestamp string, data map[string]interface{})
 }
 
+type AlertEvaluator interface {
+	EvaluateAndBroadcast(ctx context.Context, machineID, machineName string, data map[string]interface{})
+}
+
 type Controller struct {
 	svc         *Service
 	broadcaster Broadcaster
+	alertEval   AlertEvaluator
 }
 
-func NewController(b Broadcaster) *Controller { return &Controller{svc: NewService(), broadcaster: b} }
+func NewController(b Broadcaster, ae AlertEvaluator) *Controller {
+	return &Controller{svc: NewService(), broadcaster: b, alertEval: ae}
+}
 
 func (ctrl *Controller) GetLatestMulti(c *fiber.Ctx) error {
 	idsParam := c.Query("ids")
@@ -107,6 +115,10 @@ func (ctrl *Controller) Ingest(c *fiber.Ctx) error {
 	if ctrl.broadcaster != nil {
 		ts, _ := result["timestamp"].(time.Time)
 		ctrl.broadcaster.BroadcastOne(machineID, "", ts.UTC().Format(time.RFC3339), body)
+	}
+	// Evaluate alert rules against the ingested data
+	if ctrl.alertEval != nil {
+		ctrl.alertEval.EvaluateAndBroadcast(c.Context(), machineID, "", body)
 	}
 	return c.Status(201).JSON(fiber.Map{"success": true, "data": result})
 }

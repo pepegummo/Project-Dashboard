@@ -32,6 +32,7 @@ type AlertEvent struct {
 	Status      string     `json:"status"`
 	Severity    string     `json:"severity,omitempty"`
 	Field       string     `json:"field,omitempty"`
+	Threshold   float64    `json:"threshold,omitempty"`
 	TriggeredAt time.Time  `json:"triggeredAt"`
 	AckedAt     *time.Time `json:"acknowledgedAt"`
 	ResolvedAt  *time.Time `json:"resolvedAt"`
@@ -63,7 +64,7 @@ func (r *Repository) FindAll(ctx context.Context, orgID string, machineID *strin
 	}
 	defer rows.Close()
 
-	var alerts []Alert
+	alerts := make([]Alert, 0)
 	for rows.Next() {
 		var a Alert
 		if err := rows.Scan(&a.ID, &a.MachineID, &a.Name, &a.Description, &a.Field, &a.Condition,
@@ -107,13 +108,92 @@ func (r *Repository) Create(ctx context.Context, a Alert) (*Alert, error) {
 }
 
 func (r *Repository) Update(ctx context.Context, id string, data map[string]interface{}) (*Alert, error) {
-	if name, ok := data["name"].(string); ok {
-		_, _ = database.Pool.Exec(ctx, `UPDATE alerts SET name=$1, updated_at=NOW() WHERE id=$2`, name, id)
-	}
-	if isActive, ok := data["isActive"].(bool); ok {
-		_, _ = database.Pool.Exec(ctx, `UPDATE alerts SET is_active=$1, updated_at=NOW() WHERE id=$2`, isActive, id)
+	_, err := database.Pool.Exec(ctx, `
+		UPDATE alerts SET
+			name         = COALESCE($1, name),
+			description  = $2,
+			field        = COALESCE($3, field),
+			condition    = COALESCE($4, condition),
+			threshold    = COALESCE($5, threshold),
+			threshold_hi = $6,
+			severity     = COALESCE($7, severity),
+			cooldown_sec = COALESCE($8, cooldown_sec),
+			is_active    = COALESCE($9, is_active),
+			updated_at   = NOW()
+		WHERE id = $10
+	`,
+		mapStr(data, "name"),
+		mapStrPtr(data, "description"),
+		mapStr(data, "field"),
+		mapStr(data, "condition"),
+		mapFloat64(data, "threshold"),
+		mapFloat64(data, "thresholdHi"),
+		mapStr(data, "severity"),
+		mapInt(data, "cooldownSec"),
+		mapBool(data, "isActive"),
+		id,
+	)
+	if err != nil {
+		return nil, err
 	}
 	return r.FindByID(ctx, id)
+}
+
+// mapStr returns a *string for COALESCE — nil means "leave column unchanged".
+func mapStr(data map[string]interface{}, key string) *string {
+	if v, ok := data[key].(string); ok && v != "" {
+		return &v
+	}
+	return nil
+}
+
+// mapStrPtr returns a *string or nil; allows clearing a nullable column.
+func mapStrPtr(data map[string]interface{}, key string) *string {
+	v, ok := data[key]
+	if !ok {
+		return nil
+	}
+	if s, ok := v.(string); ok {
+		return &s
+	}
+	return nil
+}
+
+func mapFloat64(data map[string]interface{}, key string) *float64 {
+	v, ok := data[key]
+	if !ok {
+		return nil
+	}
+	switch n := v.(type) {
+	case float64:
+		return &n
+	case float32:
+		f := float64(n)
+		return &f
+	}
+	return nil
+}
+
+func mapInt(data map[string]interface{}, key string) *int {
+	v, ok := data[key]
+	if !ok {
+		return nil
+	}
+	switch n := v.(type) {
+	case float64:
+		i := int(n)
+		return &i
+	case int:
+		return &n
+	}
+	return nil
+}
+
+func mapBool(data map[string]interface{}, key string) *bool {
+	if v, ok := data[key].(bool); ok {
+		return &v
+	}
+	return nil
 }
 
 func (r *Repository) Delete(ctx context.Context, id string) error {
@@ -124,7 +204,7 @@ func (r *Repository) Delete(ctx context.Context, id string) error {
 func (r *Repository) GetActiveAlerts(ctx context.Context, orgID *string) ([]AlertEvent, error) {
 	query := `
 		SELECT ae.id, ae.alert_id, a.name, m.id, m.name, ae.value, COALESCE(ae.message, ''),
-		       ae.status, a.severity, a.field, ae.triggered_at, ae.acknowledged_at, ae.resolved_at
+		       ae.status, a.severity, a.field, a.threshold, ae.triggered_at, ae.acknowledged_at, ae.resolved_at
 		FROM alert_events ae
 		JOIN alerts a ON a.id = ae.alert_id
 		JOIN machines m ON m.id = a.machine_id
@@ -145,14 +225,17 @@ func (r *Repository) GetActiveAlerts(ctx context.Context, orgID *string) ([]Aler
 	}
 	defer rows.Close()
 
-	var events []AlertEvent
+	events := make([]AlertEvent, 0)
 	for rows.Next() {
 		var e AlertEvent
 		if err := rows.Scan(&e.ID, &e.AlertID, &e.AlertName, &e.MachineID, &e.MachineName,
-			&e.Value, &e.Message, &e.Status, &e.Severity, &e.Field, &e.TriggeredAt, &e.AckedAt, &e.ResolvedAt); err != nil {
+			&e.Value, &e.Message, &e.Status, &e.Severity, &e.Field, &e.Threshold, &e.TriggeredAt, &e.AckedAt, &e.ResolvedAt); err != nil {
 			return nil, err
 		}
 		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return events, nil
 }
@@ -189,7 +272,7 @@ func (r *Repository) GetAlertsForMachines(ctx context.Context, machineIDs []stri
 	}
 	defer rows.Close()
 
-	var alerts []Alert
+	alerts := make([]Alert, 0)
 	for rows.Next() {
 		var a Alert
 		if err := rows.Scan(&a.ID, &a.MachineID, &a.Name, &a.Field, &a.Condition,

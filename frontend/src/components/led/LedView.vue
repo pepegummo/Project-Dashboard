@@ -158,6 +158,9 @@ async function fetchAllLatest() {
 onMounted(async () => {
   clockTimer = setInterval(() => { now.value = new Date() }, 1000)
 
+  // Seed alert counts once from REST; WS alert events update the store reactively.
+  await alertStore.fetchActiveEvents()
+
   if (!wsService.isConnected) {
     wsService.connect(null)  // public kiosk — no token needed
     ownedWsConnection = true
@@ -166,6 +169,12 @@ onMounted(async () => {
   if (liveMachineIds.value.length > 0) {
     wsService.subscribe(liveMachineIds.value)
     await fetchAllLatest() // seed store once; WS takes over from here
+    // Seed lastDailyTsByMachine so the first WS broadcast (which replays the
+    // same latest row already counted by fetchHourlyCountWidgets) is blocked.
+    for (const mid of liveMachineIds.value) {
+      const snap = telemetryStore.snapshots[mid]
+      if (snap?.timestamp) lastDailyTsByMachine[mid] = snap.timestamp
+    }
   }
 
   // Seed sparkline widgets with 30-min REST history (1-min buckets = 30 points, same as dashboard)
@@ -188,14 +197,45 @@ onMounted(async () => {
   }
 
   // Seed daily-count widgets from REST; refresh every 5 min
-  await fetchDailyCountWidgets()
-  await fetchHourlyCountWidgets()
-  if (displayWidgets.value.some(w => w.type === 'daily-count' && w.machineId)) {
-    dailyCountTimer = setInterval(() => {
-      fetchDailyCountWidgets()
-      fetchHourlyCountWidgets()
-    }, 5 * 60_000)
-  }
+  // Seed daily-count and hourly-count in parallel so the widget never mounts
+  // with hourlyData undefined and falls back to the estimated formula.
+  await Promise.all([fetchDailyCountWidgets(), fetchHourlyCountWidgets()])
+
+  // WS telemetry: increment today's daily-count bar only when a NEW DB row arrives.
+  // The broadcaster re-sends the same row every 30s; guard by timestamp to avoid double-counting.
+  const dcWidgetIds = displayWidgets.value.filter(w => w.type === 'daily-count' && w.machineId)
+  offDailyCountTelemetry = wsService.onTelemetry('*', (payload) => {
+    if (payload.timestamp <= (lastDailyTsByMachine[payload.machineId] ?? '')) return
+    lastDailyTsByMachine[payload.machineId] = payload.timestamp
+    const dayIso = payload.timestamp.slice(0, 10)
+    for (const w of dcWidgetIds) {
+      if (w.machineId !== payload.machineId) continue
+      const rows = dailyCountData.value[w.id] ?? []
+      const todayRow = rows.find(r => r.date.slice(0, 10) === dayIso)
+      if (todayRow) {
+        todayRow.count++
+      } else {
+        rows.push({ date: payload.timestamp, count: 1 })
+        dailyCountData.value = { ...dailyCountData.value, [w.id]: rows }
+      }
+
+      // Also increment the current hour's bar for the "8-HOUR OUTPUT" LED display.
+      const hourBucket = new Date(payload.timestamp)
+      hourBucket.setMinutes(0, 0, 0)
+      const hourTs = hourBucket.getTime()
+      const hourRows = hourlyCountData.value[w.id] ?? []
+      const hourRow = hourRows.find(r => new Date(r.hour).getTime() === hourTs)
+      if (hourRow) {
+        hourRow.count++
+      } else {
+        hourRows.push({ hour: hourBucket.toISOString(), count: 1 })
+        hourlyCountData.value = { ...hourlyCountData.value, [w.id]: hourRows }
+      }
+    }
+  })
+
+  // WS alert handler — useWebSocket composable is not mounted in LED mode, so register here.
+  offAlert = wsService.onAlert(payload => alertStore.addLiveAlert(payload))
 
   // WS handler: drives metric/gauge/status AND appends live points to sparklines
   const WINDOW_MS = 30 * 60 * 1000
@@ -215,9 +255,10 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (clockTimer)        { clearInterval(clockTimer);        clockTimer        = null }
-  if (dailyCountTimer)   { clearInterval(dailyCountTimer);   dailyCountTimer   = null }
   if (sparkRefreshTimer) { clearInterval(sparkRefreshTimer); sparkRefreshTimer = null }
   offSparkTelemetry?.()
+  offDailyCountTelemetry?.()
+  offAlert?.()
   if (liveMachineIds.value.length > 0) {
     wsService.unsubscribe(liveMachineIds.value)
   }
@@ -254,8 +295,11 @@ function resolveWarning(widget: LedWidget): number {
 // ─── Sparkline: REST-seeded 30-min rolling data per widget ───────────────────
 const liveSparkData = ref<Record<string | number, Array<{ ts: string; value: number }>>>({})
 let offSparkTelemetry: (() => void) | null = null
+let offDailyCountTelemetry: (() => void) | null = null
+let offAlert: (() => void) | null = null
 let ownedWsConnection = false
 let sparkRefreshTimer: ReturnType<typeof setInterval> | null = null
+const lastDailyTsByMachine: Record<string, string> = {}
 
 function resolveSparkHistory(widget: LedWidget): { values: number[]; timestamps: string[] } {
   const live = liveSparkData.value[widget.id]
@@ -267,7 +311,6 @@ function resolveSparkHistory(widget: LedWidget): { values: number[]; timestamps:
 interface DayPoint { date: string; count: number }
 const dailyCountData = ref<Record<string | number, DayPoint[]>>({})
 const hourlyCountData = ref<Record<string | number, Array<{ hour: string; count: number }>>>({})
-let dailyCountTimer: ReturnType<typeof setInterval> | null = null
 
 async function fetchDailyCountWidgets() {
   const dcWidgets = displayWidgets.value.filter(w => w.type === 'daily-count' && w.machineId)
@@ -455,6 +498,17 @@ function buildLedDailyData(widget: LedWidget): LedDailyData | undefined {
 
   return { machineName, todayCount, avgPerDay, weeklyData, hourlyData: hourlyCountData.value[widget.id] }
 }
+
+// Computed map so Vue reliably tracks dailyCountData/hourlyCountData mutations and re-renders.
+const ledDailyDataMap = computed(() => {
+  const result: Record<string | number, LedDailyData | undefined> = {}
+  for (const w of displayWidgets.value) {
+    if (w.type === 'daily-count' && w.machineId) {
+      result[w.id] = buildLedDailyData(w)
+    }
+  }
+  return result
+})
 
 // ─── Layout engine — rectangle packing ────────────────────────────────────────
 // daily-count = 2×1 (wide), all others = 1×1.
@@ -1136,7 +1190,7 @@ function trendClass(t?: string): string {
         <!-- ════════════════════════════════════════════════════════════════ -->
         <template v-else-if="widget.type === 'daily-count'">
           <MachineDailyCountWidget
-            v-if="buildLedDailyData(widget)"
+            v-if="ledDailyDataMap[widget.id]"
             :widget="{
               id: String(widget.id),
               dashboardId: '',
@@ -1147,7 +1201,7 @@ function trendClass(t?: string): string {
               order: 0,
             }"
             :led-mode="true"
-            :data="buildLedDailyData(widget)"
+            :data="ledDailyDataMap[widget.id]"
             class="w-full h-full"
           />
           <!-- Shown while daily data is still loading -->

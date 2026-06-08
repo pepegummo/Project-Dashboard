@@ -55,9 +55,10 @@ async function load() {
   loading.value = true;
   error.value = null;
   try {
-    const [rangeResult, totalResult] = await Promise.all([
+    const [rangeResult, totalResult, latestSnap] = await Promise.all([
       api.getTelemetryDailyCount(machineId.value, selectedDays.value),
       api.getTotalCount(machineId.value),
+      api.getLatestTelemetry(machineId.value),
     ]);
     rows.value = (rangeResult?.data ?? []).map((r) => ({
       date: r.date,
@@ -65,6 +66,9 @@ async function load() {
     }));
     allTimeTotal.value = totalResult.total;
     allTimeSince.value = totalResult.since;
+    // Seed the timestamp guard so the first WS broadcast doesn't double-count
+    // the latest row already included in the daily-count REST response.
+    if ((latestSnap as any)?.timestamp) lastDailyTs.value = (latestSnap as any).timestamp;
   } catch (e) {
     error.value = (e as Error).message;
   } finally {
@@ -72,7 +76,34 @@ async function load() {
   }
 }
 
-onMounted(load);
+let offDailyTelemetry: (() => void) | null = null;
+const lastDailyTs = ref('');
+
+onMounted(async () => {
+  // In LED mode LedView owns all data fetching and WS subscriptions.
+  if (props.ledMode) return;
+  await load();
+  if (machineId.value) {
+    wsService.subscribe([machineId.value]);
+    offDailyTelemetry = wsService.onTelemetry(machineId.value, (payload) => {
+      // Only increment when a genuinely new DB row arrives (1-min resolution).
+      // The broadcaster re-sends the same row every 30s, so guard by timestamp.
+      if (payload.timestamp <= lastDailyTs.value) return;
+      lastDailyTs.value = payload.timestamp;
+      // Use the data's own timestamp for the day bucket — same source as DB time_bucket.
+      const dayIso = payload.timestamp.slice(0, 10);
+      const dayRow = rows.value.find(r => r.date.slice(0, 10) === dayIso);
+      if (dayRow) {
+        dayRow.count++;
+      } else {
+        rows.value.push({ date: payload.timestamp, count: 1 });
+        if (rows.value.length > selectedDays.value) rows.value.shift();
+      }
+      if (allTimeTotal.value !== null) allTimeTotal.value++;
+    });
+  }
+});
+
 watch(selectedDays, load);
 
 // ── Live mode — 30-minute rolling window ─────────────────────────────────────
@@ -158,6 +189,8 @@ watch(liveMode, (isLive) => {
   else exitLive();
 });
 onUnmounted(() => {
+  offDailyTelemetry?.();
+  if (machineId.value && !liveMode.value) wsService.unsubscribe([machineId.value]);
   exitLive();
   resizeObserver?.disconnect();
 });

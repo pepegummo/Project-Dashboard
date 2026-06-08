@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>IoT Dashboard — Load Test Diagram</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #0f1117;
+    color: #e2e8f0;
+    padding: 32px 24px;
+    min-height: 100vh;
+  }
+
+  h1 {
+    text-align: center;
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #f8fafc;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .subtitle {
+    text-align: center;
+    font-size: 0.8rem;
+    color: #64748b;
+    margin-bottom: 40px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  /* ── Two-column layout ───────────────────────────────────────────── */
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    max-width: 1280px;
+    margin: 0 auto;
+  }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+
+  /* ── Card ────────────────────────────────────────────────────────── */
+  .card {
+    background: #1e2330;
+    border: 1px solid #2d3748;
+    border-radius: 12px;
+    padding: 24px;
+  }
+  .card-title {
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+  .card-tool {
+    font-size: 0.75rem;
+    color: #64748b;
+    margin-bottom: 20px;
+  }
+
+  .rest-accent  { color: #38bdf8; }
+  .ws-accent    { color: #a78bfa; }
+
+  /* ── Section label ───────────────────────────────────────────────── */
+  .section-label {
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #475569;
+    margin: 18px 0 8px;
+  }
+
+  /* ── Phase bars ──────────────────────────────────────────────────── */
+  .phases { display: flex; flex-direction: column; gap: 5px; }
+  .phase-row {
+    display: grid;
+    grid-template-columns: 110px 1fr 70px;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.72rem;
+  }
+  .phase-name {
+    font-weight: 600;
+    color: #94a3b8;
+    white-space: nowrap;
+  }
+  .phase-bar-wrap {
+    height: 20px;
+    background: #0f1117;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .phase-bar {
+    height: 100%;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    padding-left: 8px;
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: #fff;
+    white-space: nowrap;
+    transition: width 0.4s ease;
+  }
+  .phase-meta { font-size: 0.65rem; color: #64748b; text-align: right; }
+
+  /* REST phase colours */
+  .p-smoke     { background: #1e40af; width: 8%; }
+  .p-r10       { background: #1d4ed8; width: 16%; }
+  .p-r25       { background: #2563eb; width: 40%; }
+  .p-r50       { background: #3b82f6; width: 70%; }
+  .p-r100      { background: #60a5fa; width: 100%; }
+  .p-sustained { background: #38bdf8; width: 100%; }
+  .p-spike     { background: #f97316; width: 100%; }
+  .p-cool      { background: #22c55e; width: 60%; }
+
+  /* WS phase colours */
+  .p-ws-smoke  { background: #4c1d95; width: 3%; }
+  .p-ws-r5     { background: #5b21b6; width: 15%; }
+  .p-ws-r25    { background: #6d28d9; width: 30%; }
+  .p-ws-r50    { background: #7c3aed; width: 50%; }
+  .p-ws-r100   { background: #8b5cf6; width: 100%; }
+  .p-ws-load   { background: #a78bfa; width: 100%; }
+  .p-ws-spike  { background: #f97316; width: 100%; }
+  .p-ws-cool   { background: #22c55e; width: 50%; }
+
+  /* ── Endpoint list ───────────────────────────────────────────────── */
+  .ep-list { display: flex; flex-direction: column; gap: 4px; }
+  .ep-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 0.7rem;
+    padding: 5px 8px;
+    border-radius: 6px;
+    background: #0f1117;
+    border-left: 3px solid transparent;
+  }
+  .ep-row.heavy  { border-left-color: #f97316; }
+  .ep-row.medium { border-left-color: #38bdf8; }
+  .ep-row.light  { border-left-color: #22c55e; }
+  .ep-method {
+    font-size: 0.6rem;
+    font-weight: 700;
+    background: #1e3a5f;
+    color: #38bdf8;
+    border-radius: 3px;
+    padding: 1px 5px;
+    flex-shrink: 0;
+    align-self: center;
+  }
+  .ep-path { color: #cbd5e1; font-family: monospace; flex: 1; }
+  .ep-note { color: #64748b; font-size: 0.65rem; flex-shrink: 0; }
+
+  /* ── VU lifecycle ────────────────────────────────────────────────── */
+  .lifecycle {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    margin: 4px 0;
+    overflow-x: auto;
+  }
+  .lc-step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    min-width: 72px;
+    flex-shrink: 0;
+  }
+  .lc-box {
+    width: 64px;
+    padding: 6px 4px;
+    border-radius: 6px;
+    text-align: center;
+    font-size: 0.6rem;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  .lc-time { font-size: 0.58rem; color: #64748b; }
+  .lc-arrow {
+    color: #475569;
+    font-size: 1rem;
+    flex-shrink: 0;
+    align-self: center;
+    margin-bottom: 18px;
+  }
+
+  .lc-connect  { background: #1e3a5f; color: #38bdf8; border: 1px solid #1e40af; }
+  .lc-sub      { background: #1e1e4f; color: #a78bfa; border: 1px solid #4c1d95; }
+  .lc-receive  { background: #1a2e1a; color: #4ade80; border: 1px solid #166534; }
+  .lc-ping     { background: #2a1a1a; color: #fbbf24; border: 1px solid #92400e; }
+  .lc-stay     { background: #1a2020; color: #2dd4bf; border: 1px solid #134e4a; }
+
+  /* ── Metrics ─────────────────────────────────────────────────────── */
+  .metrics { display: flex; flex-direction: column; gap: 6px; }
+  .metric-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 10px;
+    background: #0f1117;
+    border-radius: 6px;
+    font-size: 0.7rem;
+  }
+  .metric-name { color: #94a3b8; font-family: monospace; }
+  .metric-threshold {
+    font-size: 0.65rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 4px;
+  }
+  .thr-green  { background: #166534; color: #4ade80; }
+  .thr-blue   { background: #1e3a5f; color: #38bdf8; }
+  .thr-orange { background: #7c2d12; color: #fb923c; }
+
+  /* ── Flow arrow diagram ──────────────────────────────────────────── */
+  .flow {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+  .flow-node {
+    padding: 6px 12px;
+    border-radius: 8px;
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-align: center;
+    line-height: 1.4;
+    white-space: nowrap;
+  }
+  .flow-arrow { color: #475569; font-size: 1rem; padding: 0 4px; }
+  .fn-client  { background: #1e3a5f; color: #7dd3fc; border: 1px solid #1d4ed8; }
+  .fn-server  { background: #1a2e1a; color: #86efac; border: 1px solid #166534; }
+  .fn-db      { background: #2a1a2e; color: #d8b4fe; border: 1px solid #7c3aed; }
+  .fn-ws      { background: #2a1a1a; color: #fca5a5; border: 1px solid #991b1b; }
+  .fn-kiosk   { background: #1a2020; color: #5eead4; border: 1px solid #0f766e; }
+
+  /* ── Legend ──────────────────────────────────────────────────────── */
+  .legend {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.65rem;
+    color: #64748b;
+  }
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  /* ── Full-width combined section ─────────────────────────────────── */
+  .full-width {
+    max-width: 1280px;
+    margin: 24px auto 0;
+  }
+
+  .combined-card {
+    background: #1e2330;
+    border: 1px solid #2d3748;
+    border-radius: 12px;
+    padding: 24px;
+  }
+  .combined-title {
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: #fbbf24;
+    margin-bottom: 16px;
+  }
+
+  .timeline {
+    position: relative;
+    padding-left: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .tl-row {
+    display: grid;
+    grid-template-columns: 90px 1fr;
+    gap: 12px;
+    align-items: center;
+  }
+  .tl-label {
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .tl-bar-wrap {
+    height: 28px;
+    position: relative;
+    background: #0f1117;
+    border-radius: 6px;
+    overflow: visible;
+  }
+  .tl-seg {
+    position: absolute;
+    height: 100%;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    padding: 0 8px;
+    font-size: 0.62rem;
+    font-weight: 700;
+    color: rgba(255,255,255,0.9);
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  /* REST timeline segments (total ~7min = 420s) */
+  .rs1 { left: 0%;    width: 7%;   background: #1e40af; }  /* smoke 30s */
+  .rs2 { left: 7%;    width: 7%;   background: #1d4ed8; }  /* 10rps 30s */
+  .rs3 { left: 14%;   width: 7%;   background: #2563eb; }  /* 25rps 30s */
+  .rs4 { left: 21%;   width: 7%;   background: #3b82f6; }  /* 50rps 30s */
+  .rs5 { left: 28%;   width: 7%;   background: #60a5fa; }  /* 100rps 30s */
+  .rs6 { left: 35%;   width: 43%;  background: #38bdf8; }  /* sustained 3m */
+  .rs7 { left: 78%;   width: 7%;   background: #f97316; }  /* spike 30s */
+  .rs8 { left: 85%;   width: 7%;   background: #22c55e; }  /* cool 30s */
+
+  /* WS timeline segments */
+  .ws1 { left: 0%;    width: 7%;   background: #4c1d95; }  /* smoke 30s */
+  .ws2 { left: 8%;    width: 21%;  background: #7c3aed; }  /* ramp 90s */
+  .ws3 { left: 31%;   width: 43%;  background: #a78bfa; }  /* load 3m */
+  .ws4 { left: 78%;   width: 7%;   background: #f97316; }  /* spike 30s */
+  .ws5 { left: 86%;   width: 7%;   background: #22c55e; }  /* cool 30s */
+
+  .tl-time-axis {
+    display: grid;
+    grid-template-columns: 90px 1fr;
+    gap: 12px;
+    margin-top: 4px;
+  }
+  .tl-ticks {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.6rem;
+    color: #475569;
+    padding: 0 2px;
+  }
+
+  /* ── Command section ─────────────────────────────────────────────── */
+  .cmd-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+    margin-top: 16px;
+  }
+  @media (max-width: 900px) { .cmd-grid { grid-template-columns: 1fr; } }
+  .cmd-box {
+    background: #0f1117;
+    border: 1px solid #2d3748;
+    border-radius: 8px;
+    padding: 14px;
+  }
+  .cmd-title {
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+  .cmd-title.rest-c { color: #38bdf8; }
+  .cmd-title.ws-c   { color: #a78bfa; }
+  .cmd-title.both-c { color: #fbbf24; }
+  pre {
+    font-family: 'Consolas', 'Cascadia Code', monospace;
+    font-size: 0.7rem;
+    color: #94a3b8;
+    line-height: 1.6;
+    white-space: pre-wrap;
+  }
+  pre .comment { color: #475569; }
+  pre .cmd     { color: #e2e8f0; }
+</style>
+</head>
+<body>
+
+<h1>IoT Dashboard — Load Test</h1>
+<p class="subtitle">REST (vegeta) · WebSocket (k6) · Docker Stack</p>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  Top: two test cards side by side                                   -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="grid">
+
+  <!-- ── REST Card ──────────────────────────────────────────────────── -->
+  <div class="card">
+    <div class="card-title rest-accent">① REST Load Test</div>
+    <div class="card-tool">Tool: vegeta (Go) · File: load-test/rest/main.go</div>
+
+    <div class="section-label">Request flow</div>
+    <div class="flow">
+      <div class="flow-node fn-client">Dashboard<br>User</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node fn-server">Go Fiber<br>:4000</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node fn-db">TimescaleDB<br>:5432</div>
+    </div>
+
+    <div class="section-label">Endpoints tested (round-robin)</div>
+    <div class="ep-list">
+      <div class="ep-row light">
+        <span class="ep-method">GET</span>
+        <span class="ep-path">/api/dashboards</span>
+        <span class="ep-note">list page</span>
+      </div>
+      <div class="ep-row light">
+        <span class="ep-method">GET</span>
+        <span class="ep-path">/api/dashboards/:id</span>
+        <span class="ep-note">editor page</span>
+      </div>
+      <div class="ep-row light">
+        <span class="ep-method">GET</span>
+        <span class="ep-path">/api/machines</span>
+        <span class="ep-note">sidebar</span>
+      </div>
+      <div class="ep-row heavy">
+        <span class="ep-method">GET</span>
+        <span class="ep-path">/api/telemetry/:id/series?timeRange=1h</span>
+        <span class="ep-note">line-chart ×2</span>
+      </div>
+      <div class="ep-row heavy">
+        <span class="ep-method">GET</span>
+        <span class="ep-path">/api/telemetry/:id/series?timeRange=24h</span>
+        <span class="ep-note">line-chart</span>
+      </div>
+      <div class="ep-row medium">
+        <span class="ep-method">GET</span>
+        <span class="ep-path">/api/telemetry/:id/aggregate?period=1h</span>
+        <span class="ep-note">gauge/kpi ×3</span>
+      </div>
+      <div class="ep-row medium">
+        <span class="ep-method">GET</span>
+        <span class="ep-path">/api/alerts/events/active</span>
+        <span class="ep-note">alarm panel</span>
+      </div>
+      <div class="ep-row medium">
+        <span class="ep-method">GET</span>
+        <span class="ep-path">/api/telemetry/latest?ids=…</span>
+        <span class="ep-note">live poll ×2</span>
+      </div>
+      <div class="ep-row light">
+        <span class="ep-method">GET</span>
+        <span class="ep-path">/api/telemetry/:id/daily-count</span>
+        <span class="ep-note">bar chart</span>
+      </div>
+    </div>
+    <div class="legend" style="margin-top:8px;">
+      <div class="legend-item"><div class="legend-dot" style="background:#f97316;"></div> Heavy (time_bucket)</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#38bdf8;"></div> Medium</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#22c55e;"></div> Light</div>
+    </div>
+
+    <div class="section-label">Phases (RPS)</div>
+    <div class="phases">
+      <div class="phase-row">
+        <span class="phase-name">1 Smoke</span>
+        <div class="phase-bar-wrap"><div class="phase-bar p-smoke">5</div></div>
+        <span class="phase-meta">30s</span>
+      </div>
+      <div class="phase-row">
+        <span class="phase-name">2 Ramp 10</span>
+        <div class="phase-bar-wrap"><div class="phase-bar p-r10">10</div></div>
+        <span class="phase-meta">30s</span>
+      </div>
+      <div class="phase-row">
+        <span class="phase-name">2 Ramp 25</span>
+        <div class="phase-bar-wrap"><div class="phase-bar p-r25">25</div></div>
+        <span class="phase-meta">30s</span>
+      </div>
+      <div class="phase-row">
+        <span class="phase-name">2 Ramp 50</span>
+        <div class="phase-bar-wrap"><div class="phase-bar p-r50">50</div></div>
+        <span class="phase-meta">30s</span>
+      </div>
+      <div class="phase-row">
+        <span class="phase-name">2 Ramp 100</span>
+        <div class="phase-bar-wrap"><div class="phase-bar p-r100">100</div></div>
+        <span class="phase-meta">30s</span>
+      </div>
+      <div class="phase-row">
+        <span class="phase-name">3 Sustained</span>
+        <div class="phase-bar-wrap"><div class="phase-bar p-sustained">100 RPS</div></div>
+        <span class="phase-meta">3 min</span>
+      </div>
+      <div class="phase-row">
+        <span class="phase-name">4 Spike</span>
+        <div class="phase-bar-wrap"><div class="phase-bar p-spike">300 RPS</div></div>
+        <span class="phase-meta">30s</span>
+      </div>
+      <div class="phase-row">
+        <span class="phase-name">5 Cool Down</span>
+        <div class="phase-bar-wrap"><div class="phase-bar p-cool">50</div></div>
+        <span class="phase-meta">30s</span>
+      </div>
+    </div>
+
+    <div class="section-label">Output per phase</div>
+    <div class="metrics">
+      <div class="metric-row">
+        <span class="metric-name">Requests</span>
+        <span class="metric-threshold thr-blue">total count</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-name">Success rate</span>
+        <span class="metric-threshold thr-green">warn if &lt; 95%</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-name">p50 / p95 / p99 latency</span>
+        <span class="metric-threshold thr-blue">printed</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-name">p99 latency</span>
+        <span class="metric-threshold thr-orange">warn if &gt; 2s</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── WebSocket Card ──────────────────────────────────────────────── -->
+  <div class="card">
+    <div class="card-title ws-accent">② WebSocket Load Test</div>
+    <div class="card-tool">Tool: k6 · File: load-test/ws/ws-flow.js</div>
+
+    <div class="section-label">Connection flow</div>
+    <div class="flow">
+      <div class="flow-node fn-kiosk">LED Kiosk<br>(VU)</div>
+      <div class="flow-arrow">→</div>
+      <div class="flow-node fn-ws">WS Gateway<br>:4001</div>
+      <div class="flow-arrow">←</div>
+      <div class="flow-node fn-db">DB Broadcaster<br>polls every 30s</div>
+    </div>
+
+    <div class="section-label">VU lifecycle (one kiosk screen)</div>
+    <div class="lifecycle">
+      <div class="lc-step">
+        <div class="lc-box lc-connect">Connect<br>no token</div>
+        <div class="lc-time">t = 0s</div>
+      </div>
+      <div class="lc-arrow">→</div>
+      <div class="lc-step">
+        <div class="lc-box lc-sub">Subscribe<br>4 machines</div>
+        <div class="lc-time">on open</div>
+      </div>
+      <div class="lc-arrow">→</div>
+      <div class="lc-step">
+        <div class="lc-box lc-receive">Receive<br>telemetry</div>
+        <div class="lc-time">every ~30s</div>
+      </div>
+      <div class="lc-arrow">→</div>
+      <div class="lc-step">
+        <div class="lc-box lc-ping">Ping<br>keep-alive</div>
+        <div class="lc-time">every 10s</div>
+      </div>
+      <div class="lc-arrow">→</div>
+      <div class="lc-step">
+        <div class="lc-box lc-stay">Stay open<br>forever</div>
+        <div class="lc-time">no close</div>
+      </div>
+    </div>
+
+    <div class="section-label">Messages</div>
+    <div class="ep-list">
+      <div class="ep-row medium">
+        <span class="ep-method" style="background:#2a1a4e;color:#a78bfa;">SEND</span>
+        <span class="ep-path">{ type: "subscribe", payload: { machineIds: […] } }</span>
+      </div>
+      <div class="ep-row medium">
+        <span class="ep-method" style="background:#2a1a4e;color:#a78bfa;">SEND</span>
+        <span class="ep-path">{ type: "ping" }</span>
+        <span class="ep-note">every 10s</span>
+      </div>
+      <div class="ep-row light">
+        <span class="ep-method" style="background:#1a2e1a;color:#4ade80;">RECV</span>
+        <span class="ep-path">{ type: "telemetry", payload: { machineId, data } }</span>
+      </div>
+      <div class="ep-row light">
+        <span class="ep-method" style="background:#1a2e1a;color:#4ade80;">RECV</span>
+        <span class="ep-path">{ type: "alert",   payload: { severity, … } }</span>
+      </div>
+      <div class="ep-row light">
+        <span class="ep-method" style="background:#1a2e1a;color:#4ade80;">RECV</span>
+        <span class="ep-path">{ type: "machine_status", payload: { machineId } }</span>
+      </div>
+    </div>
+
+    <div class="section-label">Phases (VUs = concurrent kiosk connections)</div>
+    <div class="phases">
+      <div class="phase-row">
+        <span class="phase-name">1 Smoke</span>
+        <div class="phase-bar-wrap"><div class="phase-bar p-ws-smoke">2</div></div>
+        <span class="phase-meta">30s</span>
+      </div>
+      <div class="phase-row">
+        <span class="phase-name">2 Ramp →25</span>
+        <div class="phase-bar-wrap"><div class="phase-bar p-ws-r25">5→25</div></div>
+        <span class="phase-meta">30s</span>
+      </div>
+      <div class="phase-row">
+        <span class="phase-name">2 Ramp →50</span>
+        <div class="phase-bar-wrap"><div class="phase-bar p-ws-r50">→50</div></div>
+        <span class="phase-meta">30s</span>
+      </div>
+      <div class="phase-row">
+        <span class="phase-name">2 Ramp →100</span>
+        <div class="phase-bar-wrap"><div class="phase-bar p-ws-r100">→100</div></div>
+        <span class="phase-meta">30s</span>
+      </div>
+      <div class="phase-row">
+        <span class="phase-name">3 Sustained</span>
+        <div class="phase-bar-wrap"><div class="phase-bar p-ws-load">100 VUs</div></div>
+        <span class="phase-meta">3 min</span>
+      </div>
+      <div class="phase-row">
+        <span class="phase-name">4 Spike</span>
+        <div class="phase-bar-wrap"><div class="phase-bar p-spike">300 VUs</div></div>
+        <span class="phase-meta">30s</span>
+      </div>
+      <div class="phase-row">
+        <span class="phase-name">5 Cool Down</span>
+        <div class="phase-bar-wrap"><div class="phase-bar p-ws-cool">100→0</div></div>
+        <span class="phase-meta">30s</span>
+      </div>
+    </div>
+
+    <div class="section-label">Thresholds (test fails if broken)</div>
+    <div class="metrics">
+      <div class="metric-row">
+        <span class="metric-name">ws_connecting</span>
+        <span class="metric-threshold thr-green">p(95) &lt; 500ms</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-name">telemetry_msgs</span>
+        <span class="metric-threshold thr-blue">count &gt; 0</span>
+      </div>
+      <div class="metric-row">
+        <span class="metric-name">broadcast_latency_ms</span>
+        <span class="metric-threshold thr-orange">p(95) &lt; 3000ms</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<!--  Combined timeline                                                   -->
+<!-- ═══════════════════════════════════════════════════════════════════ -->
+<div class="full-width">
+  <div class="combined-card">
+    <div class="combined-title">⚡ Combined Timeline — run both simultaneously for full pressure test</div>
+
+    <div class="timeline">
+      <div class="tl-row">
+        <span class="tl-label rest-accent">REST</span>
+        <div class="tl-bar-wrap">
+          <div class="tl-seg rs1">Smoke</div>
+          <div class="tl-seg rs2"></div>
+          <div class="tl-seg rs3"></div>
+          <div class="tl-seg rs4"></div>
+          <div class="tl-seg rs5"></div>
+          <div class="tl-seg rs6">Sustained 100 RPS</div>
+          <div class="tl-seg rs7">Spike</div>
+          <div class="tl-seg rs8">Cool</div>
+        </div>
+      </div>
+      <div class="tl-row">
+        <span class="tl-label ws-accent">WebSocket</span>
+        <div class="tl-bar-wrap">
+          <div class="tl-seg ws1">S</div>
+          <div class="tl-seg ws2">Ramp 5→100 VUs</div>
+          <div class="tl-seg ws3">Sustained 100 VUs</div>
+          <div class="tl-seg ws4">Spike</div>
+          <div class="tl-seg ws5">Cool</div>
+        </div>
+      </div>
+      <div class="tl-time-axis">
+        <div></div>
+        <div class="tl-ticks">
+          <span>0s</span>
+          <span>1min</span>
+          <span>2min</span>
+          <span>3min</span>
+          <span>4min</span>
+          <span>5min</span>
+          <span>6min</span>
+          <span>~7min</span>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:12px; font-size:0.68rem; color:#64748b;">
+      <strong style="color:#f97316;">Watch for:</strong>
+      REST p99 spiking when WS enters Phase 4 Spike (300 VUs) → indicates pgx connection pool exhaustion.
+      &nbsp;|&nbsp;
+      <strong style="color:#f97316;">broadcast_latency_ms</strong> rising above 3s at 300 VUs → WS gateway fan-out bottleneck.
+    </div>
+
+    <!-- Run commands -->
+    <div class="cmd-grid">
+      <div class="cmd-box">
+        <div class="cmd-title rest-c">Terminal 1 — REST</div>
+        <pre><span class="comment"># First time only</span>
+<span class="cmd">cd load-test/rest
+go mod tidy</span>
+
+<span class="comment"># Run</span>
+<span class="cmd">go run .</span></pre>
+      </div>
+      <div class="cmd-box">
+        <div class="cmd-title ws-c">Terminal 2 — WebSocket</div>
+        <pre><span class="comment"># Install k6 (once)</span>
+<span class="cmd">winget install k6</span>
+
+<span class="comment"># Run</span>
+<span class="cmd">k6 run load-test/ws/ws-flow.js</span></pre>
+      </div>
+      <div class="cmd-box">
+        <div class="cmd-title both-c">Prerequisite</div>
+        <pre><span class="comment"># Docker stack must be up</span>
+<span class="cmd">docker compose up -d</span>
+
+<span class="comment"># Verify backend</span>
+<span class="cmd">curl http://localhost:4000/health</span></pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

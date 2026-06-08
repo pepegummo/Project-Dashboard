@@ -6,8 +6,8 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-func RegisterRoutes(router fiber.Router, broadcaster Broadcaster) {
-	ctrl := NewController(broadcaster)
+func RegisterRoutes(router fiber.Router, broadcaster Broadcaster, alertEval AlertEvaluator) {
+	ctrl := NewController(broadcaster, alertEval)
 
 	// Public endpoints (for LED kiosk)
 	router.Get("/latest", ctrl.GetLatestMulti)
