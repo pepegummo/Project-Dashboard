@@ -279,6 +279,11 @@ class ApiService {
     const { data } = await this.client.post<ApiResponse<AiMessage>>(`/ai/conversations/${conversationId}/messages`, payload);
     return data.data;
   }
+
+  async chat(conversationId: string, message: string) {
+    const { data } = await this.client.post<ApiResponse<AiMessage[]>>('/ai/chat', { conversationId, message }, { timeout: 120_000 });
+    return data.data;
+  }
 }
 
 export const api = new ApiService();

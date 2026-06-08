@@ -130,6 +130,45 @@ func isAllowedType(t string) bool {
 	return false
 }
 
+type machineInfo struct {
+	Name   string   `json:"name"`
+	Type   string   `json:"type"`
+	Status string   `json:"status"`
+	Fields []string `json:"fields"` // just field keys, e.g. ["temperature","vibration"]
+}
+
+// getMachinesForOrg returns all machines with their numeric field keys for the AI to use.
+func getMachinesForOrg(ctx context.Context, orgID string) ([]machineInfo, error) {
+	rows, err := database.Pool.Query(ctx, `
+		SELECT m.name, m.type, m.status,
+		       COALESCE(
+		           array_agg(mf.key ORDER BY mf.key) FILTER (WHERE mf.id IS NOT NULL AND mf.data_type = 'number'),
+		           '{}'::text[]
+		       ) AS field_keys
+		FROM machines m
+		LEFT JOIN machine_fields mf ON mf.machine_id = m.id
+		JOIN production_lines pl ON pl.id = m.production_line_id
+		JOIN factories f ON f.id = pl.factory_id
+		WHERE f.organization_id = $1
+		GROUP BY m.id, m.name, m.type, m.status
+		ORDER BY m.name
+	`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var machines []machineInfo
+	for rows.Next() {
+		var m machineInfo
+		if err := rows.Scan(&m.Name, &m.Type, &m.Status, &m.Fields); err != nil {
+			return nil, err
+		}
+		machines = append(machines, m)
+	}
+	return machines, nil
+}
+
 // resolveMachineID does a case-insensitive, org-scoped name lookup.
 // machines → production_lines → factories carries the organization_id.
 // Returns (id, true) on a unique match.

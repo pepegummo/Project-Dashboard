@@ -57,55 +57,25 @@ async function sendMessage() {
 
   loading.value = true;
 
-  // Persist user message
-  await api.addMessage(activeConversation.value!.id, { role: 'user', content: userContent });
-
-  // Simulate AI response (in production, this calls your LLM with the tool layer)
-  await simulateAiResponse(userContent);
-
-  loading.value = false;
-  scrollToBottom();
-}
-
-async function simulateAiResponse(userMsg: string) {
-  // This is a placeholder. In production you'd call Claude/OpenAI API
-  // with the tool definitions from api.getAiTools() enabling tool-use.
-  const lowerMsg = userMsg.toLowerCase();
-  let responseContent = '';
-  let toolUsed: { name: string; result: unknown } | null = null;
-
-  if (lowerMsg.includes('machine') || lowerMsg.includes('status')) {
-    toolUsed = { name: 'getMachines', result: await api.executeAiTool('getMachines', {}) };
-    const result = toolUsed.result as any[];
-    const online = result?.filter((m: any) => m.status === 'online').length ?? 0;
-    responseContent = `I checked the machine status using \`getMachines\`. You have **${result?.length ?? 0} machines total**, with **${online} online**. Would you like details on a specific machine or type?`;
-  } else if (lowerMsg.includes('alert')) {
-    toolUsed = { name: 'getActiveAlerts', result: await api.executeAiTool('getActiveAlerts', {}) };
-    const result = toolUsed.result as any[];
-    responseContent = `I retrieved the active alerts using \`getActiveAlerts\`. There are currently **${result?.length ?? 0} open alert events**. ${result?.length ? 'Would you like me to acknowledge or resolve any of them?' : 'Great news — all systems are operating within normal parameters!'}`;
-  } else if (lowerMsg.includes('dashboard') || lowerMsg.includes('widget')) {
-    toolUsed = { name: 'getDashboards', result: await api.executeAiTool('getDashboards', {}) };
-    const result = toolUsed.result as any[];
-    responseContent = `I found **${result?.length ?? 0} dashboards** in your workspace. I can help you create widgets, move layouts, or configure data sources. What would you like to do?`;
-  } else {
-    responseContent = `I'm the IotVision AI assistant. I can help you:
-- **Monitor machines**: Check status, telemetry, and key metrics
-- **Manage alerts**: View, acknowledge, and resolve alert events
-- **Configure dashboards**: Add widgets, adjust layouts
-- **Analyze telemetry**: Query historical data and trends
-
-What would you like to do today?`;
+  try {
+    const newMsgs = await api.chat(activeConversation.value!.id, userContent);
+    // Replace the optimistic user message with the persisted ones from the server
+    messages.value.pop();
+    messages.value.push(...newMsgs);
+  } catch (e: any) {
+    messages.value.push({
+      id: Date.now().toString(),
+      conversationId: activeConversation.value!.id,
+      role: 'assistant',
+      content: `Sorry, I encountered an error: ${e?.message ?? 'Unknown error'}`,
+      createdAt: new Date().toISOString(),
+    });
+  } finally {
+    loading.value = false;
+    scrollToBottom();
   }
-
-  // Save assistant response
-  const assistantMsg = await api.addMessage(activeConversation.value!.id, {
-    role: 'assistant',
-    content: responseContent,
-    ...(toolUsed && { toolName: toolUsed.name, toolResult: toolUsed.result as any }),
-  });
-
-  messages.value.push(assistantMsg);
 }
+
 
 async function executeTool(tool: AiTool) {
   if (!activeConversation.value) await newConversation();
@@ -222,7 +192,11 @@ function handleKeydown(e: KeyboardEvent) {
 
         <!-- Message list -->
         <template v-else>
-          <ChatBox v-for="msg in messages" :key="msg.id" :message="msg" />
+          <ChatBox
+            v-for="msg in messages.filter(m => m.role !== 'tool' || m.toolName === 'create_custom_dashboard')"
+            :key="msg.id"
+            :message="msg"
+          />
 
           <!-- Typing indicator -->
           <div v-if="loading" class="flex gap-3">

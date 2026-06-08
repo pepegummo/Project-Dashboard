@@ -72,6 +72,17 @@ type ToolWidget struct {
 	Unit      string   `json:"unit"`
 }
 
+// GetMachinesTool returns all machines with their names and numeric fields.
+// The AI must call this before create_custom_dashboard so it can use exact machine names.
+var GetMachinesTool = map[string]any{
+	"name":        "getMachines",
+	"description": "Get the list of all machines with their exact names, types, current status, and available numeric metric field keys. Use this to answer questions about machines, and to obtain correct machine names/metrics when the user has asked to build a dashboard.",
+	"input_schema": map[string]any{
+		"type":       "object",
+		"properties": map[string]any{},
+	},
+}
+
 // CreateDashboardArgs is the full argument object for the create_custom_dashboard tool.
 type CreateDashboardArgs struct {
 	DashboardName string       `json:"dashboard_name"`

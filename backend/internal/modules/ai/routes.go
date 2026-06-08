@@ -12,5 +12,11 @@ func RegisterRoutes(router fiber.Router) {
 
 	router.Get("/tools", ctrl.ListTools)
 	router.Post("/tools/execute", ctrl.ExecuteTool)
-	// router.Post("/chat", ctrl.Chat)  // ← LLM loop endpoint (Step 3)
+
+	router.Get("/conversations", ctrl.GetConversations)
+	router.Post("/conversations", ctrl.CreateConversation)
+	router.Get("/conversations/:id/messages", ctrl.GetMessages)
+	router.Post("/conversations/:id/messages", ctrl.AddMessage)
+
+	router.Post("/chat", ctrl.Chat)
 }

@@ -19,6 +19,9 @@ type Config struct {
 	CorsOrigin string
 	SimulatorEnabled bool
 	AnthropicApiKey string
+	GeminiApiKey    string
+	GeminiModel     string
+	GroqApiKey      string
 }
 
 var Env *Config
@@ -38,6 +41,9 @@ func Load() {
 		CorsOrigin:       getEnv("CORS_ORIGIN", "http://localhost:5173"),
 		SimulatorEnabled: getEnv("SIMULATOR_ENABLED", "false") == "true",
 		AnthropicApiKey:  getEnv("ANTHROPIC_API_KEY", ""),
+		GeminiApiKey:     getEnv("GEMINI_API_KEY", ""),
+		GeminiModel:      getEnv("GEMINI_MODEL", "gemini-1.5-flash-latest"),
+		GroqApiKey:       getEnv("GROQ_API_KEY", ""),
 	}
 }
 
