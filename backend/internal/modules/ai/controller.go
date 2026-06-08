@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"iot-dashboard/internal/config"
@@ -16,15 +19,27 @@ import (
 
 const groqModel = "llama-3.3-70b-versatile"
 const groqBaseURL = "https://api.groq.com/openai/v1/chat/completions"
-const systemPrompt = `You are IotVision AI, an industrial IoT assistant for a factory monitoring platform.
+const systemPrompt = `You are IotVision AI, an assistant for an industrial IoT factory-monitoring platform. You can read live data and make changes on the user's behalf using tools.
 
-Rules for tool use:
-1. For greetings or general questions — answer in plain text, do NOT call any tool.
-2. When the user asks to list or describe machines — call getMachines, summarize the results in text, then STOP. Do NOT create a dashboard. Listing machines is NOT a request to build one.
-3. Only call create_custom_dashboard when the user's latest message explicitly asks to create, build, set up, or generate a dashboard. In that case FIRST call getMachines to get exact machine names and their metric fields, THEN call create_custom_dashboard using the EXACT machine names from the getMachines result. Never guess or invent machine names.
-4. Only call a tool when you are certain which tool to use and have all required inputs. Do exactly what the user asked — never chain extra tool calls beyond the request.
+General rules:
+1. For greetings or general questions, answer in plain text — do NOT call a tool.
+2. Call a tool only when the request clearly needs it, and only with inputs you are sure of. Do exactly what was asked; never chain extra actions beyond the request.
+3. Always use a machine's human name (from get_machines / get_factory_overview) and a dashboard's exact name (from list_dashboards) in tool arguments. Never invent or guess machine names, metric keys, or dashboard names — if unsure, call get_machines or list_dashboards first.
+4. After any change, briefly confirm what you did in plain text.
 
-After creating a dashboard, briefly confirm what was built and offer to adjust it.`
+Reading data:
+- get_machines: list machines, their status and metric fields.
+- get_latest_telemetry: the current value(s) of one machine.
+- get_telemetry_trend: avg/min/max of a metric over a time range (e.g. 1h, 24h, 7d).
+- get_daily_count: production counts per day.
+- get_active_alerts: currently open alerts (each has an event id).
+- get_factory_overview: a snapshot of every machine (status, latest values, open-alert count). Use this for "summarize the factory" / "what's wrong" questions, then reason over the result in text.
+
+Making changes (these require permission; if a tool returns a permission error, tell the user their role cannot do it):
+- create_custom_dashboard: build a NEW dashboard. First call get_machines for exact names. Listing machines is NOT a request to build one.
+- add_widget_to_dashboard / remove_widget: modify an EXISTING dashboard (call list_dashboards first if unsure of the name).
+- create_alert: define a threshold alert rule. condition is one of gt, lt, gte, lte, eq, neq, between, outside; for between/outside also provide threshold_hi.
+- acknowledge_alert / resolve_alert: act on an open alert — first call get_active_alerts to get its event_id.`
 
 // ── Groq / OpenAI-compatible API types ───────────────────────────────────────
 
@@ -65,23 +80,58 @@ type groqResponse struct {
 
 type Controller struct {
 	action *DashboardAction
+	tk     *ToolKit
 	repo   *Repository
 }
 
 func NewController() *Controller {
 	return &Controller{
 		action: NewDashboardAction(),
+		tk:     NewToolKit(),
 		repo:   &Repository{},
 	}
 }
 
 func (ctrl *Controller) dispatch(c *fiber.Ctx, toolName string, rawArgs json.RawMessage) (any, error) {
 	user := middleware.GetUser(c)
+	ctx := c.Context()
+
+	// Mutating tools require admin or editor — viewers can only read.
+	if isWriteTool(toolName) && user.Role != "admin" && user.Role != "editor" {
+		return nil, fmt.Errorf("permission denied: role %q cannot perform %q (requires admin or editor)", user.Role, toolName)
+	}
+
 	switch toolName {
-	case "getMachines":
-		return getMachinesForOrg(c.Context(), user.OrgId)
+	// ── Category A: read ──────────────────────────────────────────────
+	case "get_machines":
+		return getMachinesForOrg(ctx, user.OrgId)
+	case "get_latest_telemetry":
+		return ctrl.tk.GetLatestTelemetry(ctx, user.OrgId, rawArgs)
+	case "get_telemetry_trend":
+		return ctrl.tk.GetTelemetryTrend(ctx, user.OrgId, rawArgs)
+	case "get_active_alerts":
+		return ctrl.tk.GetActiveAlerts(ctx, user.OrgId)
+	case "get_daily_count":
+		return ctrl.tk.GetDailyCount(ctx, user.OrgId, rawArgs)
+	// ── Category D: analysis ──────────────────────────────────────────
+	case "get_factory_overview":
+		return ctrl.tk.GetFactoryOverview(ctx, user.OrgId)
+	// ── Category B: dashboards ────────────────────────────────────────
+	case "list_dashboards":
+		return ctrl.tk.ListDashboards(ctx, user.OrgId, user.Sub)
 	case "create_custom_dashboard":
-		return ctrl.action.Handle(c.Context(), user.OrgId, user.Sub, rawArgs)
+		return ctrl.action.Handle(ctx, user.OrgId, user.Sub, rawArgs)
+	case "add_widget_to_dashboard":
+		return ctrl.tk.AddWidget(ctx, user.OrgId, rawArgs)
+	case "remove_widget":
+		return ctrl.tk.RemoveWidget(ctx, user.OrgId, rawArgs)
+	// ── Category C: alerts ────────────────────────────────────────────
+	case "create_alert":
+		return ctrl.tk.CreateAlert(ctx, user.OrgId, rawArgs)
+	case "acknowledge_alert":
+		return ctrl.tk.AckAlert(ctx, user.Sub, rawArgs)
+	case "resolve_alert":
+		return ctrl.tk.ResolveAlert(ctx, user.Sub, rawArgs)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", toolName)
 	}
@@ -108,7 +158,7 @@ func (ctrl *Controller) ExecuteTool(c *fiber.Ctx) error {
 }
 
 func (ctrl *Controller) ListTools(c *fiber.Ctx) error {
-	return c.JSON(fiber.Map{"success": true, "data": []any{GetMachinesTool, CreateDashboardTool}})
+	return c.JSON(fiber.Map{"success": true, "data": AllTools()})
 }
 
 // ── Conversations ─────────────────────────────────────────────────────────────
@@ -285,13 +335,15 @@ func callGroq(messages []groqMessage) (*groqResponse, error) {
 		}
 	}
 
+	tools := make([]map[string]any, 0, len(AllTools()))
+	for _, t := range AllTools() {
+		tools = append(tools, toGroqTool(t))
+	}
+
 	reqBody := groqRequest{
 		Model:    groqModel,
 		Messages: messages,
-		Tools: []map[string]any{
-			toGroqTool(GetMachinesTool),
-			toGroqTool(CreateDashboardTool),
-		},
+		Tools:    tools,
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)
@@ -299,31 +351,73 @@ func callGroq(messages []groqMessage) (*groqResponse, error) {
 		return nil, err
 	}
 
-	req, err := http.NewRequest("POST", groqBaseURL, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+config.Env.GroqApiKey)
-
 	httpClient := &http.Client{Timeout: 90 * time.Second}
-	httpResp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer httpResp.Body.Close()
 
-	respBytes, _ := io.ReadAll(httpResp.Body)
+	// Retry on rate limit (HTTP 429). Groq's free tier has a low tokens-per-minute
+	// budget and we send the full tool catalog each call, so transient 429s happen;
+	// we honor the "try again in Ns" hint, capped so the request stays responsive.
+	const maxAttempts = 3
+	lastErr := fmt.Errorf("the AI service is busy (rate limit). Please wait a few seconds and try again")
 
-	var result groqResponse
-	if err := json.Unmarshal(respBytes, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse Groq response: %w", err)
-	}
-	if result.Error != nil {
-		return nil, fmt.Errorf("Groq API: %s", result.Error.Message)
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		req, err := http.NewRequest("POST", groqBaseURL, bytes.NewReader(bodyBytes))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+config.Env.GroqApiKey)
+
+		httpResp, err := httpClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		respBytes, _ := io.ReadAll(httpResp.Body)
+		httpResp.Body.Close()
+
+		if httpResp.StatusCode == http.StatusTooManyRequests {
+			if attempt < maxAttempts {
+				time.Sleep(parseRetryAfter(httpResp.Header.Get("Retry-After"), respBytes))
+			}
+			continue
+		}
+
+		var result groqResponse
+		if err := json.Unmarshal(respBytes, &result); err != nil {
+			return nil, fmt.Errorf("failed to parse Groq response: %w", err)
+		}
+		if result.Error != nil {
+			return nil, fmt.Errorf("Groq API: %s", result.Error.Message)
+		}
+		return &result, nil
 	}
 
-	return &result, nil
+	return nil, lastErr
+}
+
+var retryHintRe = regexp.MustCompile(`try again in ([0-9.]+)s`)
+
+// parseRetryAfter derives how long to wait before retrying, from the Retry-After
+// header or the "try again in 7.6s" hint in Groq's error body. Capped at 8s.
+func parseRetryAfter(header string, body []byte) time.Duration {
+	const maxWait = 8 * time.Second
+
+	if header != "" {
+		if secs, err := strconv.ParseFloat(strings.TrimSpace(header), 64); err == nil && secs > 0 {
+			if d := time.Duration(secs * float64(time.Second)); d <= maxWait {
+				return d
+			}
+			return maxWait
+		}
+	}
+	if m := retryHintRe.FindSubmatch(body); m != nil {
+		if secs, err := strconv.ParseFloat(string(m[1]), 64); err == nil && secs > 0 {
+			if d := time.Duration((secs + 0.3) * float64(time.Second)); d <= maxWait {
+				return d
+			}
+			return maxWait
+		}
+	}
+	return 2 * time.Second
 }
 
 func strPtr(s string) *string { return &s }

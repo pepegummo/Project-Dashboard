@@ -13,6 +13,7 @@ const input = ref('');
 const loading = ref(false);
 const loadingConvs = ref(false);
 const messagesRef = ref<HTMLElement | null>(null);
+const inputRef = ref<HTMLTextAreaElement | null>(null);
 const showTools = ref(false);
 
 onMounted(async () => {
@@ -77,19 +78,29 @@ async function sendMessage() {
 }
 
 
-async function executeTool(tool: AiTool) {
-  if (!activeConversation.value) await newConversation();
-  loading.value = true;
-  const result = await api.executeAiTool(tool.name, {});
-  const msg = await api.addMessage(activeConversation.value!.id, {
-    role: 'tool',
-    content: `Tool executed: ${tool.name}`,
-    toolName: tool.name,
-    toolResult: result as any,
-  });
-  messages.value.push(msg);
-  loading.value = false;
-  scrollToBottom();
+// Example prompts shown when a tool chip is clicked. Clicking prefills the input
+// so the user can edit and send — routing through the normal agentic chat (which
+// supplies parameters and renders the result) instead of a raw, paramless call.
+const examplePrompts: Record<string, string> = {
+  get_machines: 'List all machines and their current status.',
+  get_latest_telemetry: 'What is the current weight on Checkweigher CW-01?',
+  get_telemetry_trend: 'Show the temperature trend for Temp Sensor TS-01 over the last 24h.',
+  get_active_alerts: 'Show all active alerts right now.',
+  get_daily_count: 'How many items did Checkweigher CW-01 produce in the last 7 days?',
+  get_factory_overview: 'Give me an overview of the whole factory — which machines need attention?',
+  list_dashboards: 'List my dashboards.',
+  create_custom_dashboard: 'Create a dashboard to monitor Temp Sensor TS-01.',
+  add_widget_to_dashboard: 'Add a temperature gauge for Temp Sensor TS-01 to the Production Overview dashboard.',
+  remove_widget: "Remove the 'Weight' widget from the Production Overview dashboard.",
+  create_alert: 'Alert me if the temperature on Temp Sensor TS-01 goes above 30.',
+  acknowledge_alert: 'Acknowledge the latest active alert.',
+  resolve_alert: 'Resolve the latest active alert.',
+};
+
+function useToolExample(tool: AiTool) {
+  input.value = examplePrompts[tool.name] ?? tool.description ?? '';
+  showTools.value = false;
+  nextTick(() => inputRef.value?.focus());
 }
 
 function scrollToBottom() {
@@ -164,13 +175,14 @@ function handleKeydown(e: KeyboardEvent) {
 
       <!-- Tools panel -->
       <div v-if="showTools" class="px-4 py-3 border-b border-white/5 bg-surface-200/50">
-        <p class="text-xs text-gray-500 mb-2 uppercase tracking-wide font-medium">Available AI Tools</p>
+        <p class="text-xs text-gray-500 mb-2 uppercase tracking-wide font-medium">Available AI Tools <span class="normal-case tracking-normal text-gray-600">· click to insert an example prompt</span></p>
         <div class="flex flex-wrap gap-2">
           <button
             v-for="tool in tools"
             :key="tool.name"
             class="px-2.5 py-1 rounded-full text-xs bg-surface-300 text-gray-300 hover:bg-primary-500/20 hover:text-primary-400 border border-white/5 transition-colors"
-            @click="executeTool(tool)"
+            :title="`Insert an example prompt for ${tool.name}`"
+            @click="useToolExample(tool)"
           >
             {{ tool.name }}
           </button>
@@ -214,6 +226,7 @@ function handleKeydown(e: KeyboardEvent) {
       <div class="px-4 py-3 border-t border-white/5 flex-shrink-0">
         <div class="flex gap-2">
           <textarea
+            ref="inputRef"
             v-model="input"
             rows="1"
             class="input flex-1 resize-none py-2.5"
