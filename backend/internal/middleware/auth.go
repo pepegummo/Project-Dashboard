@@ -74,6 +74,33 @@ func RequireRole(roles ...string) fiber.Handler {
 	}
 }
 
+// AuthenticateWS validates JWT from the ?token query param for WebSocket upgrades.
+// Browsers cannot set the Authorization header on WebSocket connections.
+func AuthenticateWS(c *fiber.Ctx) error {
+	tokenStr := c.Query("token")
+	if tokenStr == "" {
+		return c.Status(401).JSON(fiber.Map{
+			"success": false,
+			"error":   fiber.Map{"code": "UNAUTHORIZED", "message": "Missing token query param"},
+		})
+	}
+	claims := &JwtClaims{}
+	token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fiber.ErrUnauthorized
+		}
+		return []byte(config.Env.JwtSecret), nil
+	})
+	if err != nil || !token.Valid {
+		return c.Status(401).JSON(fiber.Map{
+			"success": false,
+			"error":   fiber.Map{"code": "UNAUTHORIZED", "message": "Invalid or expired token"},
+		})
+	}
+	c.Locals("user", claims)
+	return c.Next()
+}
+
 // GetUser is a helper to extract claims from context.
 func GetUser(c *fiber.Ctx) *JwtClaims {
 	if claims, ok := c.Locals("user").(*JwtClaims); ok {

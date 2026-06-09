@@ -2,18 +2,19 @@ package websocket
 
 import (
 	"encoding/json"
-	"fmt"
-	"iot-dashboard/internal/config"
-	"net"
-	"net/http"
 	"sync"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
-	ws "github.com/gorilla/websocket"
+	fiberws "github.com/gofiber/websocket/v2"
 )
 
-// Message types — same as TypeScript WsMessageType
+// WebSocket message type constants (RFC 6455 §11.8)
+const (
+	wsText  = 1
+	wsClose = 8
+	wsPing  = 9
+)
+
 const (
 	TypeTelemetry     = "telemetry"
 	TypeAlert         = "alert"
@@ -60,71 +61,36 @@ type MachineStatusPayload struct {
 }
 
 type client struct {
-	conn         *ws.Conn
-	send         chan []byte
-	subscriptions map[string]struct{} // machineIDs
-	mu           sync.Mutex
+	conn          *fiberws.Conn
+	send          chan []byte
+	subscriptions map[string]struct{}
+	mu            sync.Mutex
 }
 
 type Gateway struct {
-	clients  map[*client]struct{}
-	mu       sync.RWMutex
-	upgrader ws.Upgrader
-	server   *http.Server
+	clients map[*client]struct{}
+	mu      sync.RWMutex
 }
 
 func NewGateway() *Gateway {
 	return &Gateway{
 		clients: make(map[*client]struct{}),
-		upgrader: ws.Upgrader{
-			CheckOrigin: func(r *http.Request) bool { return true },
-		},
 	}
 }
 
-func (g *Gateway) Start(port int) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", g.handleConnection)
-
-	g.server = &http.Server{
-		Addr:    fmt.Sprintf(":%d", port),
-		Handler: mux,
-	}
-
-	go func() {
-		if err := g.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fmt.Printf("⚠️  WebSocket server error: %v\n", err)
-		}
-	}()
-}
-
-func (g *Gateway) Close() {
-	if g.server != nil {
-		_ = g.server.Close()
-	}
-}
-
-func (g *Gateway) handleConnection(w http.ResponseWriter, r *http.Request) {
-	// Optional JWT auth from query param
-	_ = r.URL.Query().Get("token") // validated below if present
-
-	conn, err := g.upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		return
-	}
-
-	c := &client{
-		conn:          conn,
+// HandleFiber is the Fiber WebSocket handler — registered via fiberws.New(gateway.HandleFiber).
+func (g *Gateway) HandleFiber(c *fiberws.Conn) {
+	cl := &client{
+		conn:          c,
 		send:          make(chan []byte, 256),
 		subscriptions: make(map[string]struct{}),
 	}
-
 	g.mu.Lock()
-	g.clients[c] = struct{}{}
+	g.clients[cl] = struct{}{}
 	g.mu.Unlock()
 
-	go c.writePump()
-	c.readPump(g)
+	go cl.writePump()
+	cl.readPump(g)
 }
 
 func (c *client) readPump(g *Gateway) {
@@ -196,14 +162,14 @@ func (c *client) writePump() {
 		select {
 		case msg, ok := <-c.send:
 			if !ok {
-				_ = c.conn.WriteMessage(ws.CloseMessage, []byte{})
+				_ = c.conn.WriteMessage(wsClose, []byte{})
 				return
 			}
-			if err := c.conn.WriteMessage(ws.TextMessage, msg); err != nil {
+			if err := c.conn.WriteMessage(wsText, msg); err != nil {
 				return
 			}
 		case <-ticker.C:
-			if err := c.conn.WriteMessage(ws.PingMessage, nil); err != nil {
+			if err := c.conn.WriteMessage(wsPing, nil); err != nil {
 				return
 			}
 		}
@@ -218,7 +184,6 @@ func (c *client) sendJSON(v interface{}) {
 	select {
 	case c.send <- b:
 	default:
-		// Client buffer full — skip
 	}
 }
 
@@ -226,13 +191,12 @@ func (c *client) isSubscribed(machineID string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.subscriptions) == 0 {
-		return true // no filter = all
+		return true
 	}
 	_, ok := c.subscriptions[machineID]
 	return ok
 }
 
-// BroadcastTelemetry sends telemetry to subscribed clients only.
 func (g *Gateway) BroadcastTelemetry(payload TelemetryPayload) {
 	msg := Message{Type: TypeTelemetry, Payload: payload, Timestamp: nowMs()}
 	g.mu.RLock()
@@ -244,7 +208,6 @@ func (g *Gateway) BroadcastTelemetry(payload TelemetryPayload) {
 	}
 }
 
-// BroadcastAlert sends alert to ALL clients.
 func (g *Gateway) BroadcastAlert(payload AlertPayload) {
 	msg := Message{Type: TypeAlert, Payload: payload, Timestamp: nowMs()}
 	g.mu.RLock()
@@ -254,7 +217,6 @@ func (g *Gateway) BroadcastAlert(payload AlertPayload) {
 	}
 }
 
-// BroadcastMachineStatus sends status to ALL clients.
 func (g *Gateway) BroadcastMachineStatus(payload MachineStatusPayload) {
 	msg := Message{Type: TypeMachineStatus, Payload: payload, Timestamp: nowMs()}
 	g.mu.RLock()
@@ -265,21 +227,3 @@ func (g *Gateway) BroadcastMachineStatus(payload MachineStatusPayload) {
 }
 
 func nowMs() int64 { return time.Now().UnixMilli() }
-
-// validateToken is used for optional WS auth.
-func validateToken(tokenStr string) bool {
-	if tokenStr == "" {
-		return true
-	}
-	_, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
-		return []byte(config.Env.JwtSecret), nil
-	})
-	return err == nil
-}
-
-// ListenAddr returns the listening address for logging.
-func ListenAddr(port int) string {
-	addrs, _ := net.InterfaceAddrs()
-	_ = addrs
-	return fmt.Sprintf("ws://localhost:%d", port)
-}

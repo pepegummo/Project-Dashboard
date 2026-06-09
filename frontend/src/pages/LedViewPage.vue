@@ -18,11 +18,21 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import LedView           from '@/components/led/LedView.vue'
 import { decodeLedPayload } from '@/composables/useLedExport'
+import { api } from '@/services/api.service'
 
 const DESIGN_W = 640
 const DESIGN_H = 320
 
 const route = useRoute()
+
+// -- LED token: read from ?token= and inject into api for kiosk REST calls --
+const ledToken = computed(() => {
+  const t = route.query.token
+  return typeof t === 'string' && t.length > 0 ? t : null
+})
+
+onMounted(()   => api.setOverrideToken(ledToken.value))
+onUnmounted(() => api.setOverrideToken(null))
 
 // -- Decode the widget config from the query string -------------------------
 const activeWidgets = computed(() => {
@@ -81,7 +91,7 @@ const canvasStyle = computed(() => ({
     >
       <!-- Inner canvas: always 640x320, scaled outward from top-left origin -->
       <div :style="canvasStyle">
-        <LedView :active-widgets="activeWidgets" />
+        <LedView :active-widgets="activeWidgets" :led-token="ledToken ?? undefined" />
       </div>
     </div>
 

@@ -12,6 +12,7 @@ import (
 	"iot-dashboard/internal/modules/alerts"
 	"iot-dashboard/internal/modules/auth"
 	"iot-dashboard/internal/modules/dashboards"
+	"iot-dashboard/internal/modules/led"
 	"iot-dashboard/internal/modules/machines"
 	"iot-dashboard/internal/modules/telemetry"
 	ws "iot-dashboard/internal/websocket"
@@ -26,6 +27,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/helmet"
 	"github.com/gofiber/fiber/v2/middleware/limiter"
 	"github.com/gofiber/fiber/v2/middleware/logger"
+	fiberws "github.com/gofiber/websocket/v2"
 )
 
 // alertEvalAdapter evaluates alert rules and broadcasts triggered events over WS.
@@ -74,11 +76,8 @@ func main() {
 		// non-fatal — server continues; DB may already be set up
 	}
 
-	// ── WebSocket ─────────────────────────────────────────────────────────────
+	// ── WebSocket gateway ─────────────────────────────────────────────────────
 	gateway := ws.NewGateway()
-	gateway.Start(config.Env.WsPort)
-	defer gateway.Close()
-	fmt.Printf("✅ WebSocket listening on %s\n", ws.ListenAddr(config.Env.WsPort))
 
 	// ── Alert evaluator — shared by broadcaster (periodic) and ingest (on-demand) ──
 	alertEval := &alertEvalAdapter{svc: alerts.NewService(), gateway: gateway}
@@ -140,6 +139,19 @@ func main() {
 	dashboards.RegisterRoutes(api.Group("/dashboards"))
 	alerts.RegisterRoutes(api.Group("/alerts"))
 	ai.RegisterRoutes(api.Group("/ai"))
+	led.RegisterRoutes(api.Group("/led"))
+
+	// WebSocket on same port as REST — auth via ?token query param
+	app.Get("/ws",
+		func(c *fiber.Ctx) error {
+			if fiberws.IsWebSocketUpgrade(c) {
+				return c.Next()
+			}
+			return fiber.ErrUpgradeRequired
+		},
+		middleware.AuthenticateWS,
+		fiberws.New(gateway.HandleFiber),
+	)
 
 	// 404 fallback
 	app.Use(func(c *fiber.Ctx) error {

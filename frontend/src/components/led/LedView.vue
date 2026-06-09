@@ -113,6 +113,8 @@ const MOCK_WIDGETS: LedWidget[] = [
 const props = defineProps<{
   /** Array of widget configurations to render */
   activeWidgets?: LedWidget[]
+  /** Permanent LED-viewer JWT — passed via ?token= in the kiosk URL */
+  ledToken?: string
 }>()
 
 // Resolved widget list — falls back to built-in mock data when no prop is passed
@@ -162,7 +164,7 @@ onMounted(async () => {
   await alertStore.fetchActiveEvents()
 
   if (!wsService.isConnected) {
-    wsService.connect(null)  // public kiosk — no token needed
+    wsService.connect(props.ledToken ?? null)
     ownedWsConnection = true
   }
 

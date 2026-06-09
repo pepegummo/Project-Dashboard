@@ -4,7 +4,7 @@
 # ║  Services                                                               ║
 # ║    db        TimescaleDB  (PostgreSQL 16 + time-series ext.)  :5432     ║
 # ║    redis     Redis 7      (rate-limit, pub/sub)               :6379     ║
-# ║    backend   Go API       (REST :4000 · WebSocket :4001)                ║
+# ║    backend   Go API       (REST + WebSocket :4000)                      ║
 # ║    frontend  Nginx        (SPA + reverse-proxy → backend)     :5173     ║
 # ╠═════════════════════════════════════════════════════════════════════════╣
 # ║  Quick start                                                            ║
@@ -108,7 +108,6 @@ services:
       DATABASE_URL:      "postgresql://${POSTGRES_USER:-iot_user}:${POSTGRES_PASSWORD:-iot_password}@db:5432/${POSTGRES_DB:-iot_dashboard}"
       REDIS_URL:         "redis://redis:6379"
       PORT:              "4000"
-      WS_PORT:           "4001"
       # CORS: allow requests from the Nginx frontend container.
       # Change to your domain in production (e.g. https://dashboard.example.com)
       CORS_ORIGIN:       "${CORS_ORIGIN:-http://localhost:5173}"
@@ -116,8 +115,7 @@ services:
       JWT_EXPIRES_IN:    "${JWT_EXPIRES_IN:-24h}"
       SIMULATOR_ENABLED: "${SIMULATOR_ENABLED:-false}"
     ports:
-      - "${BACKEND_PORT:-4000}:4000"   # REST API  — for Postman / curl in dev
-      - "${WS_PORT:-4001}:4001"        # WebSocket — direct connection in dev
+      - "${BACKEND_PORT:-4000}:4000"   # REST API + WebSocket (/ws)
     volumes:
       - backend_logs:/app/logs
     depends_on:
@@ -142,7 +140,7 @@ services:
   #
   # Nginx routing:
   #   /api/*  →  proxy → http://backend:4000   (REST, same-origin — no CORS)
-  #   /ws     →  proxy → http://backend:4001   (WebSocket upgrade)
+  #   /ws     →  proxy → http://backend:4000   (WebSocket upgrade, same port)
   #   /*      →  serve  /usr/share/nginx/html  (SPA, index.html fallback)
   #
   # ⚠  VITE_* variables are BAKED INTO the JS bundle at `npm run build`.
@@ -151,7 +149,7 @@ services:
   #
   #  VITE_API_URL  — empty string ("") means axios uses a relative base
   #                  URL (/api/...) which works on any host automatically.
-  #  VITE_WS_URL   — must be absolute. Nginx proxies /ws → backend:4001,
+  #  VITE_WS_URL   — must be absolute. Nginx proxies /ws → backend:4000,
   #                  so ws://localhost:5173/ws reaches the WS server.
   #                  Change the host part if deploying to a real domain.
   # ────────────────────────────────────────────────────────────────────────────

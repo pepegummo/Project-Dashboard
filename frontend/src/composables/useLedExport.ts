@@ -18,6 +18,7 @@
 import { ref, computed } from 'vue'
 import type { DashboardWidget } from '@/types'
 import type { LedWidget } from '@/components/led/LedView.vue'
+import { api } from '@/services/api.service'
 
 // ─── Widget type mapping ───────────────────────────────────────────────────────
 //
@@ -128,10 +129,7 @@ export function useLedExport() {
   /**
    * Build the shareable LED URL from the current dashboard widget array.
    * The URL points to /led?w=<base64-payload>.
-   *
-   * @example
-   * const url = buildLedUrl(dashboardStore.widgets)
-   * // → https://yourapp.com/led?w=W3siaWQiOiIxIiwidHlwZ...
+   * Call buildLedUrlWithToken for a URL that works on kiosk machines without a session.
    */
   function buildLedUrl(widgets: DashboardWidget[]): string {
     const led     = mapToLedWidgets(widgets)
@@ -140,14 +138,27 @@ export function useLedExport() {
   }
 
   /**
-   * Map widgets → encode URL → copy to clipboard → flip button state for 3 s.
-   * Returns the generated URL so callers can log or open it in a new tab.
-   *
-   * @example
-   * const url = await exportLedLink(dashboardStore.widgets)
+   * Same as buildLedUrl but fetches (or generates) the org's permanent LED token
+   * and appends it as ?token=. The resulting URL works on any machine, forever.
+   */
+  async function buildLedUrlWithToken(widgets: DashboardWidget[]): Promise<string> {
+    const base = buildLedUrl(widgets)
+    try {
+      let result = await api.getLedToken()
+      if (!result.token) {
+        result = await api.generateLedToken()
+      }
+      return `${base}&token=${encodeURIComponent(result.token!)}`
+    } catch {
+      return base
+    }
+  }
+
+  /**
+   * Map widgets → encode URL (with permanent LED token) → copy to clipboard → flip button state for 3 s.
    */
   async function exportLedLink(widgets: DashboardWidget[]): Promise<string> {
-    const url = buildLedUrl(widgets)
+    const url = await buildLedUrlWithToken(widgets)
 
     try {
       // Modern Clipboard API (HTTPS or localhost)
@@ -181,10 +192,11 @@ export function useLedExport() {
   }
 
   /**
-   * Open the LED view in a new browser tab (useful for live preview).
+   * Open the LED view in a new browser tab with the permanent token included.
    */
-  function openLedPreview(widgets: DashboardWidget[]) {
-    window.open(buildLedUrl(widgets), '_blank', 'noopener,noreferrer')
+  async function openLedPreview(widgets: DashboardWidget[]) {
+    const url = await buildLedUrlWithToken(widgets)
+    window.open(url, '_blank', 'noopener,noreferrer')
   }
 
   return {
@@ -192,11 +204,13 @@ export function useLedExport() {
     copied,
     /** Reactive button label: "Export LED Link" → "✓ Copied!" */
     exportLabel,
-    /** Build the /led?w=... URL without copying */
+    /** Build the /led?w=... URL without token (for same-session preview) */
     buildLedUrl,
-    /** Copy the LED URL to clipboard and flip the button state */
+    /** Build the /led?w=...&token=... URL with permanent LED token */
+    buildLedUrlWithToken,
+    /** Copy the LED URL (with token) to clipboard and flip the button state */
     exportLedLink,
-    /** Open the LED view in a new tab for quick preview */
+    /** Open the LED view in a new tab with permanent token */
     openLedPreview,
   }
 }

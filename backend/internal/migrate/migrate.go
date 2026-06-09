@@ -41,6 +41,8 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+		// LED kiosk: permanent read-only token per org (NULL = not yet generated)
+		`ALTER TABLE organizations ADD COLUMN IF NOT EXISTS led_token TEXT`,
 
 		// ── users ────────────────────────────────────────────────────────────
 		`CREATE TABLE IF NOT EXISTS users (

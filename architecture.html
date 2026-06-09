@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IotVision — Architecture</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #0f1117;
+    color: #e2e8f0;
+    padding: 40px 24px;
+    min-height: 100vh;
+  }
+
+  h1 {
+    text-align: center;
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #f8fafc;
+    letter-spacing: .05em;
+    margin-bottom: 8px;
+  }
+
+  .subtitle {
+    text-align: center;
+    font-size: .8rem;
+    color: #64748b;
+    margin-bottom: 48px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+  }
+
+  /* ── Section titles ──────────────────────────────────── */
+  .section-title {
+    font-size: .7rem;
+    font-weight: 700;
+    letter-spacing: .15em;
+    text-transform: uppercase;
+    color: #475569;
+    margin-bottom: 16px;
+    padding-left: 4px;
+  }
+
+  /* ── Docker wrapper ──────────────────────────────────── */
+  .docker-wrap {
+    border: 1px dashed #1e293b;
+    border-radius: 16px;
+    padding: 24px;
+    margin-bottom: 40px;
+    position: relative;
+  }
+
+  .docker-label {
+    position: absolute;
+    top: -11px;
+    left: 20px;
+    background: #0f1117;
+    padding: 0 10px;
+    font-size: .68rem;
+    color: #334155;
+    font-weight: 600;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+  }
+
+  /* ── Service grid ────────────────────────────────────── */
+  .services {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+
+  .service {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 10px;
+    padding: 16px 14px;
+    text-align: center;
+  }
+
+  .service.frontend { border-color: #3b82f6; }
+  .service.backend  { border-color: #10b981; }
+  .service.db       { border-color: #f59e0b; }
+  .service.redis    { border-color: #ef4444; }
+
+  .service-icon { font-size: 1.6rem; margin-bottom: 8px; }
+
+  .service-name {
+    font-size: .85rem;
+    font-weight: 700;
+    color: #f1f5f9;
+    margin-bottom: 4px;
+  }
+
+  .service-tech {
+    font-size: .7rem;
+    color: #64748b;
+    margin-bottom: 8px;
+  }
+
+  .port-badge {
+    display: inline-block;
+    background: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: .68rem;
+    font-family: monospace;
+    color: #94a3b8;
+  }
+
+  .service.frontend .port-badge { color: #60a5fa; border-color: #1d4ed8; }
+  .service.backend  .port-badge { color: #34d399; border-color: #047857; }
+  .service.db       .port-badge { color: #fbbf24; border-color: #b45309; }
+  .service.redis    .port-badge { color: #f87171; border-color: #b91c1c; }
+
+  /* ── Proxy row ───────────────────────────────────────── */
+  .proxy-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .proxy-item {
+    flex: 1;
+    background: #0f172a;
+    border: 1px solid #1e293b;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: .72rem;
+    font-family: monospace;
+    color: #64748b;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .proxy-item span { color: #94a3b8; }
+  .arrow { color: #334155; }
+
+  /* ── Two-column layout ───────────────────────────────── */
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    margin-bottom: 40px;
+  }
+
+  .three-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 24px;
+    margin-bottom: 40px;
+  }
+
+  /* ── Cards ───────────────────────────────────────────── */
+  .card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    padding: 20px;
+  }
+
+  .card-title {
+    font-size: .75rem;
+    font-weight: 700;
+    color: #94a3b8;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .card-title .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  /* ── Module list ─────────────────────────────────────── */
+  .module-list { display: flex; flex-direction: column; gap: 6px; }
+
+  .module {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    background: #0f172a;
+    border-radius: 6px;
+    font-size: .78rem;
+  }
+
+  .module-name { font-weight: 600; color: #e2e8f0; min-width: 110px; }
+  .module-desc { color: #475569; font-size: .72rem; }
+
+  .badge {
+    margin-left: auto;
+    font-size: .6rem;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    white-space: nowrap;
+  }
+
+  .badge-green  { background: #052e16; color: #4ade80; }
+  .badge-blue   { background: #0c1a3a; color: #60a5fa; }
+  .badge-yellow { background: #2d1a00; color: #fbbf24; }
+  .badge-purple { background: #1a0a2e; color: #c084fc; }
+  .badge-red    { background: #2d0a0a; color: #f87171; }
+
+  /* ── Flow diagram ────────────────────────────────────── */
+  .flow {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .flow-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 10px 0;
+    border-left: 2px solid #1e293b;
+    padding-left: 16px;
+    margin-left: 8px;
+    position: relative;
+  }
+
+  .flow-step::before {
+    content: '';
+    position: absolute;
+    left: -5px;
+    top: 14px;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #334155;
+    border: 2px solid #0f1117;
+  }
+
+  .flow-step.highlight::before { background: #10b981; }
+  .flow-step.warn::before      { background: #f59e0b; }
+
+  .flow-num {
+    font-size: .65rem;
+    font-weight: 700;
+    color: #475569;
+    min-width: 16px;
+    margin-top: 2px;
+  }
+
+  .flow-content { flex: 1; }
+  .flow-label { font-size: .8rem; font-weight: 600; color: #cbd5e1; }
+  .flow-sub   { font-size: .7rem; color: #475569; margin-top: 2px; font-family: monospace; }
+
+  /* ── Route table ─────────────────────────────────────── */
+  .route-table { width: 100%; border-collapse: collapse; }
+
+  .route-table td {
+    padding: 6px 10px;
+    font-size: .73rem;
+    border-bottom: 1px solid #1e293b;
+    vertical-align: middle;
+  }
+
+  .route-table tr:last-child td { border-bottom: none; }
+
+  .method {
+    font-family: monospace;
+    font-weight: 700;
+    font-size: .68rem;
+    padding: 2px 6px;
+    border-radius: 3px;
+    min-width: 44px;
+    text-align: center;
+    display: inline-block;
+  }
+
+  .get    { background: #0c2d1a; color: #4ade80; }
+  .post   { background: #0c1a3a; color: #60a5fa; }
+  .patch  { background: #2d2200; color: #fbbf24; }
+  .delete { background: #2d0a0a; color: #f87171; }
+
+  .route-path {
+    font-family: monospace;
+    color: #94a3b8;
+    font-size: .73rem;
+  }
+
+  .auth-badge {
+    font-size: .6rem;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-weight: 700;
+  }
+
+  .pub  { background: #052e16; color: #4ade80; }
+  .auth { background: #0c1a3a; color: #60a5fa; }
+  .adm  { background: #2d1a00; color: #fbbf24; }
+
+  /* ── DB table ────────────────────────────────────────── */
+  .db-tables { display: flex; flex-direction: column; gap: 6px; }
+
+  .db-table {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    background: #0f172a;
+    border-radius: 6px;
+    font-size: .75rem;
+  }
+
+  .db-table-name { font-family: monospace; font-weight: 700; color: #fbbf24; min-width: 180px; }
+  .db-table-desc { color: #475569; font-size: .7rem; }
+  .db-table-tag  { margin-left: auto; font-size: .6rem; padding: 1px 6px; border-radius: 3px; white-space: nowrap; }
+  .ts-tag  { background: #2d1a00; color: #fb923c; }
+  .new-tag { background: #052e16; color: #4ade80; }
+
+  /* ── Auth roles ──────────────────────────────────────── */
+  .roles { display: flex; flex-direction: column; gap: 8px; }
+
+  .role {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    background: #0f172a;
+    border-radius: 8px;
+    border-left: 3px solid transparent;
+  }
+
+  .role.admin   { border-color: #f59e0b; }
+  .role.editor  { border-color: #3b82f6; }
+  .role.viewer  { border-color: #6b7280; }
+  .role.led     { border-color: #10b981; }
+
+  .role-name { font-size: .8rem; font-weight: 700; min-width: 90px; }
+  .role.admin  .role-name { color: #fbbf24; }
+  .role.editor .role-name { color: #60a5fa; }
+  .role.viewer .role-name { color: #9ca3af; }
+  .role.led    .role-name { color: #34d399; }
+
+  .role-perms { font-size: .7rem; color: #475569; }
+  .role-expiry { margin-left: auto; font-size: .68rem; font-family: monospace; color: #334155; }
+
+  /* ── Footer ──────────────────────────────────────────── */
+  .footer {
+    text-align: center;
+    font-size: .68rem;
+    color: #1e293b;
+    margin-top: 48px;
+    letter-spacing: .05em;
+  }
+</style>
+</head>
+<body>
+
+<h1>IotVision</h1>
+<p class="subtitle">Industrial IoT Dashboard — Architecture</p>
+
+<!-- ── Docker Services ──────────────────────────────────────── -->
+<div class="docker-wrap">
+  <span class="docker-label">Docker Compose — cpf_net</span>
+
+  <div class="services">
+    <div class="service frontend">
+      <div class="service-icon">🖥️</div>
+      <div class="service-name">Frontend</div>
+      <div class="service-tech">Vue 3 + Nginx</div>
+      <span class="port-badge">:5173</span>
+    </div>
+    <div class="service backend">
+      <div class="service-icon">⚙️</div>
+      <div class="service-name">Backend</div>
+      <div class="service-tech">Go + Fiber v2</div>
+      <span class="port-badge">:4000</span>
+    </div>
+    <div class="service db">
+      <div class="service-icon">🗄️</div>
+      <div class="service-name">TimescaleDB</div>
+      <div class="service-tech">PostgreSQL 16</div>
+      <span class="port-badge">:5432</span>
+    </div>
+    <div class="service redis">
+      <div class="service-icon">⚡</div>
+      <div class="service-name">Redis</div>
+      <div class="service-tech">v7 Alpine</div>
+      <span class="port-badge">:6379</span>
+    </div>
+  </div>
+
+  <div class="proxy-row">
+    <div class="proxy-item">🌐 <span>/api/*</span> <span class="arrow">→</span> Nginx proxy <span class="arrow">→</span> backend:4000 (REST)</div>
+    <div class="proxy-item">🔌 <span>/ws</span> <span class="arrow">→</span> Nginx upgrade <span class="arrow">→</span> backend:4000/ws (WebSocket — same port as REST)</div>
+  </div>
+</div>
+
+<!-- ── Backend Modules + Real-time Flow ─────────────────────── -->
+<div class="two-col">
+
+  <div>
+    <div class="section-title">Backend Modules</div>
+    <div class="card">
+      <div class="module-list">
+        <div class="module">
+          <div class="module-name">auth</div>
+          <div class="module-desc">login · JWT sign/verify · bcrypt</div>
+        </div>
+        <div class="module">
+          <div class="module-name">machines</div>
+          <div class="module-desc">CRUD + field schema</div>
+        </div>
+        <div class="module">
+          <div class="module-name">telemetry</div>
+          <div class="module-desc">ingest · latest · series · daily-count</div>
+        </div>
+        <div class="module">
+          <div class="module-name">alerts</div>
+          <div class="module-desc">rules · events · ack/resolve · cooldown</div>
+        </div>
+        <div class="module">
+          <div class="module-name">dashboards</div>
+          <div class="module-desc">CRUD · widgets · layout patch</div>
+        </div>
+        <div class="module">
+          <div class="module-name">ai</div>
+          <div class="module-desc">Groq llama-3.3-70b · 13 tools · agentic loop</div>
+          <span class="badge badge-purple">Groq</span>
+        </div>
+        <div class="module">
+          <div class="module-name">led</div>
+          <div class="module-desc">permanent kiosk token per org</div>
+          <span class="badge badge-green">New</span>
+        </div>
+        <div class="module">
+          <div class="module-name">websocket</div>
+          <div class="module-desc">Fiber WS hub · subscription filter</div>
+          <span class="badge badge-blue">:4000/ws</span>
+        </div>
+        <div class="module">
+          <div class="module-name">broadcaster</div>
+          <div class="module-desc">polls DB every 30s → WS heartbeat</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="section-title">Real-Time Data Flow</div>
+    <div class="card">
+      <div class="flow">
+        <div class="flow-step highlight">
+          <div class="flow-num">1</div>
+          <div class="flow-content">
+            <div class="flow-label">IoT Device ingest</div>
+            <div class="flow-sub">POST /api/telemetry/:id/ingest</div>
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="flow-num">2</div>
+          <div class="flow-content">
+            <div class="flow-label">Write row to DB</div>
+            <div class="flow-sub">telemetry_raw (TimescaleDB hypertable)</div>
+          </div>
+        </div>
+        <div class="flow-step warn">
+          <div class="flow-num">3</div>
+          <div class="flow-content">
+            <div class="flow-label">Alert evaluation</div>
+            <div class="flow-sub">EvaluateAndBroadcast → WS BroadcastAlert</div>
+          </div>
+        </div>
+        <div class="flow-step highlight">
+          <div class="flow-num">4</div>
+          <div class="flow-content">
+            <div class="flow-label">Push to WS clients</div>
+            <div class="flow-sub">BroadcastTelemetry → subscribed clients only</div>
+          </div>
+        </div>
+        <div class="flow-step">
+          <div class="flow-num">5</div>
+          <div class="flow-content">
+            <div class="flow-label">DB Broadcaster (fallback)</div>
+            <div class="flow-sub">DISTINCT ON (machine_id) every 30s</div>
+          </div>
+        </div>
+        <div class="flow-step highlight">
+          <div class="flow-num">6</div>
+          <div class="flow-content">
+            <div class="flow-label">Vue store update</div>
+            <div class="flow-sub">telemetryStore.updateSnapshot() → reactive UI</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:24px">
+      <div class="section-title">Auth Roles</div>
+      <div class="card">
+        <div class="roles">
+          <div class="role admin">
+            <div class="role-name">admin</div>
+            <div class="role-perms">Full access including delete</div>
+            <div class="role-expiry">24h</div>
+          </div>
+          <div class="role editor">
+            <div class="role-name">editor</div>
+            <div class="role-perms">Read + write, no delete org/machines</div>
+            <div class="role-expiry">24h</div>
+          </div>
+          <div class="role viewer">
+            <div class="role-name">viewer</div>
+            <div class="role-perms">Read only</div>
+            <div class="role-expiry">24h</div>
+          </div>
+          <div class="role led">
+            <div class="role-name">led-viewer</div>
+            <div class="role-perms">Read only · kiosk token per org</div>
+            <div class="role-expiry">∞ no expiry</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── API Routes ────────────────────────────────────────────── -->
+<div class="two-col">
+  <div>
+    <div class="section-title">API Routes</div>
+    <div class="card">
+      <table class="route-table">
+        <tr>
+          <td><span class="method post">POST</span></td>
+          <td class="route-path">/api/auth/login</td>
+          <td><span class="auth-badge pub">public</span></td>
+        </tr>
+        <tr>
+          <td><span class="method get">GET</span></td>
+          <td class="route-path">/api/machines</td>
+          <td><span class="auth-badge auth">auth</span></td>
+        </tr>
+        <tr>
+          <td><span class="method get">GET</span></td>
+          <td class="route-path">/api/telemetry/:id/latest</td>
+          <td><span class="auth-badge pub">public</span></td>
+        </tr>
+        <tr>
+          <td><span class="method get">GET</span></td>
+          <td class="route-path">/api/telemetry/:id/series</td>
+          <td><span class="auth-badge pub">public</span></td>
+        </tr>
+        <tr>
+          <td><span class="method get">GET</span></td>
+          <td class="route-path">/api/telemetry/:id/daily-count</td>
+          <td><span class="auth-badge pub">public</span></td>
+        </tr>
+        <tr>
+          <td><span class="method post">POST</span></td>
+          <td class="route-path">/api/telemetry/:id/ingest</td>
+          <td><span class="auth-badge auth">auth</span></td>
+        </tr>
+        <tr>
+          <td><span class="method get">GET</span></td>
+          <td class="route-path">/api/alerts/events/active</td>
+          <td><span class="auth-badge pub">public</span></td>
+        </tr>
+        <tr>
+          <td><span class="method post">POST</span></td>
+          <td class="route-path">/api/alerts</td>
+          <td><span class="auth-badge adm">admin|editor</span></td>
+        </tr>
+        <tr>
+          <td><span class="method get">GET</span></td>
+          <td class="route-path">/api/dashboards</td>
+          <td><span class="auth-badge auth">auth</span></td>
+        </tr>
+        <tr>
+          <td><span class="method post">POST</span></td>
+          <td class="route-path">/api/ai/chat</td>
+          <td><span class="auth-badge auth">auth</span></td>
+        </tr>
+        <tr>
+          <td><span class="method get">GET</span></td>
+          <td class="route-path">/api/led/token</td>
+          <td><span class="auth-badge adm">admin|editor</span></td>
+        </tr>
+        <tr>
+          <td><span class="method post">POST</span></td>
+          <td class="route-path">/api/led/token</td>
+          <td><span class="auth-badge adm">admin|editor</span></td>
+        </tr>
+        <tr>
+          <td><span class="method delete">DEL</span></td>
+          <td class="route-path">/api/led/token</td>
+          <td><span class="auth-badge adm">admin|editor</span></td>
+        </tr>
+        <tr>
+          <td><span class="method get">GET</span></td>
+          <td class="route-path">/ws?token=&lt;jwt&gt;</td>
+          <td><span class="auth-badge auth">ws auth</span></td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <div>
+    <div class="section-title">Database Tables</div>
+    <div class="card">
+      <div class="db-tables">
+        <div class="db-table">
+          <div class="db-table-name">organizations</div>
+          <div class="db-table-desc">id · name · slug · settings · led_token</div>
+          <span class="db-table-tag new-tag">led_token NEW</span>
+        </div>
+        <div class="db-table">
+          <div class="db-table-name">users</div>
+          <div class="db-table-desc">id · org_id · email · role · password_hash</div>
+        </div>
+        <div class="db-table">
+          <div class="db-table-name">machines</div>
+          <div class="db-table-desc">id · line_id · name · type · status</div>
+        </div>
+        <div class="db-table">
+          <div class="db-table-name">machine_fields</div>
+          <div class="db-table-desc">key · label · unit · min/max · threshold</div>
+        </div>
+        <div class="db-table">
+          <div class="db-table-name">telemetry_raw</div>
+          <div class="db-table-desc">machine_id · timestamp · data (JSONB)</div>
+          <span class="db-table-tag ts-tag">hypertable 7d</span>
+        </div>
+        <div class="db-table">
+          <div class="db-table-name">telemetry_aggregates</div>
+          <div class="db-table-desc">field · period · avg/min/max/stddev</div>
+        </div>
+        <div class="db-table">
+          <div class="db-table-name">dashboards</div>
+          <div class="db-table-desc">id · org_id · user_id · name · is_public</div>
+        </div>
+        <div class="db-table">
+          <div class="db-table-name">dashboard_widgets</div>
+          <div class="db-table-desc">type · layout (JSONB) · config (JSONB)</div>
+        </div>
+        <div class="db-table">
+          <div class="db-table-name">alerts</div>
+          <div class="db-table-desc">field · condition · threshold · cooldown_sec</div>
+        </div>
+        <div class="db-table">
+          <div class="db-table-name">alert_events</div>
+          <div class="db-table-desc">value · status · triggered_at · ack/resolved</div>
+        </div>
+        <div class="db-table">
+          <div class="db-table-name">ai_conversations</div>
+          <div class="db-table-desc">user_id · title · context (JSONB)</div>
+        </div>
+        <div class="db-table">
+          <div class="db-table-name">ai_messages</div>
+          <div class="db-table-desc">role · content · tool_name · tool_result</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── LED Kiosk Flow ────────────────────────────────────────── -->
+<div class="section-title">LED Kiosk Flow</div>
+<div class="card" style="margin-bottom:40px">
+  <div style="display:grid; grid-template-columns: repeat(5,1fr); gap:0; align-items:center">
+
+    <div style="text-align:center; padding:16px">
+      <div style="font-size:1.8rem; margin-bottom:8px">👤</div>
+      <div style="font-size:.8rem; font-weight:700; color:#e2e8f0; margin-bottom:4px">Admin</div>
+      <div style="font-size:.68rem; color:#475569">POST /api/led/token</div>
+    </div>
+
+    <div style="text-align:center; color:#334155; font-size:1.2rem">→</div>
+
+    <div style="text-align:center; padding:16px; background:#0f172a; border-radius:10px; border:1px solid #1e293b">
+      <div style="font-size:1.8rem; margin-bottom:8px">🔑</div>
+      <div style="font-size:.8rem; font-weight:700; color:#34d399; margin-bottom:4px">LED Token</div>
+      <div style="font-size:.68rem; color:#475569">JWT · role=led-viewer</div>
+      <div style="font-size:.68rem; color:#10b981; margin-top:4px">∞ no expiry</div>
+    </div>
+
+    <div style="text-align:center; color:#334155; font-size:1.2rem">→</div>
+
+    <div style="text-align:center; padding:16px">
+      <div style="font-size:1.8rem; margin-bottom:8px">🖥️</div>
+      <div style="font-size:.8rem; font-weight:700; color:#e2e8f0; margin-bottom:4px">Kiosk URL</div>
+      <div style="font-size:.65rem; color:#475569; font-family:monospace">/led?w=…&token=…</div>
+    </div>
+
+    <div style="grid-column:1/-1; height:1px; background:#1e293b; margin:4px 0"></div>
+
+    <div style="text-align:center; padding:16px">
+      <div style="font-size:1.8rem; margin-bottom:8px">📺</div>
+      <div style="font-size:.8rem; font-weight:700; color:#e2e8f0; margin-bottom:4px">Factory Kiosk</div>
+      <div style="font-size:.68rem; color:#475569">any machine, no login</div>
+    </div>
+
+    <div style="text-align:center; color:#334155; font-size:1.2rem">→</div>
+
+    <div style="text-align:center; padding:16px; background:#0f172a; border-radius:10px; border:1px solid #1e293b">
+      <div style="font-size:1.8rem; margin-bottom:8px">⚙️</div>
+      <div style="font-size:.8rem; font-weight:700; color:#60a5fa; margin-bottom:4px">REST + WS</div>
+      <div style="font-size:.68rem; color:#475569">api.setOverrideToken()</div>
+      <div style="font-size:.68rem; color:#475569">wsService.connect(token)</div>
+    </div>
+
+    <div style="text-align:center; color:#334155; font-size:1.2rem">→</div>
+
+    <div style="text-align:center; padding:16px">
+      <div style="font-size:1.8rem; margin-bottom:8px">🟢</div>
+      <div style="font-size:.8rem; font-weight:700; color:#34d399; margin-bottom:4px">640×320 Live</div>
+      <div style="font-size:.68rem; color:#475569">real-time telemetry + alerts</div>
+    </div>
+
+  </div>
+</div>
+
+<div class="footer">IotVision · Go/Fiber · Vue 3 · TimescaleDB · Groq AI</div>
+
+</body>
+</html>

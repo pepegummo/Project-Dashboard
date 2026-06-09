@@ -5,6 +5,7 @@ const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:4000';
 
 class ApiService {
   private client: AxiosInstance;
+  private overrideToken: string | null = null;
 
   constructor() {
     this.client = axios.create({
@@ -13,9 +14,9 @@ class ApiService {
       headers: { 'Content-Type': 'application/json' },
     });
 
-    // Request interceptor — attach token
+    // Request interceptor — attach token (LED override takes priority over localStorage)
     this.client.interceptors.request.use((config) => {
-      const token = localStorage.getItem('auth_token');
+      const token = this.overrideToken ?? localStorage.getItem('auth_token');
       if (token) config.headers.Authorization = `Bearer ${token}`;
       return config;
     });
@@ -43,6 +44,11 @@ class ApiService {
     } else {
       localStorage.removeItem('auth_token');
     }
+  }
+
+  // Used by LED kiosk pages to authenticate REST + WS without a user session.
+  setOverrideToken(token: string | null) {
+    this.overrideToken = token;
   }
 
   // ─── Auth ──────────────────────────────────────────────────────────────────
@@ -283,6 +289,21 @@ class ApiService {
   async chat(conversationId: string, message: string) {
     const { data } = await this.client.post<ApiResponse<AiMessage[]>>('/ai/chat', { conversationId, message }, { timeout: 120_000 });
     return data.data;
+  }
+
+  // ─── LED Token ────────────────────────────────────────────────────────────
+  async getLedToken(): Promise<{ token: string | null }> {
+    const { data } = await this.client.get<ApiResponse<{ token: string | null }>>('/led/token');
+    return data.data!;
+  }
+
+  async generateLedToken(): Promise<{ token: string }> {
+    const { data } = await this.client.post<ApiResponse<{ token: string }>>('/led/token');
+    return data.data!;
+  }
+
+  async revokeLedToken(): Promise<void> {
+    await this.client.delete('/led/token');
   }
 }
 

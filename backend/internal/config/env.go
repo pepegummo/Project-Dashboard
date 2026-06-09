@@ -11,7 +11,6 @@ import (
 type Config struct {
 	NodeEnv    string
 	Port       int
-	WsPort     int
 	DatabaseURL string
 	RedisURL   string
 	JwtSecret  string
@@ -33,7 +32,6 @@ func Load() {
 	Env = &Config{
 		NodeEnv:          getEnv("NODE_ENV", "development"),
 		Port:             getEnvInt("PORT", 4000),
-		WsPort:           getEnvInt("WS_PORT", 4001),
 		DatabaseURL:      requireEnv("DATABASE_URL"),
 		RedisURL:         getEnv("REDIS_URL", "redis://localhost:6379"),
 		JwtSecret:        getEnv("JWT_SECRET", "dev-secret-change-in-production-min-32-chars!!"),

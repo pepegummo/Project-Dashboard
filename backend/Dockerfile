@@ -23,5 +23,5 @@ RUN chown -R appuser:appgroup /app
 
 USER appuser
 
-EXPOSE 4000 4001
+EXPOSE 4000
 CMD ["./server"]
