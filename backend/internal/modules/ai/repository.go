@@ -108,6 +108,43 @@ func (r *Repository) AddMessage(ctx context.Context, conversationID, role, conte
 	return &m, nil
 }
 
+// GetMessageByID loads one message, but only if it belongs to a conversation the
+// user owns — so a user can only confirm/cancel their own pending actions.
+func (r *Repository) GetMessageByID(ctx context.Context, msgID, userID string) (*Message, error) {
+	var m Message
+	err := database.Pool.QueryRow(ctx, `
+		SELECT m.id, m.conversation_id, m.role, m.content, m.tool_name, m.tool_input, m.tool_result, m.created_at
+		FROM ai_messages m
+		JOIN ai_conversations c ON c.id = m.conversation_id
+		WHERE m.id = $1 AND c.user_id = $2
+	`, msgID, userID).Scan(
+		&m.ID, &m.ConversationID, &m.Role, &m.Content,
+		&m.ToolName, &m.ToolInput, &m.ToolResult, &m.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// UpdateMessageResult overwrites a message's content + tool_result — used to flip
+// a pending action to executed or cancelled.
+func (r *Repository) UpdateMessageResult(ctx context.Context, msgID, content string, toolResult json.RawMessage) (*Message, error) {
+	var m Message
+	err := database.Pool.QueryRow(ctx, `
+		UPDATE ai_messages SET content = $2, tool_result = $3
+		WHERE id = $1
+		RETURNING id, conversation_id, role, content, tool_name, tool_input, tool_result, created_at
+	`, msgID, content, nullableJSON(toolResult)).Scan(
+		&m.ID, &m.ConversationID, &m.Role, &m.Content,
+		&m.ToolName, &m.ToolInput, &m.ToolResult, &m.CreatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
 // nullableJSON returns nil when the raw message is empty so pgx stores NULL instead of a zero-length JSONB.
 func nullableJSON(r json.RawMessage) interface{} {
 	if len(r) == 0 {

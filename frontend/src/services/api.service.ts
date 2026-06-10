@@ -284,6 +284,12 @@ class ApiService {
     const { data } = await this.client.post<ApiResponse<AiMessage[]>>('/ai/chat', { conversationId, message }, { timeout: 120_000 });
     return data.data;
   }
+
+  // Confirm (or cancel) a pending write action the AI proposed.
+  async confirmAiAction(messageId: string, confirm: boolean) {
+    const { data } = await this.client.post<ApiResponse<AiMessage[]>>('/ai/confirm', { messageId, confirm }, { timeout: 60_000 });
+    return data.data;
+  }
 }
 
 export const api = new ApiService();

@@ -12,12 +12,8 @@ var allowedWidgetTypes = []string{
 // OpenAI `functions`). input_schema is plain JSON Schema. Defining it here keeps
 // the enum from drifting away from the widgets we can actually render.
 var CreateDashboardTool = map[string]any{
-	"name": "create_custom_dashboard",
-	"description": "Create a new dashboard composed of pre-built widgets based on the " +
-		"user's monitoring request. Use the machine's human name in `machine_id`; the " +
-		"backend resolves it to an internal id. Choose the widget `type` that best fits " +
-		"the request (line-chart for trends, gauge for a single bounded metric, kpi-card " +
-		"for a headline number, daily-count for production totals).",
+	"name":        "create_custom_dashboard",
+	"description": "Create a new dashboard from pre-built widgets. Put the machine's human name in `machine_id` (backend resolves it). Pick `type`: line-chart=trends, gauge=one bounded metric, kpi-card=headline number, daily-count=production totals.",
 	"input_schema": map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -76,7 +72,7 @@ type ToolWidget struct {
 // The AI must call this before create_custom_dashboard so it can use exact machine names.
 var GetMachinesTool = map[string]any{
 	"name":        "get_machines",
-	"description": "Get the list of all machines with their exact names, types, current status, and available numeric metric field keys. Use this to answer questions about machines, and to obtain correct machine names/metrics when the user has asked to build a dashboard.",
+	"description": "Get all machines with exact names, types, status, and numeric metric keys. Call before building a dashboard to obtain correct names/metrics.",
 	"input_schema": map[string]any{
 		"type":       "object",
 		"properties": map[string]any{},
@@ -95,7 +91,7 @@ type CreateDashboardArgs struct {
 
 var GetLatestTelemetryTool = map[string]any{
 	"name":        "get_latest_telemetry",
-	"description": "Get the most recent telemetry values (current readings) for one machine. Use when the user asks for the current value of a metric or 'what is X right now'.",
+	"description": "Current readings for one machine. Use for 'what is X right now'.",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"machine_id"},
@@ -107,7 +103,7 @@ var GetLatestTelemetryTool = map[string]any{
 
 var GetTelemetryTrendTool = map[string]any{
 	"name":        "get_telemetry_trend",
-	"description": "Get the average / min / max of one metric over a time range. Use for questions about trends or how a value has behaved over the last hour/day/week.",
+	"description": "Avg/min/max of one metric over a time range (trends).",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"machine_id", "metric"},
@@ -121,7 +117,7 @@ var GetTelemetryTrendTool = map[string]any{
 
 var GetActiveAlertsTool = map[string]any{
 	"name":        "get_active_alerts",
-	"description": "List all currently open (unresolved) alert events for the organization. Each item includes an event id you can pass to acknowledge_alert or resolve_alert.",
+	"description": "List open (unresolved) alert events. Each includes an event id for acknowledge_alert/resolve_alert.",
 	"input_schema": map[string]any{
 		"type":       "object",
 		"properties": map[string]any{},
@@ -130,7 +126,7 @@ var GetActiveAlertsTool = map[string]any{
 
 var GetDailyCountTool = map[string]any{
 	"name":        "get_daily_count",
-	"description": "Get the number of telemetry records (production count) per day for one machine. Use for 'how much did X produce' questions.",
+	"description": "Per-day record count (production count) for one machine.",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"machine_id"},
@@ -147,7 +143,7 @@ var GetDailyCountTool = map[string]any{
 
 var ListDashboardsTool = map[string]any{
 	"name":        "list_dashboards",
-	"description": "List the user's existing dashboards with their names and widget counts. Call this before add_widget_to_dashboard or remove_widget if you are unsure of the exact dashboard name.",
+	"description": "List the user's dashboards with names and widget counts. Call before add_widget_to_dashboard/remove_widget if unsure of the name.",
 	"input_schema": map[string]any{
 		"type":       "object",
 		"properties": map[string]any{},
@@ -156,7 +152,7 @@ var ListDashboardsTool = map[string]any{
 
 var AddWidgetTool = map[string]any{
 	"name":        "add_widget_to_dashboard",
-	"description": "Add a single widget to an EXISTING dashboard (referenced by name). Use this to extend a dashboard the user already has — do not create a new one.",
+	"description": "Add one widget to an EXISTING dashboard (by name). Do not create a new one.",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"dashboard_name", "widget"},
@@ -181,7 +177,7 @@ var AddWidgetTool = map[string]any{
 
 var RemoveWidgetTool = map[string]any{
 	"name":        "remove_widget",
-	"description": "Remove a widget from an existing dashboard, identified by the widget's title. Call list_dashboards first if unsure of the dashboard name.",
+	"description": "Remove a widget from a dashboard by its title. Call list_dashboards first if unsure of the name.",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"dashboard_name", "widget_title"},
@@ -198,7 +194,7 @@ var RemoveWidgetTool = map[string]any{
 
 var CreateAlertTool = map[string]any{
 	"name":        "create_alert",
-	"description": "Create a threshold alert rule that fires when a machine's metric crosses a value. Use when the user asks to be notified or warned about a condition.",
+	"description": "Create a threshold alert rule that fires when a metric crosses a value.",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"machine_id", "metric", "condition", "threshold"},
@@ -217,7 +213,7 @@ var CreateAlertTool = map[string]any{
 
 var AcknowledgeAlertTool = map[string]any{
 	"name":        "acknowledge_alert",
-	"description": "Acknowledge an open alert event (mark that someone is handling it). First call get_active_alerts to obtain the event_id.",
+	"description": "Acknowledge an open alert event. Call get_active_alerts first for the event_id.",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"event_id"},
@@ -229,7 +225,7 @@ var AcknowledgeAlertTool = map[string]any{
 
 var ResolveAlertTool = map[string]any{
 	"name":        "resolve_alert",
-	"description": "Resolve (close) an open alert event. First call get_active_alerts to obtain the event_id.",
+	"description": "Resolve (close) an open alert event. Call get_active_alerts first for the event_id.",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"event_id"},
@@ -245,7 +241,7 @@ var ResolveAlertTool = map[string]any{
 
 var GetFactoryOverviewTool = map[string]any{
 	"name":        "get_factory_overview",
-	"description": "Get a one-shot snapshot of every machine — status, latest values, and open-alert count. Use this for broad questions like 'summarize the factory', 'what's wrong', or 'which machines need attention', then reason over the result in text.",
+	"description": "Snapshot of every machine (status, latest values, open-alert count). Use for 'summarize the factory' / 'what's wrong', then reason in text.",
 	"input_schema": map[string]any{
 		"type":       "object",
 		"properties": map[string]any{},

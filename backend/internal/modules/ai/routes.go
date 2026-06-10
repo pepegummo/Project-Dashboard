@@ -19,4 +19,5 @@ func RegisterRoutes(router fiber.Router) {
 	router.Post("/conversations/:id/messages", ctrl.AddMessage)
 
 	router.Post("/chat", ctrl.Chat)
+	router.Post("/confirm", ctrl.ConfirmAction)
 }

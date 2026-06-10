@@ -2,25 +2,39 @@
 /**
  * ChatBox — renders a single AI chat message.
  * ───────────────────────────────────────────
- * When the assistant turn carries a create_custom_dashboard tool result, it shows
- * a friendly confirmation card + a link to the new dashboard — never raw JSON.
+ * Write actions the AI proposes are NOT executed automatically. They arrive as a
+ * "pending_confirmation" tool result and render a Confirm/Cancel card. Once the
+ * user confirms, the result becomes a success card (a dashboard link, or a short
+ * "done" summary); cancelling shows a muted note. Reads never reach this card.
  */
 import { computed } from 'vue';
-import { Bot, LayoutDashboard, CheckCircle2 } from 'lucide-vue-next';
+import { Bot, LayoutDashboard, CheckCircle2, ShieldQuestion, XCircle, Loader2 } from 'lucide-vue-next';
 import type { AiMessage } from '@/types';
 
-const props = defineProps<{ message: AiMessage }>();
+const props = defineProps<{ message: AiMessage; busy?: boolean }>();
+const emit = defineEmits<{ (e: 'confirm', m: AiMessage): void; (e: 'cancel', m: AiMessage): void }>();
 
-// Did this assistant turn create a dashboard?
+const isUser = computed(() => props.message.role === 'user');
+const result = computed(() => props.message.toolResult as Record<string, any> | undefined);
+
+// A write action awaiting the user's decision.
+const pending = computed(() => (result.value?.status === 'pending_confirmation' ? result.value : null));
+// The user declined the action.
+const cancelled = computed(() => (result.value?.status === 'cancelled' ? result.value : null));
+
+// Did this turn create a dashboard? (executed create_custom_dashboard)
 const dashboardResult = computed(() => {
   if (props.message.toolName !== 'create_custom_dashboard') return null;
-  const r = props.message.toolResult as
-    | { success?: boolean; dashboardId?: string; url?: string; summary?: string }
-    | undefined;
+  const r = result.value;
   return r?.success && r.dashboardId ? r : null;
 });
 
-const isUser = computed(() => props.message.role === 'user');
+// Any other executed write tool that returned a summary (alert, widget, …).
+const doneResult = computed(() => {
+  if (dashboardResult.value) return null;
+  const r = result.value;
+  return r?.success && r.summary ? r : null;
+});
 </script>
 
 <template>
@@ -40,11 +54,48 @@ const isUser = computed(() => props.message.role === 'user');
         : 'bg-surface-200 text-gray-300 border border-white/5'"
     >
       <!-- Normal text content -->
-      <p v-if="message.content" class="whitespace-pre-wrap leading-relaxed">
+      <p v-if="message.content && !pending && !cancelled" class="whitespace-pre-wrap leading-relaxed">
         {{ message.content }}
       </p>
 
-      <!-- Tool success: friendly card + navigation, NO raw JSON -->
+      <!-- Pending write action: ask the user to confirm before anything happens -->
+      <div
+        v-if="pending"
+        class="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3"
+      >
+        <div class="flex items-center gap-2 text-amber-400 font-medium">
+          <ShieldQuestion class="w-4 h-4" />
+          Confirm this action?
+        </div>
+        <p class="text-xs text-gray-300 mt-1">{{ pending.summary }}</p>
+        <div class="flex gap-2 mt-2.5">
+          <button
+            class="btn-primary btn-sm inline-flex items-center gap-1.5"
+            :disabled="busy"
+            @click="emit('confirm', message)"
+          >
+            <Loader2 v-if="busy" class="w-3.5 h-3.5 animate-spin" />
+            <CheckCircle2 v-else class="w-3.5 h-3.5" />
+            Confirm
+          </button>
+          <button
+            class="btn-sm btn-ghost inline-flex items-center gap-1.5"
+            :disabled="busy"
+            @click="emit('cancel', message)"
+          >
+            <XCircle class="w-3.5 h-3.5" />
+            Cancel
+          </button>
+        </div>
+      </div>
+
+      <!-- Cancelled -->
+      <div v-else-if="cancelled" class="flex items-center gap-2 text-gray-500 text-xs">
+        <XCircle class="w-3.5 h-3.5" />
+        Cancelled — {{ cancelled.summary }}
+      </div>
+
+      <!-- Executed: created a dashboard -->
       <div
         v-if="dashboardResult"
         class="mt-3 rounded-lg border border-emerald-500/25 bg-emerald-500/10 p-3"
@@ -62,6 +113,18 @@ const isUser = computed(() => props.message.role === 'user');
           <LayoutDashboard class="w-3.5 h-3.5" />
           Open dashboard
         </RouterLink>
+      </div>
+
+      <!-- Executed: any other write action -->
+      <div
+        v-else-if="doneResult"
+        class="mt-3 rounded-lg border border-emerald-500/25 bg-emerald-500/10 p-3"
+      >
+        <div class="flex items-center gap-2 text-emerald-400 font-medium">
+          <CheckCircle2 class="w-4 h-4" />
+          Done
+        </div>
+        <p class="text-xs text-gray-400 mt-1">{{ doneResult.summary }}</p>
       </div>
     </div>
   </div>

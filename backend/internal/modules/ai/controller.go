@@ -24,8 +24,10 @@ const systemPrompt = `You are IotVision AI, an assistant for an industrial IoT f
 General rules:
 1. For greetings or general questions, answer in plain text — do NOT call a tool.
 2. Call a tool only when the request clearly needs it, and only with inputs you are sure of. Do exactly what was asked; never chain extra actions beyond the request.
-3. Always use a machine's human name (from get_machines / get_factory_overview) and a dashboard's exact name (from list_dashboards) in tool arguments. Never invent or guess machine names, metric keys, or dashboard names — if unsure, call get_machines or list_dashboards first.
-4. After any change, briefly confirm what you did in plain text.
+3. READ vs WRITE — this is critical. Only call a tool that creates, adds, removes, or changes something (create_custom_dashboard, add_widget_to_dashboard, remove_widget, create_alert, acknowledge_alert, resolve_alert) when the user EXPLICITLY asks for that action using words like "create", "build", "make", "add", "remove", "delete", or "set up an alert". Requests to "list", "show", "get", "display", "what is", "how many", "which", or to check status are READ-ONLY: answer them using only read tools (get_machines, get_latest_telemetry, get_telemetry_trend, get_daily_count, get_active_alerts, get_factory_overview) plus plain text. When in doubt, READ and answer — never create or modify anything.
+4. "List all machines", "show me the machines", or "what's the status" means call get_machines and reply in text. It is NEVER a request to build a dashboard.
+5. Always use a machine's human name (from get_machines / get_factory_overview) and a dashboard's exact name (from list_dashboards) in tool arguments. Never invent or guess machine names, metric keys, or dashboard names — if a name you were given does not exist in get_machines, tell the user it was not found instead of acting on a guess.
+6. After any change, briefly confirm what you did in plain text.
 
 Reading data:
 - get_machines: list machines, their status and metric fields.
@@ -36,7 +38,7 @@ Reading data:
 - get_factory_overview: a snapshot of every machine (status, latest values, open-alert count). Use this for "summarize the factory" / "what's wrong" questions, then reason over the result in text.
 
 Making changes (these require permission; if a tool returns a permission error, tell the user their role cannot do it):
-- create_custom_dashboard: build a NEW dashboard. First call get_machines for exact names. Listing machines is NOT a request to build one.
+- create_custom_dashboard: build a NEW dashboard — ONLY when the user explicitly says to create/build/make a dashboard. First call get_machines for exact names and to confirm the machine exists. Listing, showing, or asking about machines is NOT a request to build one.
 - add_widget_to_dashboard / remove_widget: modify an EXISTING dashboard (call list_dashboards first if unsure of the name).
 - create_alert: define a threshold alert rule. condition is one of gt, lt, gte, lte, eq, neq, between, outside; for between/outside also provide threshold_hi.
 - acknowledge_alert / resolve_alert: act on an open alert — first call get_active_alerts to get its event_id.`
@@ -60,8 +62,8 @@ type groqToolCall struct {
 }
 
 type groqRequest struct {
-	Model    string        `json:"model"`
-	Messages []groqMessage `json:"messages"`
+	Model    string           `json:"model"`
+	Messages []groqMessage    `json:"messages"`
 	Tools    []map[string]any `json:"tools,omitempty"`
 }
 
@@ -155,6 +157,111 @@ func (ctrl *Controller) ExecuteTool(c *fiber.Ctx) error {
 		return err
 	}
 	return c.JSON(fiber.Map{"success": true, "data": result})
+}
+
+// ConfirmAction executes (or cancels) a pending write tool that the AI proposed.
+// The pending action is stored on an ai_messages row; this flips it to executed
+// or cancelled, so re-confirming the same message is rejected (no double action).
+func (ctrl *Controller) ConfirmAction(c *fiber.Ctx) error {
+	var body struct {
+		MessageID string `json:"messageId"`
+		Confirm   bool   `json:"confirm"`
+	}
+	if err := c.BodyParser(&body); err != nil || body.MessageID == "" {
+		return middleware.NewAppError(400, "VALIDATION_ERROR", "messageId is required")
+	}
+
+	user := middleware.GetUser(c)
+	msg, err := ctrl.repo.GetMessageByID(c.Context(), body.MessageID, user.Sub)
+	if err != nil {
+		return middleware.NewAppError(404, "NOT_FOUND", "Pending action not found")
+	}
+
+	var pend struct {
+		Status   string          `json:"status"`
+		ToolName string          `json:"toolName"`
+		Params   json.RawMessage `json:"params"`
+		Summary  string          `json:"summary"`
+	}
+	_ = json.Unmarshal(msg.ToolResult, &pend)
+	if pend.Status != "pending_confirmation" {
+		return middleware.NewAppError(409, "ALREADY_HANDLED", "This action was already handled")
+	}
+
+	// Cancelled by the user — record it, run nothing.
+	if !body.Confirm {
+		res, _ := json.Marshal(map[string]any{"status": "cancelled", "toolName": pend.ToolName, "summary": pend.Summary})
+		updated, uerr := ctrl.repo.UpdateMessageResult(c.Context(), msg.ID, "Cancelled: "+pend.Summary, res)
+		if uerr != nil {
+			return uerr
+		}
+		return c.JSON(fiber.Map{"success": true, "data": []Message{*updated}})
+	}
+
+	// Confirmed — execute for real (RBAC + org-scoping enforced inside dispatch).
+	result, dispatchErr := ctrl.dispatch(c, pend.ToolName, pend.Params)
+	if dispatchErr != nil {
+		return dispatchErr
+	}
+	resultJSON, _ := json.Marshal(result)
+	updated, uerr := ctrl.repo.UpdateMessageResult(c.Context(), msg.ID, "Executed: "+pend.Summary, resultJSON)
+	if uerr != nil {
+		return uerr
+	}
+	return c.JSON(fiber.Map{"success": true, "data": []Message{*updated}})
+}
+
+// writeIntentRe matches a user message that is actually asking to change
+// something (English + Thai). When it does NOT match, write tools are withheld
+// from the model entirely, so it cannot propose a mutation on a read request.
+var writeIntentRe = regexp.MustCompile(`(?i)\b(create|build|make|add|set ?up|configure|new dashboard|remove|delete|drop|alert me|notify me|acknowledge|resolve|rename|change|update|edit)\b|สร้าง|เพิ่ม|ทำ|ลบ|เอาออก|ตั้งค่า|ตั้งเตือน|แจ้งเตือน|เปลี่ยน|แก้`)
+
+// selectTools returns the tool catalog handed to the LLM for this turn. Read
+// tools are always available; write (mutating) tools only when the user's
+// message shows write intent.
+func selectTools(userMsg string) []map[string]any {
+	all := AllTools()
+	if writeIntentRe.MatchString(userMsg) {
+		return all
+	}
+	out := make([]map[string]any, 0, len(all))
+	for _, t := range all {
+		if name, _ := t["name"].(string); !writeTools[name] {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// confirmSummary builds a short human-readable description of a pending write
+// action, shown to the user on the Confirm/Cancel card.
+func confirmSummary(toolName string, raw json.RawMessage) string {
+	var a map[string]any
+	_ = json.Unmarshal(raw, &a)
+	s := func(k string) string { v, _ := a[k].(string); return v }
+	switch toolName {
+	case "create_custom_dashboard":
+		n := 0
+		if ws, ok := a["widgets"].([]any); ok {
+			n = len(ws)
+		}
+		return fmt.Sprintf("Create dashboard %q with %d widget(s)", s("dashboard_name"), n)
+	case "add_widget_to_dashboard":
+		wt := ""
+		if w, ok := a["widget"].(map[string]any); ok {
+			wt, _ = w["type"].(string)
+		}
+		return fmt.Sprintf("Add a %s widget to %q", wt, s("dashboard_name"))
+	case "remove_widget":
+		return fmt.Sprintf("Remove widget %q from %q", s("widget_title"), s("dashboard_name"))
+	case "create_alert":
+		return fmt.Sprintf("Create an alert on %s: %s %s %v", s("machine_id"), s("metric"), s("condition"), a["threshold"])
+	case "acknowledge_alert":
+		return fmt.Sprintf("Acknowledge alert %s", s("event_id"))
+	case "resolve_alert":
+		return fmt.Sprintf("Resolve alert %s", s("event_id"))
+	}
+	return "Perform " + toolName
 }
 
 func (ctrl *Controller) ListTools(c *fiber.Ctx) error {
@@ -255,14 +362,29 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 		return err
 	}
 
-	// Build Groq messages: system prompt + conversation history
+	// Build Groq messages: system prompt + conversation history.
+	// Window the history to the most recent turns so token usage stays bounded
+	// on long conversations — Groq's free-tier TPM budget is small and we resend
+	// the full system prompt + tool catalog on every call.
 	sp := systemPrompt
 	msgs := []groqMessage{{Role: "system", Content: &sp}}
-	msgs = append(msgs, buildGroqMessages(history)...)
+	conv := buildGroqMessages(history)
+	const maxHistoryTurns = 10
+	if len(conv) > maxHistoryTurns {
+		conv = conv[len(conv)-maxHistoryTurns:]
+	}
+	msgs = append(msgs, conv...)
 
-	// Agentic tool-use loop (max 5 iterations)
-	for i := 0; i < 5; i++ {
-		resp, err := callGroq(msgs)
+	// Expose write tools only when the user's message actually asks to change
+	// something. If create/add/remove tools are not in the catalog we hand the
+	// model, it physically cannot propose a mutation on a read-only request —
+	// far more reliable than asking it not to via the system prompt.
+	toolDefs := selectTools(body.Message)
+
+	// Agentic tool-use loop (max 4 iterations — real requests rarely need
+	// more than 2 sequential tool calls before a final answer).
+	for i := 0; i < 4; i++ {
+		resp, err := callGroq(msgs, toolDefs)
 		if err != nil {
 			return middleware.NewAppError(502, "AI_ERROR", fmt.Sprintf("Groq API error: %v", err))
 		}
@@ -272,7 +394,7 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 
 		choice := resp.Choices[0]
 
-			if choice.FinishReason != "tool_calls" || len(choice.Message.ToolCalls) == 0 {
+		if choice.FinishReason != "tool_calls" || len(choice.Message.ToolCalls) == 0 {
 			text := ""
 			if choice.Message.Content != nil {
 				text = *choice.Message.Content
@@ -291,6 +413,26 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 		// Execute each tool call
 		for _, tc := range choice.Message.ToolCalls {
 			toolInputRaw := json.RawMessage(tc.Function.Arguments)
+
+			// Mutating tools require explicit user confirmation. Instead of running
+			// them, persist a pending action the frontend renders with Confirm/Cancel
+			// buttons, then stop — the user drives execution via POST /api/ai/confirm.
+			if isWriteTool(tc.Function.Name) {
+				summary := confirmSummary(tc.Function.Name, toolInputRaw)
+				pending, _ := json.Marshal(map[string]any{
+					"status":   "pending_confirmation",
+					"toolName": tc.Function.Name,
+					"params":   toolInputRaw,
+					"summary":  summary,
+				})
+				tn := tc.Function.Name
+				pendingMsg, _ := ctrl.repo.AddMessage(ctx, body.ConversationID, "tool",
+					"Awaiting confirmation: "+summary, &tn, toolInputRaw, json.RawMessage(pending))
+				if pendingMsg != nil {
+					newMessages = append(newMessages, *pendingMsg)
+				}
+				return c.JSON(fiber.Map{"success": true, "data": newMessages})
+			}
 
 			result, dispatchErr := ctrl.dispatch(c, tc.Function.Name, toolInputRaw)
 			resultJSON, _ := json.Marshal(result)
@@ -322,7 +464,7 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 
 // ── Groq HTTP helpers ─────────────────────────────────────────────────────────
 
-func callGroq(messages []groqMessage) (*groqResponse, error) {
+func callGroq(messages []groqMessage, toolDefs []map[string]any) (*groqResponse, error) {
 	// Convert Anthropic-format tool schemas → OpenAI function tool format
 	toGroqTool := func(t map[string]any) map[string]any {
 		return map[string]any{
@@ -335,8 +477,8 @@ func callGroq(messages []groqMessage) (*groqResponse, error) {
 		}
 	}
 
-	tools := make([]map[string]any, 0, len(AllTools()))
-	for _, t := range AllTools() {
+	tools := make([]map[string]any, 0, len(toolDefs))
+	for _, t := range toolDefs {
 		tools = append(tools, toGroqTool(t))
 	}
 

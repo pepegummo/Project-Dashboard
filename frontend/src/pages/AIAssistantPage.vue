@@ -15,6 +15,40 @@ const loadingConvs = ref(false);
 const messagesRef = ref<HTMLElement | null>(null);
 const inputRef = ref<HTMLTextAreaElement | null>(null);
 const showTools = ref(false);
+const confirming = ref<string[]>([]); // message ids currently being confirmed/cancelled
+
+// Which messages should render: all non-tool messages, plus tool messages that
+// carry a renderable card (pending confirmation, cancelled, or an executed write).
+function isRenderable(m: AiMessage): boolean {
+  if (m.role !== 'tool') return true;
+  if (m.toolName === 'create_custom_dashboard') return true;
+  const r = m.toolResult as Record<string, any> | undefined;
+  if (!r) return false;
+  return r.status === 'pending_confirmation' || r.status === 'cancelled' || (r.success && !!r.summary);
+}
+
+async function confirmAction(message: AiMessage, confirm: boolean) {
+  if (confirming.value.includes(message.id)) return;
+  confirming.value.push(message.id);
+  try {
+    const updated = await api.confirmAiAction(message.id, confirm);
+    const idx = messages.value.findIndex(m => m.id === message.id);
+    if (idx !== -1 && updated.length) {
+      messages.value.splice(idx, 1, ...updated);
+    }
+  } catch (e: any) {
+    messages.value.push({
+      id: Date.now().toString(),
+      conversationId: activeConversation.value!.id,
+      role: 'assistant',
+      content: `Could not complete the action: ${e?.message ?? 'Unknown error'}`,
+      createdAt: new Date().toISOString(),
+    });
+  } finally {
+    confirming.value = confirming.value.filter(id => id !== message.id);
+    scrollToBottom();
+  }
+}
 
 onMounted(async () => {
   loadingConvs.value = true;
@@ -205,9 +239,12 @@ function handleKeydown(e: KeyboardEvent) {
         <!-- Message list -->
         <template v-else>
           <ChatBox
-            v-for="msg in messages.filter(m => m.role !== 'tool' || m.toolName === 'create_custom_dashboard')"
+            v-for="msg in messages.filter(isRenderable)"
             :key="msg.id"
             :message="msg"
+            :busy="confirming.includes(msg.id)"
+            @confirm="confirmAction($event, true)"
+            @cancel="confirmAction($event, false)"
           />
 
           <!-- Typing indicator -->
