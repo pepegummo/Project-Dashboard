@@ -119,7 +119,7 @@ var CreateDashboardTool = map[string]any{
 
 var PreviewAddWidgetTool = map[string]any{
 	"name":        "preview_add_widget",
-	"description": "Add a widget to the open dashboard preview plan instead of a real dashboard. Call this instead of add_widget_to_dashboard when a dashboard preview card is visible. No DB write — widget is added to the plan and created only when the user confirms.",
+	"description": "Add a widget to a NEW dashboard preview plan that is currently being composed (i.e. preview_dashboard was called this turn and the user has NOT yet confirmed). Do NOT use this for existing dashboards — use add_widget_to_dashboard instead. No DB write — widget is added to the plan and created only when the user confirms.",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"machine", "widget"},
@@ -132,7 +132,7 @@ var PreviewAddWidgetTool = map[string]any{
 
 var PreviewRemoveWidgetTool = map[string]any{
 	"name":        "preview_remove_widget",
-	"description": "Remove a widget from the open dashboard preview plan by title. Use instead of remove_widget when a preview card is open.",
+	"description": "Remove a widget from a NEW dashboard preview plan currently being composed (i.e. preview_dashboard was called this turn and not yet confirmed). Do NOT use this for existing dashboards — use remove_widget instead.",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"widget_title"},
@@ -144,7 +144,7 @@ var PreviewRemoveWidgetTool = map[string]any{
 
 var AddWidgetTool = map[string]any{
 	"name":        "add_widget_to_dashboard",
-	"description": "Add one widget to an existing dashboard (by name).",
+	"description": "Add one widget to an EXISTING dashboard (by name). Always use this when the dashboard already exists in the DB — never preview_add_widget for existing dashboards.",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"dashboard_name", "widget"},
