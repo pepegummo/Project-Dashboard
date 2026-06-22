@@ -78,7 +78,7 @@ const bucketLabel = computed(() => {
 // ─────────────────────────────────────────────────────────────────────────────
 // Data — historical (REST) and live (REST seed + WS append)
 // ─────────────────────────────────────────────────────────────────────────────
-const liveMode = ref(false);
+const liveMode = ref((props.widget.config?.liveMode as boolean) ?? false);
 
 const { mergedData, loading: histLoading } = useFieldSeries(
   machineId.value,

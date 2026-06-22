@@ -8,7 +8,7 @@ import PreviewCanvasCard from '@/components/ai/PreviewCanvasCard.vue';
 import CreatedCanvasCard from '@/components/ai/CreatedCanvasCard.vue';
 
 type CanvasCard =
-  | { kind: 'preview'; id: string; result: any }
+  | { kind: 'preview'; id: string; result: any; args: Record<string, unknown> }
   | { kind: 'created'; id: string; summary: string; dashboardId: string }
 
 const dashboardStore = useDashboardStore();
@@ -28,7 +28,7 @@ function showToast(msg: string) {
   toastMsg.value = msg;
   toastVisible.value = true;
   if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { toastVisible.value = false; }, 5000);
+  toastTimer = setTimeout(() => { toastVisible.value = false; }, 15000);
 }
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
@@ -56,15 +56,31 @@ async function sendMessage() {
       if (msg.toolName === 'preview_dashboard') {
         const r = msg.toolResult as any;
         if (r?.preview && r.dashboardName) {
-          canvasCards.value.push({ kind: 'preview', id: uid(), result: r });
+          const args = (msg.toolInput ?? {}) as Record<string, unknown>;
+          const existing = canvasCards.value.findIndex(c => c.kind === 'preview');
+          if (existing >= 0) {
+            canvasCards.value[existing] = { kind: 'preview', id: uid(), result: r, args };
+          } else {
+            canvasCards.value.push({ kind: 'preview', id: uid(), result: r, args });
+          }
         }
       }
-      // Dashboard created → load widgets onto canvas
-      if (msg.toolName === 'create_custom_dashboard') {
+      if (msg.toolName === 'preview_add_widget') {
+        const pw = msg.toolResult as any;
+        const previewCard = canvasCards.value.find(c => c.kind === 'preview') as any;
+        if (pw && previewCard) {
+          previewCard.result.widgets.push(pw);
+        }
+      }
+      if (msg.toolName === 'preview_remove_widget') {
         const r = msg.toolResult as any;
-        if (r?.success && r.dashboardId) {
-          canvasCards.value.push({ kind: 'created', id: uid(), summary: r.summary ?? '', dashboardId: r.dashboardId });
-          await dashboardStore.fetchDashboard(r.dashboardId);
+        const previewCard = canvasCards.value.find(c => c.kind === 'preview') as any;
+        if (r?.widgetTitle && previewCard) {
+          const rt = r.widgetTitle.toLowerCase();
+          const idx = previewCard.result.widgets.findIndex(
+            (w: any) => { const wt = (w.title ?? '').toLowerCase(); return wt === rt || wt.includes(rt) || rt.includes(wt); }
+          );
+          if (idx >= 0) previewCard.result.widgets.splice(idx, 1);
         }
       }
       // Locate widget → spotlight it on the canvas
@@ -85,8 +101,28 @@ async function sendMessage() {
 }
 
 async function confirmCreate(dashboardName: string) {
-  input.value = `Confirmed. Please create the dashboard "${dashboardName}".`;
-  await sendMessage();
+  const card = canvasCards.value.find(c => c.kind === 'preview') as any;
+  try {
+    processing.value = true;
+    const r = await api.executeAiTool('create_custom_dashboard', {
+      ...(card?.args ?? {}),
+      widgets: card?.result?.widgets ?? [],
+    }) as any;
+    if (r?.success && r.dashboardId) {
+      const idx = canvasCards.value.findIndex(c => c.kind === 'preview');
+      if (idx >= 0) canvasCards.value.splice(idx, 1, { kind: 'created', id: uid(), summary: r.summary ?? dashboardName, dashboardId: r.dashboardId });
+      await dashboardStore.fetchDashboard(r.dashboardId);
+    }
+  } catch (e: any) {
+    showToast(`Error: ${e?.message ?? 'Failed to create dashboard'}`);
+  } finally {
+    processing.value = false;
+  }
+}
+
+function removePreviewWidget(index: number) {
+  const card = canvasCards.value.find(c => c.kind === 'preview') as any;
+  if (card) card.result.widgets.splice(index, 1);
 }
 
 function scrollToBottom() {
@@ -126,6 +162,7 @@ function handleKeydown(e: KeyboardEvent) {
           v-if="card.kind === 'preview'"
           :result="(card as any).result"
           @confirm="confirmCreate"
+          @remove-widget="removePreviewWidget"
         />
         <CreatedCanvasCard
           v-else-if="card.kind === 'created'"

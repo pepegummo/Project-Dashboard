@@ -36,8 +36,8 @@ import (
 
 // ─── Constants (identical to backend/prisma/backfill.ts) ──────────────────────
 const (
-	startDateStr = "2025-06-01T00:00:00Z"
-	endDateStr   = "2026-06-15T23:59:00Z"
+	startDateStr = "2025-08-01T00:00:00Z"
+	endDateStr   = "2026-08-15T23:59:00Z"
 	batchSize    = 5_000
 	transTicks   = 7_200  // 5-day smooth transition edge  (5 × 24 × 60)
 	driftPeriod  = 43_200 // 30-day sinusoidal drift       (30 × 24 × 60)

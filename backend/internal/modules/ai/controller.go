@@ -26,7 +26,6 @@ Rules:
 2. Use exact machine names and dashboard names. If the user mentions a name directly (e.g. "CW-01"), use it as-is — only call get_machines or list_dashboards when the name is ambiguous or unknown.
 3. Do only what was asked; no extra chained actions.
 4. After any change confirm briefly in plain text.
-5. DASHBOARD CREATION IS ALWAYS 2 STEPS: (a) call preview_dashboard — list the plan and ask the user to confirm; (b) only call create_custom_dashboard after the user explicitly says yes/confirm/create. You must NEVER call create_custom_dashboard without a prior preview_dashboard in the same conversation turn.
 
 Tools:
 - get_machines: machine names, types, status, metric fields.
@@ -37,9 +36,10 @@ Tools:
 - get_factory_overview: full factory snapshot for broad questions.
 - locate_widget: find a widget on the canvas to spotlight it.
 - list_dashboards: existing dashboards.
-- preview_dashboard: STEP 1 — plan without creating. Call this, show plan, ask for confirmation. Stop and wait.
-- create_custom_dashboard: STEP 2 — only after user confirms. Never call this without step 1 first.
-- add_widget_to_dashboard / remove_widget: modify an existing dashboard.
+- preview_dashboard: pick the best template for the user's intent and call immediately. machine_overview for general/status, machine_production for output/count, machine_maintenance for health/alerts. Show the widget plan in plain text. The user will confirm via button — do not ask them to type confirm.
+- preview_add_widget: when a dashboard preview card is open and user wants to add a widget, call this instead of add_widget_to_dashboard. No DB write — widget is added to the preview plan and only created when the user confirms.
+- preview_remove_widget: when a dashboard preview card is open and user wants to remove a widget, call this instead of remove_widget. No DB write — widget is removed from the preview plan.
+- add_widget_to_dashboard / remove_widget: modify an existing real dashboard (use only when no preview card is open).
 - create_alert: threshold rule; use threshold_hi for between/outside.
 - acknowledge_alert / resolve_alert: need event_id from get_active_alerts.`
 
@@ -116,6 +116,14 @@ func (ctrl *Controller) dispatch(c *fiber.Ctx, toolName string, rawArgs json.Raw
 		return ctrl.tk.LocateWidget(ctx, user.OrgId, rawArgs)
 	case "preview_dashboard":
 		return ctrl.action.Preview(ctx, user.OrgId, rawArgs)
+	case "preview_add_widget":
+		return ctrl.action.PreviewAddWidget(ctx, user.OrgId, rawArgs)
+	case "preview_remove_widget":
+		var a struct {
+			WidgetTitle string `json:"widget_title"`
+		}
+		json.Unmarshal(rawArgs, &a)
+		return map[string]any{"removed": true, "widgetTitle": a.WidgetTitle}, nil
 	case "create_custom_dashboard":
 		return ctrl.action.Handle(ctx, user.OrgId, user.Sub, rawArgs)
 	case "add_widget_to_dashboard":
@@ -220,22 +228,6 @@ func (ctrl *Controller) AddMessage(c *fiber.Ctx) error {
 
 // ── Chat ──────────────────────────────────────────────────────────────────────
 
-// writeKeywords triggers full tool set; anything else gets read-only tools.
-var writeKeywords = []string{
-	"create", "add", "remove", "delete", "build", "make",
-	"alert", "acknowledge", "resolve", "widget", "dashboard",
-}
-
-func isWriteRequest(msg string) bool {
-	lower := strings.ToLower(msg)
-	for _, kw := range writeKeywords {
-		if strings.Contains(lower, kw) {
-			return true
-		}
-	}
-	return false
-}
-
 func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	if config.Env.GroqApiKey == "" {
 		return middleware.NewAppError(503, "AI_UNAVAILABLE", "GROQ_API_KEY is not configured")
@@ -272,24 +264,11 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	msgs := []groqMessage{{Role: "system", Content: &sp}}
 	msgs = append(msgs, buildGroqMessages(history)...)
 
-	// Fix 2: keyword-based tool selection — zero extra API call.
-	// Read queries get 8 tools (~350 tokens); write queries get all 15 (~700 tokens).
-	isWrite := isWriteRequest(body.Message)
-	tools := buildReadTools()
-	if isWrite {
-		tools = buildGroqTools()
-	}
+	tools := buildGroqTools()
 
 	// Agentic loop (max 5 iterations)
-	previewDone := false // true after preview_dashboard fires; next call is just "confirm?" text
 	for i := 0; i < 5; i++ {
-		// Strip tools when no more tool calls are expected:
-		// - read queries: after the first tool result, model only summarises
-		// - write queries: after preview_dashboard, model only asks for confirmation
 		callTools := tools
-		if (i > 0 && !isWrite) || previewDone {
-			callTools = nil
-		}
 
 		resp, err := callGroq(msgs, callTools)
 		if err != nil {
@@ -317,9 +296,6 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 		msgs = append(msgs, choice.Message)
 
 		for _, tc := range choice.Message.ToolCalls {
-			if tc.Function.Name == "preview_dashboard" {
-				previewDone = true
-			}
 			toolInputRaw := json.RawMessage(tc.Function.Arguments)
 
 			result, dispatchErr := ctrl.dispatch(c, tc.Function.Name, toolInputRaw)
@@ -365,20 +341,6 @@ func toGroqTool(t map[string]any) map[string]any {
 func buildGroqTools() []map[string]any {
 	out := make([]map[string]any, 0, len(AllTools()))
 	for _, t := range AllTools() {
-		out = append(out, toGroqTool(t))
-	}
-	return out
-}
-
-// buildReadTools returns the 8 read-only tools (read queries — ~350 tokens vs ~700).
-func buildReadTools() []map[string]any {
-	readOnly := []map[string]any{
-		GetMachinesTool, GetLatestTelemetryTool, GetTelemetryTrendTool,
-		GetDailyCountTool, GetActiveAlertsTool, GetFactoryOverviewTool,
-		ListDashboardsTool, LocateWidgetTool,
-	}
-	out := make([]map[string]any, 0, len(readOnly))
-	for _, t := range readOnly {
 		out = append(out, toGroqTool(t))
 	}
 	return out

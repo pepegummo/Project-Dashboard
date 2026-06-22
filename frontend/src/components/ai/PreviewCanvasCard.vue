@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { ClipboardList, CheckCircle2 } from 'lucide-vue-next';
+import { ClipboardList, CheckCircle2, Trash2 } from 'lucide-vue-next';
 import type { DashboardWidget, WidgetLayout } from '@/types';
 import GridStackCanvas from '@/components/dashboard/GridStackCanvas.vue';
 
@@ -17,7 +17,7 @@ const props = defineProps<{
   };
 }>();
 
-const emit = defineEmits<{ confirm: [dashboardName: string] }>();
+const emit = defineEmits<{ confirm: [dashboardName: string]; 'remove-widget': [index: number] }>();
 
 function flowLayout(index: number): WidgetLayout {
   const w = 6, h = 4, perRow = 2;
@@ -72,6 +72,20 @@ const gridHeight = computed(() => {
       :style="{ height: gridHeight + 'px' }"
     >
       <GridStackCanvas :widgets="previewWidgets" :readonly="true" />
+    </div>
+
+    <!-- Widget chip list with delete buttons -->
+    <div class="flex flex-wrap gap-1.5 mb-3">
+      <span
+        v-for="(w, i) in result.widgets"
+        :key="i"
+        class="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs bg-white/5 border border-white/10 text-white/70"
+      >
+        {{ w.title || w.type }}
+        <button class="hover:text-red-400 transition-colors ml-0.5" @click="emit('remove-widget', i)">
+          <Trash2 class="w-3 h-3" />
+        </button>
+      </span>
     </div>
 
     <button

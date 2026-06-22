@@ -11,9 +11,6 @@ import (
 	"iot-dashboard/internal/modules/dashboards"
 )
 
-// DashboardAction turns a parsed create_custom_dashboard tool call into real
-// dashboard + widget rows, reusing the existing dashboards.Service (no new SQL
-// for the inserts themselves — only a read to resolve machine names → UUIDs).
 type DashboardAction struct {
 	dash *dashboards.Service
 }
@@ -22,9 +19,7 @@ func NewDashboardAction() *DashboardAction {
 	return &DashboardAction{dash: dashboards.NewService()}
 }
 
-// ToolResult is the structured payload returned to the caller. It is fed back to
-// the LLM as the tool_result and surfaced to the frontend as msg.toolResult, so
-// the UI can render a confirmation card + link without ever showing raw JSON.
+// ToolResult is returned to the LLM and surfaced to the frontend as msg.toolResult.
 type ToolResult struct {
 	Success     bool   `json:"success"`
 	DashboardID string `json:"dashboardId,omitempty"`
@@ -32,111 +27,280 @@ type ToolResult struct {
 	Summary     string `json:"summary"`
 }
 
-// Handle parses the raw tool arguments emitted by the LLM and builds the dashboard.
-// rawArgs is the JSON from tool_use.input (Anthropic) / function_call.arguments (OpenAI),
-// or the `params` object when called directly via POST /api/ai/tools/execute.
+// ── Templates ─────────────────────────────────────────────────────────────────
+
+type templateWidgetDef struct {
+	widgetType     string
+	title          string
+	preferredField string // try this metric key first; falls back to first machine field
+	unit           string
+	min, max       float64
+}
+
+var dashboardTemplates = map[string][]templateWidgetDef{
+	"machine_overview": {
+		{widgetType: "kpi-card",   title: "Speed",       preferredField: "speed",      unit: "rpm"},
+		{widgetType: "gauge",      title: "Speed Gauge",  preferredField: "speed",      unit: "rpm", max: 3000},
+		{widgetType: "kpi-card",   title: "Throughput",   preferredField: "throughput"},
+		{widgetType: "line-chart", title: "Trend",        preferredField: "speed"},
+	},
+	"machine_production": {
+		{widgetType: "kpi-card",    title: "Count",  preferredField: "count"},
+		{widgetType: "line-chart",  title: "Output", preferredField: "throughput"},
+		{widgetType: "status-card", title: "Status"},
+	},
+	"machine_maintenance": {
+		{widgetType: "alarm-panel", title: "Alarms"},
+		{widgetType: "daily-count", title: "Downtime"},
+		{widgetType: "table",       title: "History"},
+	},
+}
+
+// expandTemplate converts a template definition + machine fields into concrete ToolWidgets.
+func expandTemplate(defs []templateWidgetDef, machineName string, fields []string) []ToolWidget {
+	fieldSet := make(map[string]bool, len(fields))
+	for _, f := range fields {
+		fieldSet[f] = true
+	}
+	firstField := ""
+	if len(fields) > 0 {
+		firstField = fields[0]
+	}
+
+	out := make([]ToolWidget, 0, len(defs))
+	for _, def := range defs {
+		w := ToolWidget{
+			Type:      def.widgetType,
+			Title:     def.title,
+			MachineID: machineName,
+			Unit:      def.unit,
+		}
+		if def.preferredField != "" {
+			if fieldSet[def.preferredField] {
+				w.Metric = def.preferredField
+			} else if firstField != "" {
+				w.Metric = firstField
+			}
+		}
+		if def.max != 0 {
+			max := def.max
+			w.Max = &max
+		}
+		if def.min != 0 {
+			min := def.min
+			w.Min = &min
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
+// getMachineFieldsForMachine returns numeric field keys for a machine UUID.
+func getMachineFieldsForMachine(ctx context.Context, machineID string) []string {
+	rows, err := database.Pool.Query(ctx,
+		`SELECT key FROM machine_fields WHERE machine_id = $1 AND data_type = 'number' ORDER BY key`,
+		machineID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var fields []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err == nil {
+			fields = append(fields, k)
+		}
+	}
+	return fields
+}
+
+func templateDashboardName(template, machine string) string {
+	label := strings.ReplaceAll(template, "_", " ")
+	words := strings.Fields(label)
+	for i, w := range words {
+		if len(w) > 0 {
+			words[i] = strings.ToUpper(w[:1]) + w[1:]
+		}
+	}
+	return strings.Join(words, " ") + " — " + machine
+}
+
+// Handle creates the dashboard from a template (or custom widget list). Called only after user confirms Preview.
 func (a *DashboardAction) Handle(ctx context.Context, orgID, userID string, rawArgs json.RawMessage) (ToolResult, error) {
-	var args CreateDashboardArgs
+	var args TemplateDashboardArgs
 	if err := json.Unmarshal(rawArgs, &args); err != nil {
 		return ToolResult{}, middleware.NewAppError(400, "VALIDATION_ERROR", "Malformed tool arguments")
 	}
-	if strings.TrimSpace(args.DashboardName) == "" || len(args.Widgets) == 0 {
-		return ToolResult{}, middleware.NewAppError(400, "VALIDATION_ERROR", "dashboard_name and at least one widget are required")
-	}
 
-	// 1. Create the dashboard shell via the existing service (private by default).
-	dash, err := a.dash.CreateDashboard(ctx, orgID, userID, args.DashboardName, nil, false, nil)
+	dashName := templateDashboardName(args.Template, args.Machine)
+	dash, err := a.dash.CreateDashboard(ctx, orgID, userID, dashName, nil, false, nil)
 	if err != nil {
 		return ToolResult{}, err
 	}
 
-	// 2. Resolve + persist each widget through the existing AddWidget path.
 	created := 0
-	for _, w := range args.Widgets {
-		if !isAllowedType(w.Type) {
-			continue // skip anything the LLM hallucinated outside the enum
-		}
 
-		widget := dashboards.Widget{
-			WidgetType: w.Type,
-			Layout:     flowLayout(created), // deterministic 2-col grid so widgets render immediately
-		}
-		if t := strings.TrimSpace(w.Title); t != "" {
-			widget.Title = &t
-		}
-
-		// Resolve the machine NAME the LLM used → internal UUID (org-scoped).
-		if name := strings.TrimSpace(w.MachineID); name != "" {
-			if id, ok := resolveMachineID(ctx, orgID, name); ok {
-				widget.MachineID = &id
+	if len(args.Widgets) > 0 {
+		// Use the custom widget list from the preview plan (may include user-added widgets).
+		for _, pw := range args.Widgets {
+			if !isAllowedType(pw.Type) {
+				continue
 			}
+			cfg := map[string]any{}
+			if pw.Metric != "" {
+				cfg["field"] = pw.Metric
+			}
+			if pw.Unit != "" {
+				cfg["unit"] = pw.Unit
+			}
+			if pw.Type == "gauge" {
+				if pw.Min != 0 {
+					cfg["min"] = pw.Min
+				}
+				if pw.Max != 0 {
+					cfg["max"] = pw.Max
+				}
+			}
+			if pw.Type == "line-chart" {
+				cfg["liveMode"] = true
+			}
+			cfgJSON, _ := json.Marshal(cfg)
+			mid := pw.MachineUUID
+			widget := dashboards.Widget{
+				WidgetType: pw.Type,
+				Layout:     flowLayout(created),
+				MachineID:  &mid,
+				Config:     cfgJSON,
+			}
+			if t := strings.TrimSpace(pw.Title); t != "" {
+				widget.Title = &t
+			}
+			if _, err := a.dash.AddWidget(ctx, dash.ID, orgID, widget); err != nil {
+				return ToolResult{}, err
+			}
+			created++
 		}
-
-		widget.Config = buildConfig(w)
-
-		if _, err := a.dash.AddWidget(ctx, dash.ID, orgID, widget); err != nil {
-			return ToolResult{}, err
+	} else {
+		// Template path.
+		defs, ok := dashboardTemplates[args.Template]
+		if !ok {
+			return ToolResult{}, middleware.NewAppError(400, "VALIDATION_ERROR", fmt.Sprintf("unknown template %q", args.Template))
 		}
-		created++
+		machineID, found := resolveMachineID(ctx, orgID, strings.TrimSpace(args.Machine))
+		if !found {
+			return ToolResult{}, middleware.NewAppError(404, "NOT_FOUND", fmt.Sprintf("machine %q not found", args.Machine))
+		}
+		fields := getMachineFieldsForMachine(ctx, machineID)
+		for _, w := range expandTemplate(defs, args.Machine, fields) {
+			if !isAllowedType(w.Type) {
+				continue
+			}
+			widget := dashboards.Widget{
+				WidgetType: w.Type,
+				Layout:     flowLayout(created),
+				MachineID:  &machineID,
+				Config:     buildConfig(w),
+			}
+			if t := strings.TrimSpace(w.Title); t != "" {
+				widget.Title = &t
+			}
+			if _, err := a.dash.AddWidget(ctx, dash.ID, orgID, widget); err != nil {
+				return ToolResult{}, err
+			}
+			created++
+		}
 	}
 
 	return ToolResult{
 		Success:     true,
 		DashboardID: dash.ID,
 		URL:         "/dashboards/" + dash.ID,
-		Summary:     fmt.Sprintf("Created dashboard %q with %d widget(s).", args.DashboardName, created),
+		Summary:     fmt.Sprintf("Created %q with %d widget(s).", dashName, created),
 	}, nil
 }
 
-// Preview builds the same plan as Handle but writes nothing to the database.
-// It resolves machine names so the preview reflects what would actually be created.
+// PreviewAddWidget validates a widget spec and returns a PreviewWidget without any DB write.
+func (a *DashboardAction) PreviewAddWidget(ctx context.Context, orgID string, rawArgs json.RawMessage) (PreviewWidget, error) {
+	var args struct {
+		Machine string     `json:"machine"`
+		Widget  ToolWidget `json:"widget"`
+	}
+	if err := json.Unmarshal(rawArgs, &args); err != nil {
+		return PreviewWidget{}, middleware.NewAppError(400, "VALIDATION_ERROR", "Malformed tool arguments")
+	}
+	if !isAllowedType(args.Widget.Type) {
+		return PreviewWidget{}, middleware.NewAppError(400, "VALIDATION_ERROR", fmt.Sprintf("unknown widget type %q", args.Widget.Type))
+	}
+	machineID, found := resolveMachineID(ctx, orgID, strings.TrimSpace(args.Machine))
+	if !found {
+		return PreviewWidget{}, middleware.NewAppError(404, "NOT_FOUND", fmt.Sprintf("machine %q not found", args.Machine))
+	}
+	pw := PreviewWidget{
+		Type:        args.Widget.Type,
+		Title:       args.Widget.Title,
+		Machine:     args.Machine,
+		MachineUUID: machineID,
+		Metric:      strings.TrimSpace(args.Widget.Metric),
+		Unit:        args.Widget.Unit,
+	}
+	if args.Widget.Min != nil {
+		pw.Min = *args.Widget.Min
+	}
+	if args.Widget.Max != nil {
+		pw.Max = *args.Widget.Max
+	}
+	return pw, nil
+}
+
+// Preview builds the dashboard plan without any DB writes.
 func (a *DashboardAction) Preview(ctx context.Context, orgID string, rawArgs json.RawMessage) (PreviewDashboardResult, error) {
-	var args CreateDashboardArgs
+	var args TemplateDashboardArgs
 	if err := json.Unmarshal(rawArgs, &args); err != nil {
 		return PreviewDashboardResult{}, middleware.NewAppError(400, "VALIDATION_ERROR", "Malformed tool arguments")
 	}
-	if strings.TrimSpace(args.DashboardName) == "" || len(args.Widgets) == 0 {
-		return PreviewDashboardResult{}, middleware.NewAppError(400, "VALIDATION_ERROR", "dashboard_name and at least one widget are required")
+	defs, ok := dashboardTemplates[args.Template]
+	if !ok {
+		return PreviewDashboardResult{}, middleware.NewAppError(400, "VALIDATION_ERROR", fmt.Sprintf("unknown template %q", args.Template))
 	}
 
-	var widgets []PreviewWidget
-	for _, w := range args.Widgets {
-		if !isAllowedType(w.Type) {
-			continue
-		}
+	machineID, found := resolveMachineID(ctx, orgID, strings.TrimSpace(args.Machine))
+	if !found {
+		return PreviewDashboardResult{}, middleware.NewAppError(404, "NOT_FOUND", fmt.Sprintf("machine %q not found", args.Machine))
+	}
+
+	fields := getMachineFieldsForMachine(ctx, machineID)
+	widgets := expandTemplate(defs, args.Machine, fields)
+	dashName := templateDashboardName(args.Template, args.Machine)
+
+	previewWidgets := make([]PreviewWidget, 0, len(widgets))
+	for _, w := range widgets {
 		pw := PreviewWidget{
-			Type:   w.Type,
-			Title:  w.Title,
-			Metric: w.Metric,
-			Unit:   w.Unit,
-		}
-		if w.Min != nil {
-			pw.Min = *w.Min
+			Type:        w.Type,
+			Title:       w.Title,
+			Machine:     args.Machine,
+			MachineUUID: machineID,
+			Metric:      w.Metric,
+			Unit:        w.Unit,
 		}
 		if w.Max != nil {
 			pw.Max = *w.Max
 		}
-		// Use the human name the LLM supplied; verify it exists but don't store UUID.
-		machineName := strings.TrimSpace(w.MachineID)
-		if machineName != "" {
-			pw.Machine = machineName
-			if id, ok := resolveMachineID(ctx, orgID, machineName); ok {
-				pw.MachineUUID = id
-			}
+		if w.Min != nil {
+			pw.Min = *w.Min
 		}
-		widgets = append(widgets, pw)
+		previewWidgets = append(previewWidgets, pw)
 	}
 
 	return PreviewDashboardResult{
 		Preview:       true,
-		DashboardName: args.DashboardName,
-		Widgets:       widgets,
-		Summary:       fmt.Sprintf("Will create dashboard %q with %d widget(s).", args.DashboardName, len(widgets)),
+		DashboardName: dashName,
+		Widgets:       previewWidgets,
+		Summary:       fmt.Sprintf("Will create %q with %d widget(s).", dashName, len(previewWidgets)),
 	}, nil
 }
 
-// flowLayout positions widgets in a 12-col GridStack as a 2-column grid
-// (w:6 h:4), matching the size the editor uses when adding a widget by hand.
+// ── Layout & config helpers ───────────────────────────────────────────────────
+
 func flowLayout(index int) json.RawMessage {
 	const w, h, cols = 6, 4, 12
 	perRow := cols / w
@@ -146,8 +310,6 @@ func flowLayout(index int) json.RawMessage {
 	return b
 }
 
-// buildConfig maps the tool's flat metric/min/max/unit onto the WidgetConfig shape
-// the frontend widgets read (config.field is the metric key).
 func buildConfig(w ToolWidget) json.RawMessage {
 	cfg := map[string]any{}
 	if m := strings.TrimSpace(w.Metric); m != "" {
@@ -163,6 +325,9 @@ func buildConfig(w ToolWidget) json.RawMessage {
 		if w.Max != nil {
 			cfg["max"] = *w.Max
 		}
+	}
+	if w.Type == "line-chart" {
+		cfg["liveMode"] = true
 	}
 	b, _ := json.Marshal(cfg)
 	return b
@@ -181,10 +346,9 @@ type machineInfo struct {
 	Name   string   `json:"name"`
 	Type   string   `json:"type"`
 	Status string   `json:"status"`
-	Fields []string `json:"fields"` // just field keys, e.g. ["temperature","vibration"]
+	Fields []string `json:"fields"`
 }
 
-// getMachinesForOrg returns all machines with their numeric field keys for the AI to use.
 func getMachinesForOrg(ctx context.Context, orgID string) ([]machineInfo, error) {
 	rows, err := database.Pool.Query(ctx, `
 		SELECT m.name, m.type, m.status,
@@ -216,9 +380,6 @@ func getMachinesForOrg(ctx context.Context, orgID string) ([]machineInfo, error)
 	return machines, nil
 }
 
-// resolveMachineID does a case-insensitive, org-scoped name lookup.
-// Tries exact match first; falls back to contains so "CW-01" resolves
-// "Checkweigher CW-01" without requiring the full machine name.
 func resolveMachineID(ctx context.Context, orgID, name string) (string, bool) {
 	var id string
 	err := database.Pool.QueryRow(ctx, `

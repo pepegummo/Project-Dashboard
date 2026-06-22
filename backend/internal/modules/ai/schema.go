@@ -4,8 +4,7 @@ var allowedWidgetTypes = []string{
 	"line-chart", "gauge", "kpi-card", "status-card", "table", "alarm-panel", "daily-count",
 }
 
-// widgetItemSchema is the per-widget object shared by create/preview tools.
-// ponytail: enum removed from nested items.type — Groq's parser fails on enums inside array items schemas.
+// widgetItemSchema is used by add_widget_to_dashboard only.
 var widgetItemSchema = map[string]any{
 	"type":     "object",
 	"required": []string{"type"},
@@ -20,16 +19,14 @@ var widgetItemSchema = map[string]any{
 	},
 }
 
-var dashboardWidgetsInput = map[string]any{
-	"type": "object",
+// templateDashboardInput is the minimal schema for template-based dashboard creation.
+var templateDashboardInput = map[string]any{
+	"type":     "object",
+	"required": []string{"machine", "template"},
 	"properties": map[string]any{
-		"dashboard_name": map[string]any{"type": "string"},
-		"widgets": map[string]any{
-			"type":  "array",
-			"items": widgetItemSchema,
-		},
+		"machine":  map[string]any{"type": "string"},
+		"template": map[string]any{"type": "string", "enum": []string{"machine_overview", "machine_production", "machine_maintenance"}},
 	},
-	"required": []string{"dashboard_name", "widgets"},
 }
 
 var GetMachinesTool = map[string]any{
@@ -110,14 +107,39 @@ var LocateWidgetTool = map[string]any{
 
 var PreviewDashboardTool = map[string]any{
 	"name":         "preview_dashboard",
-	"description":  "Plan a dashboard WITHOUT creating it. Always call this first; ask user to confirm before calling create_custom_dashboard.",
-	"input_schema": dashboardWidgetsInput,
+	"description":  "STEP 1: Preview a dashboard from a template. Always call first. Show plan, ask user to confirm. Do NOT call create_custom_dashboard in the same turn.",
+	"input_schema": templateDashboardInput,
 }
 
 var CreateDashboardTool = map[string]any{
 	"name":         "create_custom_dashboard",
-	"description":  "Create a new dashboard. Only call after the user confirms the preview_dashboard plan.",
-	"input_schema": dashboardWidgetsInput,
+	"description":  "STEP 2: Create the dashboard. Only after user confirms the preview.",
+	"input_schema": templateDashboardInput,
+}
+
+var PreviewAddWidgetTool = map[string]any{
+	"name":        "preview_add_widget",
+	"description": "Add a widget to the open dashboard preview plan instead of a real dashboard. Call this instead of add_widget_to_dashboard when a dashboard preview card is visible. No DB write — widget is added to the plan and created only when the user confirms.",
+	"input_schema": map[string]any{
+		"type":     "object",
+		"required": []string{"machine", "widget"},
+		"properties": map[string]any{
+			"machine": map[string]any{"type": "string"},
+			"widget":  widgetItemSchema,
+		},
+	},
+}
+
+var PreviewRemoveWidgetTool = map[string]any{
+	"name":        "preview_remove_widget",
+	"description": "Remove a widget from the open dashboard preview plan by title. Use instead of remove_widget when a preview card is open.",
+	"input_schema": map[string]any{
+		"type":     "object",
+		"required": []string{"widget_title"},
+		"properties": map[string]any{
+			"widget_title": map[string]any{"type": "string"},
+		},
+	},
 }
 
 var AddWidgetTool = map[string]any{
@@ -201,7 +223,8 @@ func AllTools() []map[string]any {
 		ListDashboardsTool,
 		LocateWidgetTool,
 		PreviewDashboardTool,
-		CreateDashboardTool,
+		PreviewAddWidgetTool,
+		PreviewRemoveWidgetTool,
 		AddWidgetTool,
 		RemoveWidgetTool,
 		CreateAlertTool,
@@ -234,9 +257,11 @@ type ToolWidget struct {
 	Unit      string   `json:"unit"`
 }
 
-type CreateDashboardArgs struct {
-	DashboardName string       `json:"dashboard_name"`
-	Widgets       []ToolWidget `json:"widgets"`
+// TemplateDashboardArgs is the minimal payload for preview/create via template.
+type TemplateDashboardArgs struct {
+	Machine  string          `json:"machine"`
+	Template string          `json:"template"`
+	Widgets  []PreviewWidget `json:"widgets,omitempty"` // optional override from preview plan
 }
 
 type MachineArg struct {
