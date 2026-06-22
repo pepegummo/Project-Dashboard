@@ -4,6 +4,7 @@ import { Sparkles, Send, Loader2, Bot, Save, Plus } from 'lucide-vue-next';
 import { api } from '@/services/api.service';
 import { useDashboardStore } from '@/stores/dashboard.store';
 import { useMachineStore } from '@/stores/machine.store';
+import { useTelemetryStore } from '@/stores/telemetry.store';
 import GridStackCanvas from '@/components/dashboard/GridStackCanvas.vue';
 import WidgetToolbox from '@/components/dashboard/WidgetToolbox.vue';
 import WidgetConfigModal from '@/components/dashboard/WidgetConfigModal.vue';
@@ -17,6 +18,7 @@ type CanvasCard =
 
 const dashboardStore = useDashboardStore();
 const machineStore = useMachineStore();
+const telemetryStore = useTelemetryStore();
 const canvasCards = ref<CanvasCard[]>([]);
 const highlightId = ref<string | undefined>(undefined);
 const processing = ref(false);
@@ -110,6 +112,22 @@ function updatePreviewWidget(index: number, data: any) {
   if (card) Object.assign(card.result.widgets[index], data);
 }
 
+// Summarize the on-screen preview (widgets + live values) so the AI can answer
+// questions about what the user is looking at.
+function buildDashboardContext(): string {
+  const card = canvasCards.value.find(c => c.kind === 'preview') as any;
+  const widgets = card?.result?.widgets ?? [];
+  if (!widgets.length) return '';
+  const lines = widgets.map((w: any) => {
+    const val = w.machineUuid && w.metric
+      ? telemetryStore.getFieldValue(w.machineUuid, w.metric)
+      : undefined;
+    const shown = val !== undefined ? ` = ${val}${w.unit ?? ''}` : '';
+    return `- ${w.type} "${w.title}" — machine ${w.machine}, metric ${w.metric}${shown}`;
+  });
+  return `Current dashboard preview "${card.result.dashboardName}" on screen:\n${lines.join('\n')}`;
+}
+
 // ── Chat ────────────────────────────────────────────────────────────────────
 
 async function sendMessage() {
@@ -124,7 +142,7 @@ async function sendMessage() {
       conversationId.value = conv.id;
     }
 
-    const messages = await api.chat(conversationId.value!, text);
+    const messages = await api.chat(conversationId.value!, text, buildDashboardContext());
 
     for (const msg of messages) {
       if (msg.role === 'assistant' && msg.content?.trim()) {

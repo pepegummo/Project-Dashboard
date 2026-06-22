@@ -28,6 +28,7 @@ Rules:
 4. After any change confirm briefly in plain text.
 5. preview_add_widget and preview_remove_widget are ONLY for a new dashboard being composed this turn (after preview_dashboard was called and not yet confirmed). For any existing dashboard use add_widget_to_dashboard / remove_widget directly.
 6. preview_dashboard: pick machine_overview for general/status, machine_production for output/count, machine_maintenance for health/alerts. The user confirms via button — do not ask them to type confirm.
+7. If the answer is already in the provided dashboard context (widgets/values on screen), answer from it directly — do not call a tool.
 /no_think`
 
 // ── Groq / OpenAI-compatible API types ───────────────────────────────────────
@@ -225,6 +226,7 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	var body struct {
 		ConversationID string `json:"conversationId"`
 		Message        string `json:"message"`
+		Context        string `json:"context"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return middleware.NewAppError(400, "VALIDATION_ERROR", "Invalid request body")
@@ -252,6 +254,13 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	sp := systemPrompt
 	msgs := []groqMessage{{Role: "system", Content: &sp}}
 	msgs = append(msgs, buildGroqMessages(history)...)
+	// Inject the on-screen dashboard preview AFTER history so the current state is
+	// the last thing the model sees — recency makes it win over any stale earlier
+	// turn that named the old config (e.g. a metric the user has since changed).
+	if body.Context != "" {
+		ctxContent := "Authoritative current dashboard state (overrides anything said earlier):\n" + body.Context
+		msgs = append(msgs, groqMessage{Role: "system", Content: &ctxContent})
+	}
 
 	// Send only the tools this message needs: read tools always, mutating tools
 	// for editors, builder tools only when the message shows build/edit intent.
