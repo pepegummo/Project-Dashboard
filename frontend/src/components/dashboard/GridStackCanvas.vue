@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue';
+import { ref, onMounted, onUnmounted, watch, nextTick, toRef } from 'vue';
 import { GridStack } from 'gridstack';
 import 'gridstack/dist/gridstack.min.css';
 import type { DashboardWidget, WidgetLayout } from '@/types';
@@ -8,7 +8,11 @@ import { createApp, type App } from 'vue';
 import { getActivePinia } from 'pinia';
 import 'gridstack/dist/gridstack-extra.min.css';
 
-const props = defineProps<{ widgets: DashboardWidget[] }>();
+const props = withDefaults(defineProps<{
+  widgets: DashboardWidget[];
+  readonly?: boolean;
+  highlightedId?: string;
+}>(), { readonly: false });
 const emit = defineEmits<{
   'layout-change': [layouts: Array<{ id: string; layout: WidgetLayout }>];
   'edit-widget': [widget: DashboardWidget];
@@ -39,15 +43,14 @@ onMounted(async () => {
 
   grid = GridStack.init({
   column: 12,
-  // ตั้งค่าสำหรับเวอร์ชั่นใหม่
-  columnOpts: { 
-    breakpointForWindow: true, 
-    breakpoints: [{ w: 768, c: 1 }] 
+  columnOpts: {
+    breakpointForWindow: true,
+    breakpoints: [{ w: 768, c: 1 }]
   },
-  
   cellHeight: 80,
   margin: 8,
   animate: true,
+  staticGrid: props.readonly,
   resizable: { handles: 'se' },
   handle: '.gs-drag-handle',
 }, gridRef.value);
@@ -97,8 +100,10 @@ function addWidgetToGrid(widget: DashboardWidget) {
   // Mount widget app, sharing the parent's Pinia instance
   const app = createApp(WidgetWrapper, {
     widget,
-    onEdit: () => emit('edit-widget', widget),
-    onRemove: () => emit('remove-widget', widget.id),
+    ...(props.readonly ? {} : {
+      onEdit: () => emit('edit-widget', widget),
+      onRemove: () => emit('remove-widget', widget.id),
+    }),
   });
   if (pinia) app.use(pinia);
   app.mount(content);
@@ -132,6 +137,21 @@ function removeWidgetFromGrid(widgetId: string) {
     }
   }
 }
+
+// Spotlight: when highlightedId changes, add animation class to the target cell
+watch(
+  () => props.highlightedId,
+  (id) => {
+    if (!id || !gridRef.value) return;
+    const el = gridRef.value.querySelector(`[gs-id="${id}"]`) as HTMLElement | null;
+    if (!el) return;
+    el.classList.remove('widget-highlight');
+    // Force reflow to restart animation if same widget is highlighted again
+    void el.offsetWidth;
+    el.classList.add('widget-highlight');
+    setTimeout(() => el.classList.remove('widget-highlight'), 3200);
+  },
+);
 
 // Deep watch handles additions, removals, and config edits
 watch(

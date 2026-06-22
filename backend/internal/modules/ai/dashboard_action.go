@@ -88,6 +88,53 @@ func (a *DashboardAction) Handle(ctx context.Context, orgID, userID string, rawA
 	}, nil
 }
 
+// Preview builds the same plan as Handle but writes nothing to the database.
+// It resolves machine names so the preview reflects what would actually be created.
+func (a *DashboardAction) Preview(ctx context.Context, orgID string, rawArgs json.RawMessage) (PreviewDashboardResult, error) {
+	var args CreateDashboardArgs
+	if err := json.Unmarshal(rawArgs, &args); err != nil {
+		return PreviewDashboardResult{}, middleware.NewAppError(400, "VALIDATION_ERROR", "Malformed tool arguments")
+	}
+	if strings.TrimSpace(args.DashboardName) == "" || len(args.Widgets) == 0 {
+		return PreviewDashboardResult{}, middleware.NewAppError(400, "VALIDATION_ERROR", "dashboard_name and at least one widget are required")
+	}
+
+	var widgets []PreviewWidget
+	for _, w := range args.Widgets {
+		if !isAllowedType(w.Type) {
+			continue
+		}
+		pw := PreviewWidget{
+			Type:   w.Type,
+			Title:  w.Title,
+			Metric: w.Metric,
+			Unit:   w.Unit,
+		}
+		if w.Min != nil {
+			pw.Min = *w.Min
+		}
+		if w.Max != nil {
+			pw.Max = *w.Max
+		}
+		// Use the human name the LLM supplied; verify it exists but don't store UUID.
+		machineName := strings.TrimSpace(w.MachineID)
+		if machineName != "" {
+			pw.Machine = machineName
+			if id, ok := resolveMachineID(ctx, orgID, machineName); ok {
+				pw.MachineUUID = id
+			}
+		}
+		widgets = append(widgets, pw)
+	}
+
+	return PreviewDashboardResult{
+		Preview:       true,
+		DashboardName: args.DashboardName,
+		Widgets:       widgets,
+		Summary:       fmt.Sprintf("Will create dashboard %q with %d widget(s).", args.DashboardName, len(widgets)),
+	}, nil
+}
+
 // flowLayout positions widgets in a 12-col GridStack as a 2-column grid
 // (w:6 h:4), matching the size the editor uses when adding a widget by hand.
 func flowLayout(index int) json.RawMessage {
@@ -170,8 +217,8 @@ func getMachinesForOrg(ctx context.Context, orgID string) ([]machineInfo, error)
 }
 
 // resolveMachineID does a case-insensitive, org-scoped name lookup.
-// machines → production_lines → factories carries the organization_id.
-// Returns (id, true) on a unique match.
+// Tries exact match first; falls back to contains so "CW-01" resolves
+// "Checkweigher CW-01" without requiring the full machine name.
 func resolveMachineID(ctx context.Context, orgID, name string) (string, bool) {
 	var id string
 	err := database.Pool.QueryRow(ctx, `
@@ -179,7 +226,11 @@ func resolveMachineID(ctx context.Context, orgID, name string) (string, bool) {
 		FROM machines m
 		JOIN production_lines pl ON pl.id = m.production_line_id
 		JOIN factories f ON f.id = pl.factory_id
-		WHERE f.organization_id = $1 AND LOWER(m.name) = LOWER($2)
+		WHERE f.organization_id = $1
+		  AND LOWER(m.name) LIKE '%' || LOWER($2) || '%'
+		ORDER BY
+		  CASE WHEN LOWER(m.name) = LOWER($2) THEN 0 ELSE 1 END,
+		  m.name
 		LIMIT 1
 	`, orgID, name).Scan(&id)
 	if err != nil {

@@ -1,254 +1,191 @@
 package ai
 
-// allowedWidgetTypes is the single source of truth for which widgets the AI may
-// place on a dashboard. These strings MUST stay in sync with the frontend
-// WidgetType union (frontend/src/types/index.ts) and the widgetComponents map in
-// useWidgetComponents.ts, so anything the LLM emits renders with no extra mapping.
 var allowedWidgetTypes = []string{
 	"line-chart", "gauge", "kpi-card", "status-card", "table", "alarm-panel", "daily-count",
 }
 
-// CreateDashboardTool is the JSON schema handed to the LLM (Anthropic `tools` /
-// OpenAI `functions`). input_schema is plain JSON Schema. Defining it here keeps
-// the enum from drifting away from the widgets we can actually render.
-var CreateDashboardTool = map[string]any{
-	"name": "create_custom_dashboard",
-	"description": "Create a new dashboard composed of pre-built widgets based on the " +
-		"user's monitoring request. Use the machine's human name in `machine_id`; the " +
-		"backend resolves it to an internal id. Choose the widget `type` that best fits " +
-		"the request (line-chart for trends, gauge for a single bounded metric, kpi-card " +
-		"for a headline number, daily-count for production totals).",
-	"input_schema": map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"dashboard_name": map[string]any{
-				"type":        "string",
-				"description": "Concise title for the dashboard, e.g. 'CNC Temperature Monitor'.",
-			},
-			"widgets": map[string]any{
-				"type":        "array",
-				"minItems":    1,
-				"description": "Widgets to place on the dashboard.",
-				"items": map[string]any{
-					"type":     "object",
-					"required": []string{"type"},
-					"properties": map[string]any{
-						"type": map[string]any{
-							"type":        "string",
-							"enum":        allowedWidgetTypes,
-							"description": "Which pre-built widget component to render.",
-						},
-						"title": map[string]any{
-							"type":        "string",
-							"description": "Optional widget header. Defaults to '<machine> — <metric>'.",
-						},
-						"machine_id": map[string]any{
-							"type":        "string",
-							"description": "Machine name as the user referred to it (e.g. 'CNC Mill 01'). Optional for alarm-panel.",
-						},
-						"metric": map[string]any{
-							"type":        "string",
-							"description": "Telemetry field key to display, e.g. 'temperature', 'vibration', 'speed'.",
-						},
-						"min":  map[string]any{"type": "number", "description": "Gauge lower bound (gauge only)."},
-						"max":  map[string]any{"type": "number", "description": "Gauge upper bound (gauge only)."},
-						"unit": map[string]any{"type": "string", "description": "Display unit, e.g. '°C'."},
-					},
-				},
-			},
+// widgetItemSchema is the per-widget object shared by create/preview tools.
+// ponytail: enum removed from nested items.type — Groq's parser fails on enums inside array items schemas.
+var widgetItemSchema = map[string]any{
+	"type":     "object",
+	"required": []string{"type"},
+	"properties": map[string]any{
+		"type":       map[string]any{"type": "string"},
+		"title":      map[string]any{"type": "string"},
+		"machine_id": map[string]any{"type": "string"},
+		"metric":     map[string]any{"type": "string"},
+		"min":        map[string]any{"type": "number"},
+		"max":        map[string]any{"type": "number"},
+		"unit":       map[string]any{"type": "string"},
+	},
+}
+
+var dashboardWidgetsInput = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"dashboard_name": map[string]any{"type": "string"},
+		"widgets": map[string]any{
+			"type":  "array",
+			"items": widgetItemSchema,
 		},
-		"required": []string{"dashboard_name", "widgets"},
 	},
+	"required": []string{"dashboard_name", "widgets"},
 }
 
-// ToolWidget is one element of the `widgets` array as emitted by the LLM.
-type ToolWidget struct {
-	Type      string   `json:"type"`
-	Title     string   `json:"title"`
-	MachineID string   `json:"machine_id"` // human name; resolved to a UUID server-side
-	Metric    string   `json:"metric"`
-	Min       *float64 `json:"min"`
-	Max       *float64 `json:"max"`
-	Unit      string   `json:"unit"`
-}
-
-// GetMachinesTool returns all machines with their names and numeric fields.
-// The AI must call this before create_custom_dashboard so it can use exact machine names.
 var GetMachinesTool = map[string]any{
-	"name":        "get_machines",
-	"description": "Get the list of all machines with their exact names, types, current status, and available numeric metric field keys. Use this to answer questions about machines, and to obtain correct machine names/metrics when the user has asked to build a dashboard.",
-	"input_schema": map[string]any{
-		"type":       "object",
-		"properties": map[string]any{},
-	},
+	"name":         "get_machines",
+	"description":  "List all machines with their names, types, status, and available metric fields.",
+	"input_schema": map[string]any{"type": "object", "properties": map[string]any{}},
 }
-
-// CreateDashboardArgs is the full argument object for the create_custom_dashboard tool.
-type CreateDashboardArgs struct {
-	DashboardName string       `json:"dashboard_name"`
-	Widgets       []ToolWidget `json:"widgets"`
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Category A — read telemetry & alerts
-// ─────────────────────────────────────────────────────────────────────────────
 
 var GetLatestTelemetryTool = map[string]any{
 	"name":        "get_latest_telemetry",
-	"description": "Get the most recent telemetry values (current readings) for one machine. Use when the user asks for the current value of a metric or 'what is X right now'.",
+	"description": "Get current sensor readings for one machine.",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"machine_id"},
 		"properties": map[string]any{
-			"machine_id": map[string]any{"type": "string", "description": "Machine name as the user refers to it, e.g. 'Checkweigher CW-01'."},
+			"machine_id": map[string]any{"type": "string"},
 		},
 	},
 }
 
 var GetTelemetryTrendTool = map[string]any{
 	"name":        "get_telemetry_trend",
-	"description": "Get the average / min / max of one metric over a time range. Use for questions about trends or how a value has behaved over the last hour/day/week.",
+	"description": "Get avg/min/max of one metric over a time window (5m…30d).",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"machine_id", "metric"},
 		"properties": map[string]any{
-			"machine_id": map[string]any{"type": "string", "description": "Machine name, e.g. 'Temp Sensor TS-01'."},
-			"metric":     map[string]any{"type": "string", "description": "Telemetry field key, e.g. 'temp', 'weight', 'vibration'."},
-			"time_range": map[string]any{"type": "string", "description": "One of 5m, 15m, 30m, 1h, 6h, 24h, 7d, 15d, 30d. Defaults to 1h.", "enum": []string{"5m", "15m", "30m", "1h", "6h", "24h", "7d", "15d", "30d"}},
+			"machine_id": map[string]any{"type": "string"},
+			"metric":     map[string]any{"type": "string"},
+			"time_range": map[string]any{"type": "string", "enum": []string{"5m", "15m", "30m", "1h", "6h", "24h", "7d", "15d", "30d"}},
 		},
 	},
 }
 
 var GetActiveAlertsTool = map[string]any{
-	"name":        "get_active_alerts",
-	"description": "List all currently open (unresolved) alert events for the organization. Each item includes an event id you can pass to acknowledge_alert or resolve_alert.",
-	"input_schema": map[string]any{
-		"type":       "object",
-		"properties": map[string]any{},
-	},
+	"name":         "get_active_alerts",
+	"description":  "List all open alert events (each has an event_id for ack/resolve).",
+	"input_schema": map[string]any{"type": "object", "properties": map[string]any{}},
 }
 
 var GetDailyCountTool = map[string]any{
 	"name":        "get_daily_count",
-	"description": "Get the number of telemetry records (production count) per day for one machine. Use for 'how much did X produce' questions.",
+	"description": "Get per-day production count for one machine.",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"machine_id"},
 		"properties": map[string]any{
-			"machine_id": map[string]any{"type": "string", "description": "Machine name."},
-			"days":       map[string]any{"type": "integer", "description": "How many days back to include. Defaults to 7."},
+			"machine_id": map[string]any{"type": "string"},
+			"days":       map[string]any{"type": "integer"},
 		},
 	},
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Category B — manage existing dashboards
-// ─────────────────────────────────────────────────────────────────────────────
+var GetFactoryOverviewTool = map[string]any{
+	"name":         "get_factory_overview",
+	"description":  "Snapshot of every machine: status, latest values, open-alert count. Use for broad 'what's wrong' questions.",
+	"input_schema": map[string]any{"type": "object", "properties": map[string]any{}},
+}
 
 var ListDashboardsTool = map[string]any{
-	"name":        "list_dashboards",
-	"description": "List the user's existing dashboards with their names and widget counts. Call this before add_widget_to_dashboard or remove_widget if you are unsure of the exact dashboard name.",
+	"name":         "list_dashboards",
+	"description":  "List existing dashboards with names and widget counts.",
+	"input_schema": map[string]any{"type": "object", "properties": map[string]any{}},
+}
+
+var LocateWidgetTool = map[string]any{
+	"name":        "locate_widget",
+	"description": "Find a widget on the canvas by title, metric, or machine name so the UI can spotlight it.",
 	"input_schema": map[string]any{
-		"type":       "object",
-		"properties": map[string]any{},
+		"type":     "object",
+		"required": []string{"widget_title"},
+		"properties": map[string]any{
+			"widget_title":   map[string]any{"type": "string"},
+			"dashboard_name": map[string]any{"type": "string"},
+		},
 	},
+}
+
+var PreviewDashboardTool = map[string]any{
+	"name":         "preview_dashboard",
+	"description":  "Plan a dashboard WITHOUT creating it. Always call this first; ask user to confirm before calling create_custom_dashboard.",
+	"input_schema": dashboardWidgetsInput,
+}
+
+var CreateDashboardTool = map[string]any{
+	"name":         "create_custom_dashboard",
+	"description":  "Create a new dashboard. Only call after the user confirms the preview_dashboard plan.",
+	"input_schema": dashboardWidgetsInput,
 }
 
 var AddWidgetTool = map[string]any{
 	"name":        "add_widget_to_dashboard",
-	"description": "Add a single widget to an EXISTING dashboard (referenced by name). Use this to extend a dashboard the user already has — do not create a new one.",
+	"description": "Add one widget to an existing dashboard (by name).",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"dashboard_name", "widget"},
 		"properties": map[string]any{
-			"dashboard_name": map[string]any{"type": "string", "description": "Exact name of the existing dashboard."},
-			"widget": map[string]any{
-				"type":     "object",
-				"required": []string{"type"},
-				"properties": map[string]any{
-					"type":       map[string]any{"type": "string", "enum": allowedWidgetTypes, "description": "Which pre-built widget component to render."},
-					"title":      map[string]any{"type": "string", "description": "Optional widget header."},
-					"machine_id": map[string]any{"type": "string", "description": "Machine name the widget shows. Optional for alarm-panel."},
-					"metric":     map[string]any{"type": "string", "description": "Telemetry field key to display, e.g. 'temperature'."},
-					"min":        map[string]any{"type": "number", "description": "Gauge lower bound (gauge only)."},
-					"max":        map[string]any{"type": "number", "description": "Gauge upper bound (gauge only)."},
-					"unit":       map[string]any{"type": "string", "description": "Display unit, e.g. '°C'."},
-				},
-			},
+			"dashboard_name": map[string]any{"type": "string"},
+			"widget":         widgetItemSchema,
 		},
 	},
 }
 
 var RemoveWidgetTool = map[string]any{
 	"name":        "remove_widget",
-	"description": "Remove a widget from an existing dashboard, identified by the widget's title. Call list_dashboards first if unsure of the dashboard name.",
+	"description": "Remove a widget from a dashboard by its title.",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"dashboard_name", "widget_title"},
 		"properties": map[string]any{
-			"dashboard_name": map[string]any{"type": "string", "description": "Exact name of the dashboard."},
-			"widget_title":   map[string]any{"type": "string", "description": "Title of the widget to remove."},
+			"dashboard_name": map[string]any{"type": "string"},
+			"widget_title":   map[string]any{"type": "string"},
 		},
 	},
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Category C — manage alert rules & events
-// ─────────────────────────────────────────────────────────────────────────────
-
 var CreateAlertTool = map[string]any{
 	"name":        "create_alert",
-	"description": "Create a threshold alert rule that fires when a machine's metric crosses a value. Use when the user asks to be notified or warned about a condition.",
+	"description": "Create a threshold alert rule on a machine metric.",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"machine_id", "metric", "condition", "threshold"},
 		"properties": map[string]any{
-			"machine_id":   map[string]any{"type": "string", "description": "Machine name."},
-			"metric":       map[string]any{"type": "string", "description": "Telemetry field key, e.g. 'temp'."},
-			"condition":    map[string]any{"type": "string", "enum": []string{"gt", "lt", "gte", "lte", "eq", "neq", "between", "outside"}, "description": "Comparison operator. 'gt' = greater than, 'lt' = less than, etc."},
-			"threshold":    map[string]any{"type": "number", "description": "The value to compare against (lower bound for between/outside)."},
-			"threshold_hi": map[string]any{"type": "number", "description": "Upper bound — required only for 'between' and 'outside'."},
-			"severity":     map[string]any{"type": "string", "enum": []string{"info", "warning", "critical"}, "description": "Alert severity. Defaults to 'warning'."},
-			"name":         map[string]any{"type": "string", "description": "Optional human-readable rule name."},
-			"cooldown_sec": map[string]any{"type": "integer", "description": "Minimum seconds between firings. Defaults to 300."},
+			"machine_id":   map[string]any{"type": "string"},
+			"metric":       map[string]any{"type": "string"},
+			"condition":    map[string]any{"type": "string", "enum": []string{"gt", "lt", "gte", "lte", "eq", "neq", "between", "outside"}},
+			"threshold":    map[string]any{"type": "number"},
+			"threshold_hi": map[string]any{"type": "number"},
+			"severity":     map[string]any{"type": "string", "enum": []string{"info", "warning", "critical"}},
+			"name":         map[string]any{"type": "string"},
+			"cooldown_sec": map[string]any{"type": "integer"},
 		},
 	},
 }
 
 var AcknowledgeAlertTool = map[string]any{
 	"name":        "acknowledge_alert",
-	"description": "Acknowledge an open alert event (mark that someone is handling it). First call get_active_alerts to obtain the event_id.",
+	"description": "Acknowledge an open alert event by event_id.",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"event_id"},
 		"properties": map[string]any{
-			"event_id": map[string]any{"type": "string", "description": "The alert event id from get_active_alerts."},
+			"event_id": map[string]any{"type": "string"},
 		},
 	},
 }
 
 var ResolveAlertTool = map[string]any{
 	"name":        "resolve_alert",
-	"description": "Resolve (close) an open alert event. First call get_active_alerts to obtain the event_id.",
+	"description": "Resolve (close) an open alert event by event_id.",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"event_id"},
 		"properties": map[string]any{
-			"event_id": map[string]any{"type": "string", "description": "The alert event id from get_active_alerts."},
+			"event_id": map[string]any{"type": "string"},
 		},
-	},
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Category D — factory-wide analysis
-// ─────────────────────────────────────────────────────────────────────────────
-
-var GetFactoryOverviewTool = map[string]any{
-	"name":        "get_factory_overview",
-	"description": "Get a one-shot snapshot of every machine — status, latest values, and open-alert count. Use this for broad questions like 'summarize the factory', 'what's wrong', or 'which machines need attention', then reason over the result in text.",
-	"input_schema": map[string]any{
-		"type":       "object",
-		"properties": map[string]any{},
 	},
 }
 
@@ -262,6 +199,8 @@ func AllTools() []map[string]any {
 		GetDailyCountTool,
 		GetFactoryOverviewTool,
 		ListDashboardsTool,
+		LocateWidgetTool,
+		PreviewDashboardTool,
 		CreateDashboardTool,
 		AddWidgetTool,
 		RemoveWidgetTool,
@@ -284,6 +223,21 @@ var writeTools = map[string]bool{
 func isWriteTool(name string) bool { return writeTools[name] }
 
 // ── Tool argument structs ─────────────────────────────────────────────────────
+
+type ToolWidget struct {
+	Type      string   `json:"type"`
+	Title     string   `json:"title"`
+	MachineID string   `json:"machine_id"`
+	Metric    string   `json:"metric"`
+	Min       *float64 `json:"min"`
+	Max       *float64 `json:"max"`
+	Unit      string   `json:"unit"`
+}
+
+type CreateDashboardArgs struct {
+	DashboardName string       `json:"dashboard_name"`
+	Widgets       []ToolWidget `json:"widgets"`
+}
 
 type MachineArg struct {
 	MachineID string `json:"machine_id"`
@@ -323,4 +277,33 @@ type CreateAlertArgs struct {
 
 type AlertEventArg struct {
 	EventID string `json:"event_id"`
+}
+
+// ── Preview types ─────────────────────────────────────────────────────────────
+
+type PreviewWidget struct {
+	Type        string  `json:"type"`
+	Title       string  `json:"title"`
+	Machine     string  `json:"machine"`
+	MachineUUID string  `json:"machineUuid,omitempty"` // resolved UUID — enables live data in preview
+	Metric      string  `json:"metric"`
+	Unit        string  `json:"unit"`
+	Min         float64 `json:"min,omitempty"`
+	Max         float64 `json:"max,omitempty"`
+}
+
+type PreviewDashboardResult struct {
+	Preview       bool            `json:"preview"`
+	DashboardName string          `json:"dashboardName"`
+	Widgets       []PreviewWidget `json:"widgets"`
+	Summary       string          `json:"summary"`
+}
+
+// ── Locate type ───────────────────────────────────────────────────────────────
+
+type LocateWidgetResult struct {
+	Found       bool   `json:"found"`
+	WidgetID    string `json:"widgetId,omitempty"`
+	WidgetTitle string `json:"widgetTitle,omitempty"`
+	Summary     string `json:"summary"`
 }

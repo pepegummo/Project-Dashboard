@@ -1,249 +1,205 @@
 <script setup lang="ts">
-import { ref, onMounted, nextTick, computed } from 'vue';
+import { ref, nextTick } from 'vue';
+import { Sparkles, Send, Loader2, Bot } from 'lucide-vue-next';
 import { api } from '@/services/api.service';
-import { Bot, Send, Plus, Loader2, Wrench, ChevronDown, ChevronRight } from 'lucide-vue-next';
-import type { AiConversation, AiMessage, AiTool } from '@/types';
-import ChatBox from '@/components/ai/ChatBox.vue';
+import { useDashboardStore } from '@/stores/dashboard.store';
+import GridStackCanvas from '@/components/dashboard/GridStackCanvas.vue';
+import PreviewCanvasCard from '@/components/ai/PreviewCanvasCard.vue';
+import CreatedCanvasCard from '@/components/ai/CreatedCanvasCard.vue';
 
-const conversations = ref<AiConversation[]>([]);
-const activeConversation = ref<AiConversation | null>(null);
-const messages = ref<AiMessage[]>([]);
-const tools = ref<AiTool[]>([]);
+type CanvasCard =
+  | { kind: 'preview'; id: string; result: any }
+  | { kind: 'created'; id: string; summary: string; dashboardId: string }
+
+const dashboardStore = useDashboardStore();
+const canvasCards = ref<CanvasCard[]>([]);
+const highlightId = ref<string | undefined>(undefined);
+const processing = ref(false);
 const input = ref('');
-const loading = ref(false);
-const loadingConvs = ref(false);
-const messagesRef = ref<HTMLElement | null>(null);
-const inputRef = ref<HTMLTextAreaElement | null>(null);
-const showTools = ref(false);
+const canvasRef = ref<HTMLElement | null>(null);
+const conversationId = ref<string | null>(null);
 
-onMounted(async () => {
-  loadingConvs.value = true;
-  const [convs, toolList] = await Promise.all([
-    api.getConversations(),
-    api.getAiTools(),
-  ]);
-  conversations.value = convs;
-  tools.value = toolList;
-  loadingConvs.value = false;
-});
+// Toast state
+const toastMsg = ref('');
+const toastVisible = ref(false);
+let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
-async function selectConversation(conv: AiConversation) {
-  activeConversation.value = conv;
-  messages.value = await api.getMessages(conv.id);
-  scrollToBottom();
+function showToast(msg: string) {
+  toastMsg.value = msg;
+  toastVisible.value = true;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toastVisible.value = false; }, 5000);
 }
 
-async function newConversation() {
-  const conv = await api.createConversation();
-  conversations.value.unshift(conv);
-  await selectConversation(conv);
-}
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
 
 async function sendMessage() {
-  if (!input.value.trim() || loading.value) return;
-  if (!activeConversation.value) await newConversation();
-
-  const userContent = input.value.trim();
+  const text = input.value.trim();
+  if (!text || processing.value) return;
   input.value = '';
-
-  // Optimistic UI
-  messages.value.push({
-    id: Date.now().toString(),
-    conversationId: activeConversation.value!.id,
-    role: 'user',
-    content: userContent,
-    createdAt: new Date().toISOString(),
-  });
-  scrollToBottom();
-
-  loading.value = true;
+  processing.value = true;
 
   try {
-    const newMsgs = await api.chat(activeConversation.value!.id, userContent);
-    // Replace the optimistic user message with the persisted ones from the server
-    messages.value.pop();
-    messages.value.push(...newMsgs);
+    if (!conversationId.value) {
+      const conv = await api.createConversation();
+      conversationId.value = conv.id;
+    }
+
+    const messages = await api.chat(conversationId.value!, text);
+
+    for (const msg of messages) {
+      // AI text replies → toast
+      if (msg.role === 'assistant' && msg.content?.trim()) {
+        showToast(msg.content);
+      }
+      // Dashboard preview (confirm-before-create)
+      if (msg.toolName === 'preview_dashboard') {
+        const r = msg.toolResult as any;
+        if (r?.preview && r.dashboardName) {
+          canvasCards.value.push({ kind: 'preview', id: uid(), result: r });
+        }
+      }
+      // Dashboard created → load widgets onto canvas
+      if (msg.toolName === 'create_custom_dashboard') {
+        const r = msg.toolResult as any;
+        if (r?.success && r.dashboardId) {
+          canvasCards.value.push({ kind: 'created', id: uid(), summary: r.summary ?? '', dashboardId: r.dashboardId });
+          await dashboardStore.fetchDashboard(r.dashboardId);
+        }
+      }
+      // Locate widget → spotlight it on the canvas
+      if (msg.toolName === 'locate_widget') {
+        const r = msg.toolResult as any;
+        if (r?.found && r.widgetId) {
+          highlightId.value = r.widgetId;
+          setTimeout(() => { highlightId.value = undefined; }, 3500);
+        }
+      }
+    }
   } catch (e: any) {
-    messages.value.push({
-      id: Date.now().toString(),
-      conversationId: activeConversation.value!.id,
-      role: 'assistant',
-      content: `Sorry, I encountered an error: ${e?.message ?? 'Unknown error'}`,
-      createdAt: new Date().toISOString(),
-    });
+    showToast(`Error: ${e?.message ?? 'Something went wrong. Please try again.'}`);
   } finally {
-    loading.value = false;
+    processing.value = false;
     scrollToBottom();
   }
 }
 
-
-// Example prompts shown when a tool chip is clicked. Clicking prefills the input
-// so the user can edit and send — routing through the normal agentic chat (which
-// supplies parameters and renders the result) instead of a raw, paramless call.
-const examplePrompts: Record<string, string> = {
-  get_machines: 'List all machines and their current status.',
-  get_latest_telemetry: 'What is the current weight on Checkweigher CW-01?',
-  get_telemetry_trend: 'Show the temperature trend for Temp Sensor TS-01 over the last 24h.',
-  get_active_alerts: 'Show all active alerts right now.',
-  get_daily_count: 'How many items did Checkweigher CW-01 produce in the last 7 days?',
-  get_factory_overview: 'Give me an overview of the whole factory — which machines need attention?',
-  list_dashboards: 'List my dashboards.',
-  create_custom_dashboard: 'Create a dashboard to monitor Temp Sensor TS-01.',
-  add_widget_to_dashboard: 'Add a temperature gauge for Temp Sensor TS-01 to the Production Overview dashboard.',
-  remove_widget: "Remove the 'Weight' widget from the Production Overview dashboard.",
-  create_alert: 'Alert me if the temperature on Temp Sensor TS-01 goes above 30.',
-  acknowledge_alert: 'Acknowledge the latest active alert.',
-  resolve_alert: 'Resolve the latest active alert.',
-};
-
-function useToolExample(tool: AiTool) {
-  input.value = examplePrompts[tool.name] ?? tool.description ?? '';
-  showTools.value = false;
-  nextTick(() => inputRef.value?.focus());
+async function confirmCreate(dashboardName: string) {
+  input.value = `Confirmed. Please create the dashboard "${dashboardName}".`;
+  await sendMessage();
 }
 
 function scrollToBottom() {
   nextTick(() => {
-    if (messagesRef.value) {
-      messagesRef.value.scrollTop = messagesRef.value.scrollHeight;
-    }
+    if (canvasRef.value) canvasRef.value.scrollTop = canvasRef.value.scrollHeight;
   });
 }
 
 function handleKeydown(e: KeyboardEvent) {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    sendMessage();
-  }
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 }
 </script>
 
 <template>
-  <div class="flex h-full gap-4">
-    <!-- Sidebar — conversations -->
-    <div class="w-60 flex flex-col gap-2 flex-shrink-0">
-      <button class="btn-primary w-full justify-center" @click="newConversation">
-        <Plus class="w-4 h-4" />
-        New Chat
-      </button>
+  <div class="flex flex-col h-full">
+    <!-- ── CANVAS AREA ── -->
+    <div ref="canvasRef" class="flex-1 overflow-y-auto px-6 py-6 flex flex-col gap-4 relative min-h-0">
 
-      <div class="flex-1 overflow-y-auto space-y-1">
-        <div v-if="loadingConvs" class="flex justify-center py-4"><div class="spinner" /></div>
-        <button
-          v-for="conv in conversations"
-          :key="conv.id"
-          class="w-full text-left px-3 py-2 rounded-lg text-sm transition-colors"
-          :class="activeConversation?.id === conv.id ? 'bg-primary-500/20 text-white border border-primary-500/30' : 'text-gray-400 hover:bg-surface-200 hover:text-white'"
-          @click="selectConversation(conv)"
-        >
-          <div class="flex items-center gap-2">
-            <Bot class="w-3.5 h-3.5 flex-shrink-0" />
-            <span class="truncate">{{ conv.title }}</span>
-          </div>
-          <div class="text-[10px] text-gray-600 ml-5 mt-0.5">{{ conv._count?.messages ?? 0 }} messages</div>
-        </button>
-
-        <div v-if="!loadingConvs && !conversations.length" class="text-center py-8 text-gray-600 text-xs">
-          No conversations yet
+      <!-- Empty state -->
+      <div
+        v-if="!canvasCards.length && !dashboardStore.widgets.length"
+        class="flex-1 flex flex-col items-center justify-center text-center py-24 select-none"
+      >
+        <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary-500/20 to-accent-violet/20 border border-primary-500/20 flex items-center justify-center mb-5">
+          <Sparkles class="w-8 h-8 text-primary-400" />
         </div>
+        <h2 class="text-xl font-semibold text-white mb-2">IotVision AI</h2>
+        <p class="text-gray-500 text-sm max-w-sm leading-relaxed">
+          Describe what you want to monitor and dashboards will appear here.<br>
+          <span class="text-gray-600">Try "Create a temperature monitor for Machine A."</span>
+        </p>
       </div>
+
+      <!-- Card feed (preview + created only) -->
+      <template v-for="card in canvasCards" :key="card.id">
+        <PreviewCanvasCard
+          v-if="card.kind === 'preview'"
+          :result="(card as any).result"
+          @confirm="confirmCreate"
+        />
+        <CreatedCanvasCard
+          v-else-if="card.kind === 'created'"
+          :summary="(card as any).summary"
+          :dashboard-id="(card as any).dashboardId"
+        />
+      </template>
+
+      <!-- Widget grid -->
+      <div v-if="dashboardStore.widgets.length" class="mt-2">
+        <GridStackCanvas
+          :widgets="dashboardStore.widgets"
+          :highlighted-id="highlightId"
+        />
+      </div>
+
+      <!-- Spotlight overlay -->
+      <div
+        v-if="highlightId"
+        class="canvas-spotlight-overlay"
+        @click="highlightId = undefined"
+      />
     </div>
 
-    <!-- Main chat area -->
-    <div class="flex-1 flex flex-col card overflow-hidden">
-      <!-- Chat header -->
-      <div class="flex items-center justify-between px-4 py-3 border-b border-white/5 flex-shrink-0">
-        <div class="flex items-center gap-2">
-          <div class="w-7 h-7 rounded-full bg-gradient-to-br from-primary-500 to-accent-violet flex items-center justify-center">
-            <Bot class="w-3.5 h-3.5 text-white" />
-          </div>
-          <div>
-            <div class="text-sm font-medium text-white">IotVision AI</div>
-            <div class="text-[10px] text-emerald-400">Powered by the AI Tool Layer</div>
-          </div>
-        </div>
-        <button
-          class="btn-sm btn-ghost"
-          @click="showTools = !showTools"
+    <!-- ── COMMAND BAR ── -->
+    <div class="flex-shrink-0 px-6 pb-6 pt-2">
+      <!-- Toast -->
+      <Transition name="toast">
+        <div
+          v-if="toastVisible"
+          class="mb-3 flex items-start gap-2.5 bg-surface-200 border border-white/10 rounded-xl px-4 py-3 shadow-card"
         >
-          <Wrench class="w-3.5 h-3.5" />
-          Tools ({{ tools.length }})
-          <component :is="showTools ? ChevronDown : ChevronRight" class="w-3 h-3" />
+          <div class="w-5 h-5 rounded-full bg-accent-violet/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+            <Bot class="w-3 h-3 text-accent-violet" />
+          </div>
+          <p class="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap flex-1">{{ toastMsg }}</p>
+          <button class="text-gray-600 hover:text-gray-400 flex-shrink-0 mt-0.5" @click="toastVisible = false">✕</button>
+        </div>
+      </Transition>
+
+      <!-- Processing indicator -->
+      <Transition name="fade">
+        <p v-if="processing" class="text-xs text-gray-600 text-center mb-2">Processing…</p>
+      </Transition>
+
+      <div class="spotlight-bar">
+        <Sparkles class="w-4 h-4 text-gray-500 flex-shrink-0" />
+        <textarea
+          v-model="input"
+          rows="1"
+          class="flex-1 bg-transparent border-0 outline-none resize-none text-sm text-gray-100 placeholder-gray-600 leading-6"
+          placeholder="Ask about your factory…"
+          @keydown="handleKeydown"
+        />
+        <button
+          :disabled="!input.trim() || processing"
+          class="w-8 h-8 rounded-xl bg-primary-500 hover:bg-primary-600 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition-colors flex-shrink-0"
+          @click="sendMessage"
+        >
+          <Loader2 v-if="processing" class="w-4 h-4 text-white animate-spin" />
+          <Send v-else class="w-4 h-4 text-white" />
         </button>
       </div>
-
-      <!-- Tools panel -->
-      <div v-if="showTools" class="px-4 py-3 border-b border-white/5 bg-surface-200/50">
-        <p class="text-xs text-gray-500 mb-2 uppercase tracking-wide font-medium">Available AI Tools <span class="normal-case tracking-normal text-gray-600">· click to insert an example prompt</span></p>
-        <div class="flex flex-wrap gap-2">
-          <button
-            v-for="tool in tools"
-            :key="tool.name"
-            class="px-2.5 py-1 rounded-full text-xs bg-surface-300 text-gray-300 hover:bg-primary-500/20 hover:text-primary-400 border border-white/5 transition-colors"
-            :title="`Insert an example prompt for ${tool.name}`"
-            @click="useToolExample(tool)"
-          >
-            {{ tool.name }}
-          </button>
-        </div>
-      </div>
-
-      <!-- Messages -->
-      <div ref="messagesRef" class="flex-1 overflow-y-auto px-4 py-4 space-y-4">
-        <!-- Empty state -->
-        <div v-if="!activeConversation" class="flex flex-col items-center justify-center h-full text-center py-12">
-          <div class="w-14 h-14 rounded-2xl bg-gradient-to-br from-primary-500/20 to-accent-violet/20 border border-primary-500/20 flex items-center justify-center mb-4">
-            <Bot class="w-7 h-7 text-primary-400" />
-          </div>
-          <h3 class="text-white font-semibold">IotVision AI Assistant</h3>
-          <p class="text-gray-500 text-sm mt-2 max-w-xs">
-            Ask me about your machines, telemetry, alerts, or have me configure your dashboards.
-          </p>
-        </div>
-
-        <!-- Message list -->
-        <template v-else>
-          <ChatBox
-            v-for="msg in messages.filter(m => m.role !== 'tool' || m.toolName === 'create_custom_dashboard')"
-            :key="msg.id"
-            :message="msg"
-          />
-
-          <!-- Typing indicator -->
-          <div v-if="loading" class="flex gap-3">
-            <div class="w-7 h-7 rounded-full bg-accent-violet/20 flex items-center justify-center text-xs text-accent-violet">AI</div>
-            <div class="bg-surface-200 border border-white/5 rounded-xl px-4 py-3">
-              <div class="flex gap-1">
-                <div v-for="i in 3" :key="i" class="w-1.5 h-1.5 rounded-full bg-gray-500 animate-bounce" :style="{ animationDelay: `${i * 0.15}s` }" />
-              </div>
-            </div>
-          </div>
-        </template>
-      </div>
-
-      <!-- Input area -->
-      <div class="px-4 py-3 border-t border-white/5 flex-shrink-0">
-        <div class="flex gap-2">
-          <textarea
-            ref="inputRef"
-            v-model="input"
-            rows="1"
-            class="input flex-1 resize-none py-2.5"
-            placeholder="Ask about machines, alerts, dashboards…"
-            @keydown="handleKeydown"
-          />
-          <button
-            class="btn-primary px-3 self-end"
-            :disabled="!input.trim() || loading"
-            @click="sendMessage"
-          >
-            <Loader2 v-if="loading" class="w-4 h-4 animate-spin" />
-            <Send v-else class="w-4 h-4" />
-          </button>
-        </div>
-        <p class="text-[10px] text-gray-600 mt-1.5 text-center">Press Enter to send · Shift+Enter for newline</p>
-      </div>
+      <p class="text-[10px] text-gray-700 text-center mt-2">Enter to send · Shift+Enter for new line</p>
     </div>
   </div>
 </template>
+
+<style scoped>
+.fade-enter-active, .fade-leave-active { transition: opacity 0.2s; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
+
+.toast-enter-active { transition: all 0.25s ease-out; }
+.toast-leave-active { transition: all 0.2s ease-in; }
+.toast-enter-from { opacity: 0; transform: translateY(8px); }
+.toast-leave-to   { opacity: 0; transform: translateY(4px); }
+</style>

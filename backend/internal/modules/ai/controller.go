@@ -17,29 +17,31 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-const groqModel = "llama-3.3-70b-versatile"
+const groqModel = "qwen/qwen3-32b"
 const groqBaseURL = "https://api.groq.com/openai/v1/chat/completions"
-const systemPrompt = `You are IotVision AI, an assistant for an industrial IoT factory-monitoring platform. You can read live data and make changes on the user's behalf using tools.
+const systemPrompt = `You are IotVision AI for an industrial IoT platform. Use tools to read data and make changes.
 
-General rules:
-1. For greetings or general questions, answer in plain text — do NOT call a tool.
-2. Call a tool only when the request clearly needs it, and only with inputs you are sure of. Do exactly what was asked; never chain extra actions beyond the request.
-3. Always use a machine's human name (from get_machines / get_factory_overview) and a dashboard's exact name (from list_dashboards) in tool arguments. Never invent or guess machine names, metric keys, or dashboard names — if unsure, call get_machines or list_dashboards first.
-4. After any change, briefly confirm what you did in plain text.
+Rules:
+1. Plain text for greetings/general questions — no tool call.
+2. Use exact machine names and dashboard names. If the user mentions a name directly (e.g. "CW-01"), use it as-is — only call get_machines or list_dashboards when the name is ambiguous or unknown.
+3. Do only what was asked; no extra chained actions.
+4. After any change confirm briefly in plain text.
+5. DASHBOARD CREATION IS ALWAYS 2 STEPS: (a) call preview_dashboard — list the plan and ask the user to confirm; (b) only call create_custom_dashboard after the user explicitly says yes/confirm/create. You must NEVER call create_custom_dashboard without a prior preview_dashboard in the same conversation turn.
 
-Reading data:
-- get_machines: list machines, their status and metric fields.
-- get_latest_telemetry: the current value(s) of one machine.
-- get_telemetry_trend: avg/min/max of a metric over a time range (e.g. 1h, 24h, 7d).
-- get_daily_count: production counts per day.
-- get_active_alerts: currently open alerts (each has an event id).
-- get_factory_overview: a snapshot of every machine (status, latest values, open-alert count). Use this for "summarize the factory" / "what's wrong" questions, then reason over the result in text.
-
-Making changes (these require permission; if a tool returns a permission error, tell the user their role cannot do it):
-- create_custom_dashboard: build a NEW dashboard. First call get_machines for exact names. Listing machines is NOT a request to build one.
-- add_widget_to_dashboard / remove_widget: modify an EXISTING dashboard (call list_dashboards first if unsure of the name).
-- create_alert: define a threshold alert rule. condition is one of gt, lt, gte, lte, eq, neq, between, outside; for between/outside also provide threshold_hi.
-- acknowledge_alert / resolve_alert: act on an open alert — first call get_active_alerts to get its event_id.`
+Tools:
+- get_machines: machine names, types, status, metric fields.
+- get_latest_telemetry: current readings for one machine.
+- get_telemetry_trend: avg/min/max over a time window.
+- get_daily_count: per-day production count.
+- get_active_alerts: open alerts with event_ids.
+- get_factory_overview: full factory snapshot for broad questions.
+- locate_widget: find a widget on the canvas to spotlight it.
+- list_dashboards: existing dashboards.
+- preview_dashboard: STEP 1 — plan without creating. Call this, show plan, ask for confirmation. Stop and wait.
+- create_custom_dashboard: STEP 2 — only after user confirms. Never call this without step 1 first.
+- add_widget_to_dashboard / remove_widget: modify an existing dashboard.
+- create_alert: threshold rule; use threshold_hi for between/outside.
+- acknowledge_alert / resolve_alert: need event_id from get_active_alerts.`
 
 // ── Groq / OpenAI-compatible API types ───────────────────────────────────────
 
@@ -57,12 +59,6 @@ type groqToolCall struct {
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
 	} `json:"function"`
-}
-
-type groqRequest struct {
-	Model    string        `json:"model"`
-	Messages []groqMessage `json:"messages"`
-	Tools    []map[string]any `json:"tools,omitempty"`
 }
 
 type groqResponse struct {
@@ -102,7 +98,6 @@ func (ctrl *Controller) dispatch(c *fiber.Ctx, toolName string, rawArgs json.Raw
 	}
 
 	switch toolName {
-	// ── Category A: read ──────────────────────────────────────────────
 	case "get_machines":
 		return getMachinesForOrg(ctx, user.OrgId)
 	case "get_latest_telemetry":
@@ -113,19 +108,20 @@ func (ctrl *Controller) dispatch(c *fiber.Ctx, toolName string, rawArgs json.Raw
 		return ctrl.tk.GetActiveAlerts(ctx, user.OrgId)
 	case "get_daily_count":
 		return ctrl.tk.GetDailyCount(ctx, user.OrgId, rawArgs)
-	// ── Category D: analysis ──────────────────────────────────────────
 	case "get_factory_overview":
 		return ctrl.tk.GetFactoryOverview(ctx, user.OrgId)
-	// ── Category B: dashboards ────────────────────────────────────────
 	case "list_dashboards":
 		return ctrl.tk.ListDashboards(ctx, user.OrgId, user.Sub)
+	case "locate_widget":
+		return ctrl.tk.LocateWidget(ctx, user.OrgId, rawArgs)
+	case "preview_dashboard":
+		return ctrl.action.Preview(ctx, user.OrgId, rawArgs)
 	case "create_custom_dashboard":
 		return ctrl.action.Handle(ctx, user.OrgId, user.Sub, rawArgs)
 	case "add_widget_to_dashboard":
 		return ctrl.tk.AddWidget(ctx, user.OrgId, rawArgs)
 	case "remove_widget":
 		return ctrl.tk.RemoveWidget(ctx, user.OrgId, rawArgs)
-	// ── Category C: alerts ────────────────────────────────────────────
 	case "create_alert":
 		return ctrl.tk.CreateAlert(ctx, user.OrgId, rawArgs)
 	case "acknowledge_alert":
@@ -137,7 +133,7 @@ func (ctrl *Controller) dispatch(c *fiber.Ctx, toolName string, rawArgs json.Raw
 	}
 }
 
-// ── Direct tool execute (backward compat / manual testing) ────────────────────
+// ── Direct tool execute ───────────────────────────────────────────────────────
 
 func (ctrl *Controller) ExecuteTool(c *fiber.Ctx) error {
 	var body struct {
@@ -224,6 +220,22 @@ func (ctrl *Controller) AddMessage(c *fiber.Ctx) error {
 
 // ── Chat ──────────────────────────────────────────────────────────────────────
 
+// writeKeywords triggers full tool set; anything else gets read-only tools.
+var writeKeywords = []string{
+	"create", "add", "remove", "delete", "build", "make",
+	"alert", "acknowledge", "resolve", "widget", "dashboard",
+}
+
+func isWriteRequest(msg string) bool {
+	lower := strings.ToLower(msg)
+	for _, kw := range writeKeywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
 func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	if config.Env.GroqApiKey == "" {
 		return middleware.NewAppError(503, "AI_UNAVAILABLE", "GROQ_API_KEY is not configured")
@@ -249,20 +261,37 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	}
 	newMessages := []Message{*userMsg}
 
-	// Load full conversation history
+	// Load conversation history, capped to last 8 messages (Fix 3)
 	history, err := ctrl.repo.GetMessages(ctx, body.ConversationID)
 	if err != nil {
 		return err
 	}
 
-	// Build Groq messages: system prompt + conversation history
+	// Build Groq messages: system prompt + capped history
 	sp := systemPrompt
 	msgs := []groqMessage{{Role: "system", Content: &sp}}
 	msgs = append(msgs, buildGroqMessages(history)...)
 
-	// Agentic tool-use loop (max 5 iterations)
+	// Fix 2: keyword-based tool selection — zero extra API call.
+	// Read queries get 8 tools (~350 tokens); write queries get all 15 (~700 tokens).
+	isWrite := isWriteRequest(body.Message)
+	tools := buildReadTools()
+	if isWrite {
+		tools = buildGroqTools()
+	}
+
+	// Agentic loop (max 5 iterations)
+	previewDone := false // true after preview_dashboard fires; next call is just "confirm?" text
 	for i := 0; i < 5; i++ {
-		resp, err := callGroq(msgs)
+		// Strip tools when no more tool calls are expected:
+		// - read queries: after the first tool result, model only summarises
+		// - write queries: after preview_dashboard, model only asks for confirmation
+		callTools := tools
+		if (i > 0 && !isWrite) || previewDone {
+			callTools = nil
+		}
+
+		resp, err := callGroq(msgs, callTools)
 		if err != nil {
 			return middleware.NewAppError(502, "AI_ERROR", fmt.Sprintf("Groq API error: %v", err))
 		}
@@ -272,7 +301,7 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 
 		choice := resp.Choices[0]
 
-			if choice.FinishReason != "tool_calls" || len(choice.Message.ToolCalls) == 0 {
+		if choice.FinishReason != "tool_calls" || len(choice.Message.ToolCalls) == 0 {
 			text := ""
 			if choice.Message.Content != nil {
 				text = *choice.Message.Content
@@ -285,11 +314,12 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 			break
 		}
 
-		// Append assistant's tool_calls message to in-memory history
 		msgs = append(msgs, choice.Message)
 
-		// Execute each tool call
 		for _, tc := range choice.Message.ToolCalls {
+			if tc.Function.Name == "preview_dashboard" {
+				previewDone = true
+			}
 			toolInputRaw := json.RawMessage(tc.Function.Arguments)
 
 			result, dispatchErr := ctrl.dispatch(c, tc.Function.Name, toolInputRaw)
@@ -298,7 +328,6 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 				resultJSON, _ = json.Marshal(map[string]any{"error": dispatchErr.Error()})
 			}
 
-			// Persist tool message to DB
 			tn := tc.Function.Name
 			toolMsg, _ := ctrl.repo.AddMessage(ctx, body.ConversationID, "tool",
 				"Tool executed: "+tc.Function.Name, &tn,
@@ -307,7 +336,6 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 				newMessages = append(newMessages, *toolMsg)
 			}
 
-			// Feed tool result back — OpenAI format: role=tool, tool_call_id, content only
 			resultStr := string(resultJSON)
 			msgs = append(msgs, groqMessage{
 				Role:       "tool",
@@ -322,28 +350,49 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 
 // ── Groq HTTP helpers ─────────────────────────────────────────────────────────
 
-func callGroq(messages []groqMessage) (*groqResponse, error) {
-	// Convert Anthropic-format tool schemas → OpenAI function tool format
-	toGroqTool := func(t map[string]any) map[string]any {
-		return map[string]any{
-			"type": "function",
-			"function": map[string]any{
-				"name":        t["name"],
-				"description": t["description"],
-				"parameters":  t["input_schema"],
-			},
-		}
+func toGroqTool(t map[string]any) map[string]any {
+	return map[string]any{
+		"type": "function",
+		"function": map[string]any{
+			"name":        t["name"],
+			"description": t["description"],
+			"parameters":  t["input_schema"],
+		},
 	}
+}
 
-	tools := make([]map[string]any, 0, len(AllTools()))
+// buildGroqTools returns all 15 tools (write queries).
+func buildGroqTools() []map[string]any {
+	out := make([]map[string]any, 0, len(AllTools()))
 	for _, t := range AllTools() {
-		tools = append(tools, toGroqTool(t))
+		out = append(out, toGroqTool(t))
 	}
+	return out
+}
 
-	reqBody := groqRequest{
-		Model:    groqModel,
-		Messages: messages,
-		Tools:    tools,
+// buildReadTools returns the 8 read-only tools (read queries — ~350 tokens vs ~700).
+func buildReadTools() []map[string]any {
+	readOnly := []map[string]any{
+		GetMachinesTool, GetLatestTelemetryTool, GetTelemetryTrendTool,
+		GetDailyCountTool, GetActiveAlertsTool, GetFactoryOverviewTool,
+		ListDashboardsTool, LocateWidgetTool,
+	}
+	out := make([]map[string]any, 0, len(readOnly))
+	for _, t := range readOnly {
+		out = append(out, toGroqTool(t))
+	}
+	return out
+}
+
+// callGroq sends messages to Groq. Pass nil tools for a plain (no-function-call) request.
+func callGroq(messages []groqMessage, tools []map[string]any) (*groqResponse, error) {
+	reqBody := map[string]any{
+		"model":            groqModel,
+		"messages":         messages,
+		"reasoning_format": "hidden",
+	}
+	if len(tools) > 0 {
+		reqBody["tools"] = tools
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)
@@ -353,9 +402,6 @@ func callGroq(messages []groqMessage) (*groqResponse, error) {
 
 	httpClient := &http.Client{Timeout: 90 * time.Second}
 
-	// Retry on rate limit (HTTP 429). Groq's free tier has a low tokens-per-minute
-	// budget and we send the full tool catalog each call, so transient 429s happen;
-	// we honor the "try again in Ns" hint, capped so the request stays responsive.
 	const maxAttempts = 3
 	lastErr := fmt.Errorf("the AI service is busy (rate limit). Please wait a few seconds and try again")
 
@@ -386,6 +432,11 @@ func callGroq(messages []groqMessage) (*groqResponse, error) {
 			return nil, fmt.Errorf("failed to parse Groq response: %w", err)
 		}
 		if result.Error != nil {
+			// Groq's function-call parser failed (malformed generation). Retry once
+			// without tools so the user gets a plain-text reply instead of an error.
+			if strings.Contains(result.Error.Message, "Failed to call a function") && len(tools) > 0 {
+				return callGroq(messages, nil)
+			}
 			return nil, fmt.Errorf("Groq API: %s", result.Error.Message)
 		}
 		return &result, nil
@@ -396,11 +447,8 @@ func callGroq(messages []groqMessage) (*groqResponse, error) {
 
 var retryHintRe = regexp.MustCompile(`try again in ([0-9.]+)s`)
 
-// parseRetryAfter derives how long to wait before retrying, from the Retry-After
-// header or the "try again in 7.6s" hint in Groq's error body. Capped at 8s.
 func parseRetryAfter(header string, body []byte) time.Duration {
 	const maxWait = 8 * time.Second
-
 	if header != "" {
 		if secs, err := strconv.ParseFloat(strings.TrimSpace(header), 64); err == nil && secs > 0 {
 			if d := time.Duration(secs * float64(time.Second)); d <= maxWait {
@@ -422,8 +470,11 @@ func parseRetryAfter(header string, body []byte) time.Duration {
 
 func strPtr(s string) *string { return &s }
 
-// buildGroqMessages converts DB messages to Groq/OpenAI format.
+// buildGroqMessages converts the last 8 DB messages to Groq/OpenAI format (Fix 3).
 func buildGroqMessages(msgs []Message) []groqMessage {
+	if len(msgs) > 8 {
+		msgs = msgs[len(msgs)-8:]
+	}
 	var result []groqMessage
 	for _, m := range msgs {
 		switch m.Role {

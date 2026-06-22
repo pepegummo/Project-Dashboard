@@ -331,6 +331,50 @@ func (tk *ToolKit) GetFactoryOverview(ctx context.Context, orgID string) (any, e
 	}, nil
 }
 
+// ── Category E: canvas locate ────────────────────────────────────────────────
+
+// LocateWidget searches the org's dashboard widgets for one matching the user's
+// description and returns its id so the frontend can spotlight it.
+func (tk *ToolKit) LocateWidget(ctx context.Context, orgID string, raw json.RawMessage) (LocateWidgetResult, error) {
+	var args struct {
+		WidgetTitle   string `json:"widget_title"`
+		DashboardName string `json:"dashboard_name"`
+	}
+	_ = json.Unmarshal(raw, &args)
+	term := strings.TrimSpace(args.WidgetTitle)
+	if term == "" {
+		return LocateWidgetResult{Found: false, Summary: "widget_title is required"}, nil
+	}
+
+	query := `
+		SELECT dw.id, COALESCE(dw.title, dw.widget_type)
+		FROM dashboard_widgets dw
+		JOIN dashboards d ON d.id = dw.dashboard_id
+		WHERE d.organization_id = $1
+		  AND (LOWER(COALESCE(dw.title, '')) LIKE '%' || LOWER($2) || '%'
+		       OR LOWER(dw.config->>'field') LIKE '%' || LOWER($2) || '%'
+		       OR LOWER(dw.widget_type)      LIKE '%' || LOWER($2) || '%')
+	`
+	args2 := []any{orgID, term}
+	if dn := strings.TrimSpace(args.DashboardName); dn != "" {
+		query += " AND LOWER(d.name) = LOWER($3)"
+		args2 = append(args2, dn)
+	}
+	query += " ORDER BY d.created_at DESC LIMIT 1"
+
+	var widgetID, widgetTitle string
+	err := database.Pool.QueryRow(ctx, query, args2...).Scan(&widgetID, &widgetTitle)
+	if err != nil {
+		return LocateWidgetResult{Found: false, Summary: fmt.Sprintf("No widget matching %q found.", term)}, nil
+	}
+	return LocateWidgetResult{
+		Found:       true,
+		WidgetID:    widgetID,
+		WidgetTitle: widgetTitle,
+		Summary:     fmt.Sprintf("Found widget %q — highlighting it on your canvas.", widgetTitle),
+	}, nil
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 // resolveDashboardID does a case-insensitive, org-scoped dashboard name lookup.
