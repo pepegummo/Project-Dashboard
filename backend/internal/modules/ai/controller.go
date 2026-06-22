@@ -26,22 +26,8 @@ Rules:
 2. Use exact machine names and dashboard names. If the user mentions a name directly (e.g. "CW-01"), use it as-is — only call get_machines or list_dashboards when the name is ambiguous or unknown.
 3. Do only what was asked; no extra chained actions.
 4. After any change confirm briefly in plain text.
-
-Tools:
-- get_machines: machine names, types, status, metric fields.
-- get_latest_telemetry: current readings for one machine.
-- get_telemetry_trend: avg/min/max over a time window.
-- get_daily_count: per-day production count.
-- get_active_alerts: open alerts with event_ids.
-- get_factory_overview: full factory snapshot for broad questions.
-- locate_widget: find a widget on the canvas to spotlight it.
-- list_dashboards: existing dashboards.
-- preview_dashboard: pick the best template for the user's intent and call immediately. machine_overview for general/status, machine_production for output/count, machine_maintenance for health/alerts. Show the widget plan in plain text. The user will confirm via button — do not ask them to type confirm.
-- preview_add_widget: when a dashboard preview card is open and user wants to add a widget, call this instead of add_widget_to_dashboard. No DB write — widget is added to the preview plan and only created when the user confirms.
-- preview_remove_widget: when a dashboard preview card is open and user wants to remove a widget, call this instead of remove_widget. No DB write — widget is removed from the preview plan.
-- add_widget_to_dashboard / remove_widget: modify an existing real dashboard (use only when no preview card is open).
-- create_alert: threshold rule; use threshold_hi for between/outside.
-- acknowledge_alert / resolve_alert: need event_id from get_active_alerts.`
+5. preview_add_widget and preview_remove_widget are ONLY for a new dashboard being composed this turn (after preview_dashboard was called and not yet confirmed). For any existing dashboard use add_widget_to_dashboard / remove_widget directly.
+6. preview_dashboard: pick machine_overview for general/status, machine_production for output/count, machine_maintenance for health/alerts. The user confirms via button — do not ask them to type confirm.`
 
 // ── Groq / OpenAI-compatible API types ───────────────────────────────────────
 
@@ -108,12 +94,8 @@ func (ctrl *Controller) dispatch(c *fiber.Ctx, toolName string, rawArgs json.Raw
 		return ctrl.tk.GetActiveAlerts(ctx, user.OrgId)
 	case "get_daily_count":
 		return ctrl.tk.GetDailyCount(ctx, user.OrgId, rawArgs)
-	case "get_factory_overview":
-		return ctrl.tk.GetFactoryOverview(ctx, user.OrgId)
 	case "list_dashboards":
 		return ctrl.tk.ListDashboards(ctx, user.OrgId, user.Sub)
-	case "locate_widget":
-		return ctrl.tk.LocateWidget(ctx, user.OrgId, rawArgs)
 	case "preview_dashboard":
 		return ctrl.action.Preview(ctx, user.OrgId, rawArgs)
 	case "preview_add_widget":
@@ -132,10 +114,16 @@ func (ctrl *Controller) dispatch(c *fiber.Ctx, toolName string, rawArgs json.Raw
 		return ctrl.tk.RemoveWidget(ctx, user.OrgId, rawArgs)
 	case "create_alert":
 		return ctrl.tk.CreateAlert(ctx, user.OrgId, rawArgs)
-	case "acknowledge_alert":
+	case "manage_alert_event":
+		var a struct {
+			EventID string `json:"event_id"`
+			Action  string `json:"action"`
+		}
+		json.Unmarshal(rawArgs, &a)
+		if a.Action == "resolve" {
+			return ctrl.tk.ResolveAlert(ctx, user.Sub, rawArgs)
+		}
 		return ctrl.tk.AckAlert(ctx, user.Sub, rawArgs)
-	case "resolve_alert":
-		return ctrl.tk.ResolveAlert(ctx, user.Sub, rawArgs)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", toolName)
 	}

@@ -1,17 +1,22 @@
 <script setup lang="ts">
-import { ref, nextTick } from 'vue';
-import { Sparkles, Send, Loader2, Bot } from 'lucide-vue-next';
+import { ref, nextTick, onMounted } from 'vue';
+import { Sparkles, Send, Loader2, Bot, Save, Plus } from 'lucide-vue-next';
 import { api } from '@/services/api.service';
 import { useDashboardStore } from '@/stores/dashboard.store';
+import { useMachineStore } from '@/stores/machine.store';
 import GridStackCanvas from '@/components/dashboard/GridStackCanvas.vue';
+import WidgetToolbox from '@/components/dashboard/WidgetToolbox.vue';
+import WidgetConfigModal from '@/components/dashboard/WidgetConfigModal.vue';
 import PreviewCanvasCard from '@/components/ai/PreviewCanvasCard.vue';
 import CreatedCanvasCard from '@/components/ai/CreatedCanvasCard.vue';
+import type { DashboardWidget, WidgetType, WidgetLayout, WidgetConfig } from '@/types';
 
 type CanvasCard =
   | { kind: 'preview'; id: string; result: any; args: Record<string, unknown> }
   | { kind: 'created'; id: string; summary: string; dashboardId: string }
 
 const dashboardStore = useDashboardStore();
+const machineStore = useMachineStore();
 const canvasCards = ref<CanvasCard[]>([]);
 const highlightId = ref<string | undefined>(undefined);
 const processing = ref(false);
@@ -19,10 +24,19 @@ const input = ref('');
 const canvasRef = ref<HTMLElement | null>(null);
 const conversationId = ref<string | null>(null);
 
+// Editor state for live canvas
+const showToolbox = ref(false);
+const showConfigModal = ref(false);
+const editingWidget = ref<DashboardWidget | null>(null);
+const gridCanvasRef = ref<InstanceType<typeof GridStackCanvas> | null>(null);
+const saving = ref(false);
+
 // Toast state
 const toastMsg = ref('');
 const toastVisible = ref(false);
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
+
+onMounted(() => machineStore.fetchMachines());
 
 function showToast(msg: string) {
   toastMsg.value = msg;
@@ -32,6 +46,71 @@ function showToast(msg: string) {
 }
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
+
+// ── Live canvas editor handlers ─────────────────────────────────────────────
+
+function onAddWidget(type: WidgetType) {
+  showToolbox.value = false;
+  editingWidget.value = {
+    id: '',
+    dashboardId: dashboardStore.currentDashboard?.id ?? '',
+    widgetType: type,
+    layout: { x: 0, y: 9999, w: 6, h: 4 },
+    config: {},
+    order: 0,
+  };
+  showConfigModal.value = true;
+}
+
+async function onSaveWidget(data: { machineId?: string; widgetType: WidgetType; title?: string; config: WidgetConfig; layout: WidgetLayout }) {
+  if (!editingWidget.value) return;
+  if (editingWidget.value.id) {
+    await dashboardStore.updateWidget(editingWidget.value.id, {
+      widgetType: data.widgetType,
+      machineId: data.machineId,
+      title: data.title,
+      config: data.config,
+    });
+  } else {
+    await dashboardStore.addWidget(data);
+  }
+  showConfigModal.value = false;
+  editingWidget.value = null;
+}
+
+function onEditWidget(widget: DashboardWidget) {
+  editingWidget.value = widget;
+  showConfigModal.value = true;
+}
+
+async function onRemoveWidget(widgetId: string) {
+  if (!confirm('Remove this widget?')) return;
+  await dashboardStore.removeWidget(widgetId);
+}
+
+async function onSaveLayout() {
+  saving.value = true;
+  try {
+    const layouts = gridCanvasRef.value?.getCurrentLayouts() ?? [];
+    if (layouts.length) await dashboardStore.saveLayout(layouts);
+  } finally {
+    saving.value = false;
+  }
+}
+
+// ── Preview card widget handlers ────────────────────────────────────────────
+
+function addPreviewWidget(widget: any) {
+  const card = canvasCards.value.find(c => c.kind === 'preview') as any;
+  if (card) card.result.widgets.push(widget);
+}
+
+function updatePreviewWidget(index: number, data: any) {
+  const card = canvasCards.value.find(c => c.kind === 'preview') as any;
+  if (card) Object.assign(card.result.widgets[index], data);
+}
+
+// ── Chat ────────────────────────────────────────────────────────────────────
 
 async function sendMessage() {
   const text = input.value.trim();
@@ -48,11 +127,9 @@ async function sendMessage() {
     const messages = await api.chat(conversationId.value!, text);
 
     for (const msg of messages) {
-      // AI text replies → toast
       if (msg.role === 'assistant' && msg.content?.trim()) {
         showToast(msg.content);
       }
-      // Dashboard preview (confirm-before-create)
       if (msg.toolName === 'preview_dashboard') {
         const r = msg.toolResult as any;
         if (r?.preview && r.dashboardName) {
@@ -83,7 +160,6 @@ async function sendMessage() {
           if (idx >= 0) previewCard.result.widgets.splice(idx, 1);
         }
       }
-      // Locate widget → spotlight it on the canvas
       if (msg.toolName === 'locate_widget') {
         const r = msg.toolResult as any;
         if (r?.found && r.widgetId) {
@@ -106,12 +182,14 @@ async function confirmCreate(dashboardName: string) {
     processing.value = true;
     const r = await api.executeAiTool('create_custom_dashboard', {
       ...(card?.args ?? {}),
+      name: dashboardName,
       widgets: card?.result?.widgets ?? [],
     }) as any;
     if (r?.success && r.dashboardId) {
-      const idx = canvasCards.value.findIndex(c => c.kind === 'preview');
-      if (idx >= 0) canvasCards.value.splice(idx, 1, { kind: 'created', id: uid(), summary: r.summary ?? dashboardName, dashboardId: r.dashboardId });
-      await dashboardStore.fetchDashboard(r.dashboardId);
+      canvasCards.value = [];
+      conversationId.value = null;
+      dashboardStore.currentDashboard = null;
+      showToast(`Dashboard "${dashboardName}" created! Find it in the Dashboards list.`);
     }
   } catch (e: any) {
     showToast(`Error: ${e?.message ?? 'Failed to create dashboard'}`);
@@ -163,6 +241,8 @@ function handleKeydown(e: KeyboardEvent) {
           :result="(card as any).result"
           @confirm="confirmCreate"
           @remove-widget="removePreviewWidget"
+          @add-widget="addPreviewWidget"
+          @update-widget="updatePreviewWidget"
         />
         <CreatedCanvasCard
           v-else-if="card.kind === 'created'"
@@ -171,12 +251,41 @@ function handleKeydown(e: KeyboardEvent) {
         />
       </template>
 
-      <!-- Widget grid -->
+      <!-- Live widget grid -->
       <div v-if="dashboardStore.widgets.length" class="mt-2">
-        <GridStackCanvas
-          :widgets="dashboardStore.widgets"
-          :highlighted-id="highlightId"
-        />
+        <!-- Mini toolbar -->
+        <div class="flex items-center justify-between mb-2">
+          <p class="text-xs text-gray-500">{{ dashboardStore.widgets.length }} widgets · drag to move, gear to configure</p>
+          <div class="flex items-center gap-2">
+            <button class="btn-secondary text-xs py-1 px-2.5" @click="showToolbox = !showToolbox">
+              <Plus class="w-3.5 h-3.5" />
+              Add Widget
+            </button>
+            <button class="btn-primary text-xs py-1 px-2.5" :disabled="saving" @click="onSaveLayout">
+              <Loader2 v-if="saving" class="w-3.5 h-3.5 animate-spin" />
+              <Save v-else class="w-3.5 h-3.5" />
+              {{ saving ? 'Saving…' : 'Save' }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Toolbox + canvas in flex row (same pattern as DashboardEditorPage) -->
+        <div class="flex gap-4">
+          <WidgetToolbox
+            v-if="showToolbox"
+            @select="onAddWidget"
+            @close="showToolbox = false"
+          />
+          <div class="flex-1">
+            <GridStackCanvas
+              ref="gridCanvasRef"
+              :widgets="dashboardStore.widgets"
+              :highlighted-id="highlightId"
+              @edit-widget="onEditWidget"
+              @remove-widget="onRemoveWidget"
+            />
+          </div>
+        </div>
       </div>
 
       <!-- Spotlight overlay -->
@@ -228,6 +337,15 @@ function handleKeydown(e: KeyboardEvent) {
       </div>
       <p class="text-[10px] text-gray-700 text-center mt-2">Enter to send · Shift+Enter for new line</p>
     </div>
+
+    <!-- Widget Config Modal (live canvas) -->
+    <WidgetConfigModal
+      v-if="showConfigModal && editingWidget"
+      :widget="editingWidget"
+      :machines="machineStore.machines"
+      @save="onSaveWidget"
+      @close="showConfigModal = false; editingWidget = null"
+    />
   </div>
 </template>
 

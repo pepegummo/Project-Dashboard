@@ -119,6 +119,8 @@ var CreateDashboardTool = map[string]any{
 
 var PreviewAddWidgetTool = map[string]any{
 	"name":        "preview_add_widget",
+
+
 	"description": "Add a widget to a NEW dashboard preview plan that is currently being composed (i.e. preview_dashboard was called this turn and the user has NOT yet confirmed). Do NOT use this for existing dashboards — use add_widget_to_dashboard instead. No DB write — widget is added to the plan and created only when the user confirms.",
 	"input_schema": map[string]any{
 		"type":     "object",
@@ -187,26 +189,15 @@ var CreateAlertTool = map[string]any{
 	},
 }
 
-var AcknowledgeAlertTool = map[string]any{
-	"name":        "acknowledge_alert",
-	"description": "Acknowledge an open alert event by event_id.",
+var ManageAlertEventTool = map[string]any{
+	"name":        "manage_alert_event",
+	"description": "Acknowledge or resolve an open alert event. action: ack | resolve.",
 	"input_schema": map[string]any{
 		"type":     "object",
-		"required": []string{"event_id"},
+		"required": []string{"event_id", "action"},
 		"properties": map[string]any{
 			"event_id": map[string]any{"type": "string"},
-		},
-	},
-}
-
-var ResolveAlertTool = map[string]any{
-	"name":        "resolve_alert",
-	"description": "Resolve (close) an open alert event by event_id.",
-	"input_schema": map[string]any{
-		"type":     "object",
-		"required": []string{"event_id"},
-		"properties": map[string]any{
-			"event_id": map[string]any{"type": "string"},
+			"action":   map[string]any{"type": "string", "enum": []string{"ack", "resolve"}},
 		},
 	},
 }
@@ -219,17 +210,14 @@ func AllTools() []map[string]any {
 		GetTelemetryTrendTool,
 		GetActiveAlertsTool,
 		GetDailyCountTool,
-		GetFactoryOverviewTool,
 		ListDashboardsTool,
-		LocateWidgetTool,
 		PreviewDashboardTool,
 		PreviewAddWidgetTool,
 		PreviewRemoveWidgetTool,
 		AddWidgetTool,
 		RemoveWidgetTool,
 		CreateAlertTool,
-		AcknowledgeAlertTool,
-		ResolveAlertTool,
+		ManageAlertEventTool,
 	}
 }
 
@@ -239,8 +227,7 @@ var writeTools = map[string]bool{
 	"add_widget_to_dashboard": true,
 	"remove_widget":           true,
 	"create_alert":            true,
-	"acknowledge_alert":       true,
-	"resolve_alert":           true,
+	"manage_alert_event":      true,
 }
 
 func isWriteTool(name string) bool { return writeTools[name] }
@@ -261,6 +248,7 @@ type ToolWidget struct {
 type TemplateDashboardArgs struct {
 	Machine  string          `json:"machine"`
 	Template string          `json:"template"`
+	Name     string          `json:"name,omitempty"`    // user-edited dashboard name
 	Widgets  []PreviewWidget `json:"widgets,omitempty"` // optional override from preview plan
 }
 

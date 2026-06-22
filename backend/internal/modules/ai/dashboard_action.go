@@ -133,6 +133,9 @@ func (a *DashboardAction) Handle(ctx context.Context, orgID, userID string, rawA
 	}
 
 	dashName := templateDashboardName(args.Template, args.Machine)
+	if n := strings.TrimSpace(args.Name); n != "" {
+		dashName = n
+	}
 	dash, err := a.dash.CreateDashboard(ctx, orgID, userID, dashName, nil, false, nil)
 	if err != nil {
 		return ToolResult{}, err
