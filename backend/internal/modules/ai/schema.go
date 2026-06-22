@@ -80,48 +80,27 @@ var GetDailyCountTool = map[string]any{
 	},
 }
 
-var GetFactoryOverviewTool = map[string]any{
-	"name":         "get_factory_overview",
-	"description":  "Snapshot of every machine: status, latest values, open-alert count. Use for broad 'what's wrong' questions.",
-	"input_schema": map[string]any{"type": "object", "properties": map[string]any{}},
-}
-
 var ListDashboardsTool = map[string]any{
 	"name":         "list_dashboards",
 	"description":  "List existing dashboards with names and widget counts.",
 	"input_schema": map[string]any{"type": "object", "properties": map[string]any{}},
 }
 
-var LocateWidgetTool = map[string]any{
-	"name":        "locate_widget",
-	"description": "Find a widget on the canvas by title, metric, or machine name so the UI can spotlight it.",
-	"input_schema": map[string]any{
-		"type":     "object",
-		"required": []string{"widget_title"},
-		"properties": map[string]any{
-			"widget_title":   map[string]any{"type": "string"},
-			"dashboard_name": map[string]any{"type": "string"},
-		},
-	},
-}
-
 var PreviewDashboardTool = map[string]any{
 	"name":         "preview_dashboard",
-	"description":  "STEP 1: Preview a dashboard from a template. Always call first. Show plan, ask user to confirm. Do NOT call create_custom_dashboard in the same turn.",
+	"description":  "STEP 1: Preview a template dashboard. Call first; do NOT call create_custom_dashboard the same turn.",
 	"input_schema": templateDashboardInput,
 }
 
 var CreateDashboardTool = map[string]any{
 	"name":         "create_custom_dashboard",
-	"description":  "STEP 2: Create the dashboard. Only after user confirms the preview.",
+	"description":  "STEP 2: Create the dashboard, only after the user confirms the preview.",
 	"input_schema": templateDashboardInput,
 }
 
 var PreviewAddWidgetTool = map[string]any{
 	"name":        "preview_add_widget",
-
-
-	"description": "Add a widget to a NEW dashboard preview plan that is currently being composed (i.e. preview_dashboard was called this turn and the user has NOT yet confirmed). Do NOT use this for existing dashboards — use add_widget_to_dashboard instead. No DB write — widget is added to the plan and created only when the user confirms.",
+	"description": "Add a widget to the in-progress preview plan (no DB write).",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"machine", "widget"},
@@ -134,7 +113,7 @@ var PreviewAddWidgetTool = map[string]any{
 
 var PreviewRemoveWidgetTool = map[string]any{
 	"name":        "preview_remove_widget",
-	"description": "Remove a widget from a NEW dashboard preview plan currently being composed (i.e. preview_dashboard was called this turn and not yet confirmed). Do NOT use this for existing dashboards — use remove_widget instead.",
+	"description": "Remove a widget from the in-progress preview plan (no DB write).",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"widget_title"},
@@ -146,7 +125,7 @@ var PreviewRemoveWidgetTool = map[string]any{
 
 var AddWidgetTool = map[string]any{
 	"name":        "add_widget_to_dashboard",
-	"description": "Add one widget to an EXISTING dashboard (by name). Always use this when the dashboard already exists in the DB — never preview_add_widget for existing dashboards.",
+	"description": "Add one widget to an EXISTING dashboard (by name).",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"dashboard_name", "widget"},
@@ -232,6 +211,20 @@ var writeTools = map[string]bool{
 
 func isWriteTool(name string) bool { return writeTools[name] }
 
+// builderTools create or modify dashboards/widgets/alerts. They're only sent to
+// the LLM when the user's message shows build/edit intent (see wantsBuilderTools).
+var builderTools = map[string]bool{
+	"preview_dashboard":       true,
+	"preview_add_widget":      true,
+	"preview_remove_widget":   true,
+	"add_widget_to_dashboard": true,
+	"remove_widget":           true,
+	"create_alert":            true,
+	"manage_alert_event":      true,
+}
+
+func isBuilderTool(name string) bool { return builderTools[name] }
+
 // ── Tool argument structs ─────────────────────────────────────────────────────
 
 type ToolWidget struct {
@@ -312,11 +305,3 @@ type PreviewDashboardResult struct {
 	Summary       string          `json:"summary"`
 }
 
-// ── Locate type ───────────────────────────────────────────────────────────────
-
-type LocateWidgetResult struct {
-	Found       bool   `json:"found"`
-	WidgetID    string `json:"widgetId,omitempty"`
-	WidgetTitle string `json:"widgetTitle,omitempty"`
-	Summary     string `json:"summary"`
-}

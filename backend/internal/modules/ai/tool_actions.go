@@ -69,13 +69,28 @@ func (tk *ToolKit) GetTelemetryTrend(ctx context.Context, orgID string, raw json
 	return tk.tel.GetAggregate(ctx, id, args.Metric, period, orgID)
 }
 
-// GetActiveAlerts lists every open alert event for the org.
+// GetActiveAlerts lists every open alert event for the org. The result is fed
+// back to the LLM (and re-sent on each agentic-loop iteration), so we project
+// each event down to only the fields the model needs to reason or ack/resolve.
 func (tk *ToolKit) GetActiveAlerts(ctx context.Context, orgID string) (any, error) {
 	events, err := tk.alert.GetActiveEvents(ctx, &orgID)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"count": len(events), "alerts": events}, nil
+	out := make([]map[string]any, 0, len(events))
+	for _, e := range events {
+		out = append(out, map[string]any{
+			"event_id":    e.ID,
+			"machine":     e.MachineName,
+			"metric":      e.Field,
+			"value":       e.Value,
+			"severity":    e.Severity,
+			"status":      e.Status,
+			"message":     e.Message,
+			"triggeredAt": e.TriggeredAt,
+		})
+	}
+	return map[string]any{"count": len(out), "alerts": out}, nil
 }
 
 // GetDailyCount returns per-day production counts for one machine.
@@ -272,107 +287,6 @@ func (tk *ToolKit) ResolveAlert(ctx context.Context, userID string, raw json.Raw
 		return nil, err
 	}
 	return map[string]any{"success": true, "summary": "Alert resolved."}, nil
-}
-
-// ── Category D: factory-wide analysis ────────────────────────────────────────
-
-// GetFactoryOverview returns a one-shot snapshot of every machine — status,
-// latest values, and open-alert count — for the LLM to summarise or reason over.
-func (tk *ToolKit) GetFactoryOverview(ctx context.Context, orgID string) (any, error) {
-	rows, err := database.Pool.Query(ctx, `
-		SELECT m.id, m.name, m.type, m.status
-		FROM machines m
-		JOIN production_lines pl ON pl.id = m.production_line_id
-		JOIN factories f ON f.id = pl.factory_id
-		WHERE f.organization_id = $1
-		ORDER BY m.name
-	`, orgID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	type mrow struct{ id, name, mtype, status string }
-	var ms []mrow
-	ids := []string{}
-	for rows.Next() {
-		var m mrow
-		if err := rows.Scan(&m.id, &m.name, &m.mtype, &m.status); err != nil {
-			continue
-		}
-		ms = append(ms, m)
-		ids = append(ids, m.id)
-	}
-
-	latest, _ := tk.tel.GetMultiMachineLatest(ctx, ids, &orgID)
-	events, _ := tk.alert.GetActiveEvents(ctx, &orgID)
-	alertCount := map[string]int{}
-	for _, e := range events {
-		alertCount[e.MachineID]++
-	}
-
-	out := make([]map[string]any, 0, len(ms))
-	for _, m := range ms {
-		entry := map[string]any{
-			"machine":    m.name,
-			"type":       m.mtype,
-			"status":     m.status,
-			"openAlerts": alertCount[m.id],
-		}
-		if snap, ok := latest[m.id]; ok && snap != nil {
-			entry["latest"] = snap.Data
-		}
-		out = append(out, entry)
-	}
-	return map[string]any{
-		"machineCount":    len(ms),
-		"totalOpenAlerts": len(events),
-		"machines":        out,
-	}, nil
-}
-
-// ── Category E: canvas locate ────────────────────────────────────────────────
-
-// LocateWidget searches the org's dashboard widgets for one matching the user's
-// description and returns its id so the frontend can spotlight it.
-func (tk *ToolKit) LocateWidget(ctx context.Context, orgID string, raw json.RawMessage) (LocateWidgetResult, error) {
-	var args struct {
-		WidgetTitle   string `json:"widget_title"`
-		DashboardName string `json:"dashboard_name"`
-	}
-	_ = json.Unmarshal(raw, &args)
-	term := strings.TrimSpace(args.WidgetTitle)
-	if term == "" {
-		return LocateWidgetResult{Found: false, Summary: "widget_title is required"}, nil
-	}
-
-	query := `
-		SELECT dw.id, COALESCE(dw.title, dw.widget_type)
-		FROM dashboard_widgets dw
-		JOIN dashboards d ON d.id = dw.dashboard_id
-		WHERE d.organization_id = $1
-		  AND (LOWER(COALESCE(dw.title, '')) LIKE '%' || LOWER($2) || '%'
-		       OR LOWER(dw.config->>'field') LIKE '%' || LOWER($2) || '%'
-		       OR LOWER(dw.widget_type)      LIKE '%' || LOWER($2) || '%')
-	`
-	args2 := []any{orgID, term}
-	if dn := strings.TrimSpace(args.DashboardName); dn != "" {
-		query += " AND LOWER(d.name) = LOWER($3)"
-		args2 = append(args2, dn)
-	}
-	query += " ORDER BY d.created_at DESC LIMIT 1"
-
-	var widgetID, widgetTitle string
-	err := database.Pool.QueryRow(ctx, query, args2...).Scan(&widgetID, &widgetTitle)
-	if err != nil {
-		return LocateWidgetResult{Found: false, Summary: fmt.Sprintf("No widget matching %q found.", term)}, nil
-	}
-	return LocateWidgetResult{
-		Found:       true,
-		WidgetID:    widgetID,
-		WidgetTitle: widgetTitle,
-		Summary:     fmt.Sprintf("Found widget %q — highlighting it on your canvas.", widgetTitle),
-	}, nil
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

@@ -27,7 +27,8 @@ Rules:
 3. Do only what was asked; no extra chained actions.
 4. After any change confirm briefly in plain text.
 5. preview_add_widget and preview_remove_widget are ONLY for a new dashboard being composed this turn (after preview_dashboard was called and not yet confirmed). For any existing dashboard use add_widget_to_dashboard / remove_widget directly.
-6. preview_dashboard: pick machine_overview for general/status, machine_production for output/count, machine_maintenance for health/alerts. The user confirms via button — do not ask them to type confirm.`
+6. preview_dashboard: pick machine_overview for general/status, machine_production for output/count, machine_maintenance for health/alerts. The user confirms via button — do not ask them to type confirm.
+/no_think`
 
 // ── Groq / OpenAI-compatible API types ───────────────────────────────────────
 
@@ -252,12 +253,16 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	msgs := []groqMessage{{Role: "system", Content: &sp}}
 	msgs = append(msgs, buildGroqMessages(history)...)
 
-	tools := buildGroqTools()
+	// Send only the tools this message needs: read tools always, mutating tools
+	// for editors, builder tools only when the message shows build/edit intent.
+	tools := buildGroqTools(middleware.GetUser(c).Role, body.Message)
 
-	// Agentic loop (max 5 iterations)
+	// Agentic loop (max 5 iterations). Tools are sent on the first call only;
+	// after a tool round the next call is just the final text summary, so we
+	// drop the (~1k-token) tool array from it. This forgoes cross-call tool
+	// chaining — already discouraged by system-prompt rule #3.
+	callTools := tools
 	for i := 0; i < 5; i++ {
-		callTools := tools
-
 		resp, err := callGroq(msgs, callTools)
 		if err != nil {
 			return middleware.NewAppError(502, "AI_ERROR", fmt.Sprintf("Groq API error: %v", err))
@@ -307,6 +312,8 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 				Content:    &resultStr,
 			})
 		}
+
+		callTools = nil // continuation call: summarize the result, no tool array
 	}
 
 	return c.JSON(fiber.Map{"success": true, "data": newMessages})
@@ -325,10 +332,41 @@ func toGroqTool(t map[string]any) map[string]any {
 	}
 }
 
-// buildGroqTools returns all 15 tools (write queries).
-func buildGroqTools() []map[string]any {
+// builderHints are words that signal a create/edit/alert request. If none appear
+// in the user's message we skip the 7 builder tool schemas — most chat traffic is
+// read-only Q&A that only needs the read tools, and Groq re-bills the tool array
+// on every loop call.
+var builderHints = []string{
+	"create", "add", "remove", "delete", "build", "make", "set up", "setup",
+	"dashboard", "widget", "gauge", "chart", "kpi", "card", "table", "alarm",
+	"alert", "monitor", "preview", "threshold", "ack", "acknowledge", "resolve",
+}
+
+func wantsBuilderTools(msg string) bool {
+	m := strings.ToLower(msg)
+	for _, h := range builderHints {
+		if strings.Contains(m, h) {
+			return true
+		}
+	}
+	return false
+}
+
+// buildGroqTools returns the tools the LLM may call. Read tools always pass.
+// Mutating tools require admin/editor (matches dispatch's RBAC), and all builder
+// tools are gated behind build/edit intent in the message.
+func buildGroqTools(role, message string) []map[string]any {
+	canWrite := role == "admin" || role == "editor"
+	builder := wantsBuilderTools(message)
 	out := make([]map[string]any, 0, len(AllTools()))
 	for _, t := range AllTools() {
+		name := t["name"].(string)
+		if isWriteTool(name) && !canWrite {
+			continue
+		}
+		if isBuilderTool(name) && !builder {
+			continue
+		}
 		out = append(out, toGroqTool(t))
 	}
 	return out

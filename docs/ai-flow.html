@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IotVision AI — chat flow & token optimizations</title>
+<style>
+  :root{
+    --bg:#0f1420; --card:#1a2233; --line:#33405c; --ink:#e7ecf5; --mut:#8a97b0;
+    --read:#3b82f6; --write:#a855f7; --save:#22c55e; --cut:#f97316; --warn:#ef4444;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.5 ui-sans-serif,system-ui,Segoe UI,Roboto,Helvetica,Arial}
+  .wrap{max-width:1000px;margin:0 auto;padding:32px 20px 64px}
+  h1{font-size:22px;margin:0 0 4px}
+  .sub{color:var(--mut);margin:0 0 28px}
+  .col{display:flex;flex-direction:column;align-items:center;gap:0}
+  .box{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:14px 18px;width:560px;max-width:100%;position:relative}
+  .box h3{margin:0 0 4px;font-size:15px}
+  .box p{margin:0;color:var(--mut);font-size:13px}
+  .arrow{width:2px;height:26px;background:var(--line);position:relative}
+  .arrow::after{content:"";position:absolute;left:-4px;bottom:0;
+    border:5px solid transparent;border-top-color:var(--line)}
+  .loop{border:1px dashed var(--cut);border-radius:14px;padding:18px;margin:6px 0;
+    width:620px;max-width:100%;position:relative}
+  .loop .tag{position:absolute;top:-11px;left:16px;background:var(--bg);
+    color:var(--cut);font-size:12px;font-weight:600;padding:0 8px}
+  .badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;
+    border-radius:999px;margin-top:8px}
+  .b-cut{background:rgba(249,115,22,.15);color:var(--cut);border:1px solid var(--cut)}
+  .b-read{background:rgba(59,130,246,.15);color:var(--read);border:1px solid var(--read)}
+  .b-write{background:rgba(168,85,247,.15);color:var(--write);border:1px solid var(--write)}
+  .b-save{background:rgba(34,197,94,.15);color:var(--save);border:1px solid var(--save)}
+  .row{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:10px}
+  .pill{font-size:12px;padding:4px 10px;border-radius:8px;border:1px solid var(--line);
+    background:#141b29;color:var(--mut)}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:36px;
+    border-top:1px solid var(--line);padding-top:18px}
+  .legend div{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--mut)}
+  .dot{width:11px;height:11px;border-radius:3px;display:inline-block}
+  .note{font-size:12.5px;color:var(--mut);margin-top:4px}
+  code{background:#101725;border:1px solid var(--line);border-radius:5px;
+    padding:1px 5px;font-size:12px;color:#cdd7ee}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>IotVision AI — chat flow &amp; where tokens get cut</h1>
+  <p class="sub">backend/internal/modules/ai · Groq <code>qwen/qwen3-32b</code> · agentic loop, ≤5 calls/message</p>
+
+  <div class="col">
+    <div class="box">
+      <h3>1 · User sends message</h3>
+      <p>POST <code>/api/ai/chat</code> → <code>Chat()</code> in controller.go</p>
+    </div>
+    <div class="arrow"></div>
+
+    <div class="box">
+      <h3>2 · Build request prefix</h3>
+      <p>System prompt + last 8 messages (<code>buildGroqMessages</code>) + tool schemas.</p>
+      <span class="badge b-cut">CUT · /no_think kills reasoning tokens</span><br>
+      <span class="badge b-cut">CUT · trimmed tool descriptions</span><br>
+      <span class="badge b-write">RBAC · viewers get read-tools only (buildGroqTools(role))</span>
+      <p class="note">Groq has no prompt caching — this prefix is re-billed on <b>every</b> loop call.</p>
+    </div>
+    <div class="arrow"></div>
+
+    <div class="loop">
+      <span class="tag">AGENTIC LOOP ×≤5 — each pass re-sends the whole msgs[] array</span>
+      <div class="col">
+        <div class="box">
+          <h3>3 · callGroq(msgs, tools)</h3>
+          <p>429 → retry w/ backoff. Parser fail → retry once without tools.</p>
+        </div>
+        <div class="arrow"></div>
+        <div class="box">
+          <h3>4 · tool_calls?</h3>
+          <p><b>No</b> → save assistant text, exit loop. <b>Yes</b> → <code>dispatch()</code> each call.</p>
+          <div class="row">
+            <span class="pill" style="border-color:var(--read);color:var(--read)">get_machines</span>
+            <span class="pill" style="border-color:var(--read);color:var(--read)">get_latest_telemetry</span>
+            <span class="pill" style="border-color:var(--read);color:var(--read)">get_telemetry_trend</span>
+            <span class="pill" style="border-color:var(--read);color:var(--read)">get_active_alerts</span>
+            <span class="pill" style="border-color:var(--read);color:var(--read)">get_daily_count</span>
+            <span class="pill" style="border-color:var(--read);color:var(--read)">list_dashboards</span>
+            <span class="pill" style="border-color:var(--read);color:var(--read)">preview_* (×3)</span>
+            <span class="pill" style="border-color:var(--write);color:var(--write)">add/remove_widget</span>
+            <span class="pill" style="border-color:var(--write);color:var(--write)">create_alert</span>
+            <span class="pill" style="border-color:var(--write);color:var(--write)">manage_alert_event</span>
+          </div>
+        </div>
+        <div class="arrow"></div>
+        <div class="box">
+          <h3>5 · Tool result → appended to msgs[]</h3>
+          <p>Result re-sent on every later loop pass, so fat payloads cost N×.</p>
+          <span class="badge b-cut">CUT · get_active_alerts projected to 8 fields</span>
+        </div>
+      </div>
+    </div>
+    <div class="arrow"></div>
+
+    <div class="box">
+      <h3>6 · Persist + return newMessages[]</h3>
+      <p>Each turn saved via <code>repo.AddMessage</code>; frontend renders preview/created cards + toast.</p>
+      <span class="badge b-save">create_custom_dashboard fires from the confirm button, not the LLM</span>
+    </div>
+  </div>
+
+  <p class="note" style="margin-top:24px">
+    <b>Deleted (dead):</b> <code>get_factory_overview</code>, <code>locate_widget</code> + their handlers — never dispatched, never sent.
+  </p>
+
+  <div class="legend">
+    <div><span class="dot" style="background:var(--read)"></span> read tool (all roles)</div>
+    <div><span class="dot" style="background:var(--write)"></span> write tool (admin/editor only)</div>
+    <div><span class="dot" style="background:var(--cut)"></span> token optimization applied</div>
+    <div><span class="dot" style="background:var(--save)"></span> direct execute (button)</div>
+  </div>
+</div>
+</body>
+</html>

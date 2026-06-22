@@ -160,13 +160,6 @@ async function sendMessage() {
           if (idx >= 0) previewCard.result.widgets.splice(idx, 1);
         }
       }
-      if (msg.toolName === 'locate_widget') {
-        const r = msg.toolResult as any;
-        if (r?.found && r.widgetId) {
-          highlightId.value = r.widgetId;
-          setTimeout(() => { highlightId.value = undefined; }, 3500);
-        }
-      }
     }
   } catch (e: any) {
     showToast(`Error: ${e?.message ?? 'Something went wrong. Please try again.'}`);
