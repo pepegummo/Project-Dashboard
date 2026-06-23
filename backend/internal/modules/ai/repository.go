@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"iot-dashboard/internal/database"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type Conversation struct {
@@ -106,6 +108,65 @@ func (r *Repository) AddMessage(ctx context.Context, conversationID, role, conte
 	}
 	_, _ = database.Pool.Exec(ctx, `UPDATE ai_conversations SET updated_at = NOW() WHERE id = $1`, conversationID)
 	return &m, nil
+}
+
+// ── Preview drafts ──────────────────────────────────────────────────────────
+
+// UpsertDraft stores a preview as the view state, clearing any selected dashboard.
+func (r *Repository) UpsertDraft(ctx context.Context, userID, conversationID string, data json.RawMessage) error {
+	var convID interface{}
+	if conversationID != "" {
+		convID = conversationID
+	}
+	_, err := database.Pool.Exec(ctx, `
+		INSERT INTO ai_preview_drafts (user_id, conversation_id, dashboard_id, data, updated_at)
+		VALUES ($1, $2, NULL, $3, NOW())
+		ON CONFLICT (user_id) DO UPDATE
+		SET conversation_id = EXCLUDED.conversation_id,
+		    dashboard_id    = NULL,
+		    data            = EXCLUDED.data,
+		    updated_at      = NOW()
+	`, userID, convID, []byte(data))
+	return err
+}
+
+// UpsertDashboard stores a selected dashboard as the view state, clearing any preview.
+func (r *Repository) UpsertDashboard(ctx context.Context, userID, dashboardID string) error {
+	_, err := database.Pool.Exec(ctx, `
+		INSERT INTO ai_preview_drafts (user_id, conversation_id, dashboard_id, data, updated_at)
+		VALUES ($1, NULL, $2, NULL, NOW())
+		ON CONFLICT (user_id) DO UPDATE
+		SET conversation_id = NULL,
+		    dashboard_id    = EXCLUDED.dashboard_id,
+		    data            = NULL,
+		    updated_at      = NOW()
+	`, userID, dashboardID)
+	return err
+}
+
+func (r *Repository) GetDraft(ctx context.Context, userID string) (conversationID, dashboardID string, data json.RawMessage, found bool, err error) {
+	var convID, dashID *string
+	err = database.Pool.QueryRow(ctx, `
+		SELECT conversation_id, dashboard_id, data FROM ai_preview_drafts WHERE user_id = $1
+	`, userID).Scan(&convID, &dashID, &data)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return "", "", nil, false, nil
+		}
+		return "", "", nil, false, err
+	}
+	if convID != nil {
+		conversationID = *convID
+	}
+	if dashID != nil {
+		dashboardID = *dashID
+	}
+	return conversationID, dashboardID, data, true, nil
+}
+
+func (r *Repository) DeleteDraft(ctx context.Context, userID string) error {
+	_, err := database.Pool.Exec(ctx, `DELETE FROM ai_preview_drafts WHERE user_id = $1`, userID)
+	return err
 }
 
 // nullableJSON returns nil when the raw message is empty so pgx stores NULL instead of a zero-length JSONB.

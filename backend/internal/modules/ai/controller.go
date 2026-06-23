@@ -220,6 +220,61 @@ func (ctrl *Controller) AddMessage(c *fiber.Ctx) error {
 	return c.Status(201).JSON(fiber.Map{"success": true, "data": msg})
 }
 
+// ── Preview drafts ──────────────────────────────────────────────────────────────
+
+func (ctrl *Controller) GetPreviewDraft(c *fiber.Ctx) error {
+	user := middleware.GetUser(c)
+	convID, dashID, data, found, err := ctrl.repo.GetDraft(c.Context(), user.Sub)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return c.JSON(fiber.Map{"success": true, "data": nil})
+	}
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{
+		"conversationId": convID,
+		"dashboardId":    dashID,
+		"data":           data,
+	}})
+}
+
+func (ctrl *Controller) PutSelectedDashboard(c *fiber.Ctx) error {
+	var body struct {
+		DashboardID string `json:"dashboardId"`
+	}
+	if err := c.BodyParser(&body); err != nil || body.DashboardID == "" {
+		return middleware.NewAppError(400, "VALIDATION_ERROR", "dashboardId is required")
+	}
+	user := middleware.GetUser(c)
+	if err := ctrl.repo.UpsertDashboard(c.Context(), user.Sub, body.DashboardID); err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
+func (ctrl *Controller) PutPreviewDraft(c *fiber.Ctx) error {
+	var body struct {
+		ConversationID string          `json:"conversationId"`
+		Data           json.RawMessage `json:"data"`
+	}
+	if err := c.BodyParser(&body); err != nil || len(body.Data) == 0 {
+		return middleware.NewAppError(400, "VALIDATION_ERROR", "data is required")
+	}
+	user := middleware.GetUser(c)
+	if err := ctrl.repo.UpsertDraft(c.Context(), user.Sub, body.ConversationID, body.Data); err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
+func (ctrl *Controller) DeletePreviewDraft(c *fiber.Ctx) error {
+	user := middleware.GetUser(c)
+	if err := ctrl.repo.DeleteDraft(c.Context(), user.Sub); err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"success": true})
+}
+
 // ── Chat ──────────────────────────────────────────────────────────────────────
 
 func (ctrl *Controller) Chat(c *fiber.Ctx) error {

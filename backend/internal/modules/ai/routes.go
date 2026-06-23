@@ -18,5 +18,10 @@ func RegisterRoutes(router fiber.Router) {
 	router.Get("/conversations/:id/messages", ctrl.GetMessages)
 	router.Post("/conversations/:id/messages", ctrl.AddMessage)
 
+	router.Get("/preview-draft", ctrl.GetPreviewDraft)
+	router.Put("/preview-draft", ctrl.PutPreviewDraft)
+	router.Delete("/preview-draft", ctrl.DeletePreviewDraft)
+	router.Put("/selected-dashboard", ctrl.PutSelectedDashboard)
+
 	router.Post("/chat", ctrl.Chat)
 }

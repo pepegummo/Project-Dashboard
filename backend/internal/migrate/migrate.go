@@ -227,6 +227,20 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool) error {
 			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
 
+		// ── ai_preview_drafts ────────────────────────────────────────────────
+		// The AI page's persisted per-user view state: EITHER an in-progress
+		// preview (data set) OR a selected dashboard (dashboard_id set).
+		`CREATE TABLE IF NOT EXISTS ai_preview_drafts (
+			user_id         UUID        PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+			conversation_id UUID,
+			dashboard_id    UUID,
+			data            JSONB,
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		// Bring rows created by the earlier (preview-only) schema up to date.
+		`ALTER TABLE ai_preview_drafts ADD COLUMN IF NOT EXISTS dashboard_id UUID`,
+		`ALTER TABLE ai_preview_drafts ALTER COLUMN data DROP NOT NULL`,
+
 		// ── audit_logs ───────────────────────────────────────────────────────
 		`CREATE TABLE IF NOT EXISTS audit_logs (
 			id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),

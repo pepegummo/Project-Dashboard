@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted } from 'vue';
+import { ref, computed, nextTick, onMounted, watch } from 'vue';
 import { Sparkles, Send, Loader2, Bot, Save, Plus, Trash2 } from 'lucide-vue-next';
 import { api } from '@/services/api.service';
 import { useDashboardStore } from '@/stores/dashboard.store';
@@ -47,7 +47,35 @@ const toastMsg = ref('');
 const toastVisible = ref(false);
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
-onMounted(() => machineStore.fetchMachines());
+// True while restoring the saved draft on mount, so the save-watcher doesn't echo it back.
+const restoring = ref(false);
+
+onMounted(async () => {
+  machineStore.fetchMachines();
+  try {
+    const draft = await api.getPreviewDraft();
+    if (draft?.dashboardId) {
+      // ponytail: deleted dashboard 404s here → caught → AI page just shows empty.
+      dashboardStore.fetchDashboard(draft.dashboardId);
+    } else if (draft?.data?.result) {
+      restoring.value = true;
+      conversationId.value = draft.conversationId || null;
+      canvasCards.value = [{ kind: 'preview', id: uid(), result: draft.data.result, args: draft.data.args ?? {} }];
+      nextTick(() => { restoring.value = false; });
+    }
+  } catch { /* no draft / offline — start empty */ }
+});
+
+// Persist the in-progress preview per user so it survives a refresh. Preview mutations
+// are discrete user/AI actions, so we save on each change.
+// ponytail: no debounce — add one if widget edits ever fire this in a tight stream.
+watch(canvasCards, () => {
+  if (restoring.value) return;
+  const card = canvasCards.value.find(c => c.kind === 'preview') as any;
+  if (card) {
+    api.putPreviewDraft({ conversationId: conversationId.value, data: { result: card.result, args: card.args } }).catch(() => {});
+  }
+}, { deep: true });
 
 function showToast(msg: string) {
   toastMsg.value = msg;
@@ -231,6 +259,7 @@ function clearChat() {
   dashboardStore.currentDashboard = null;   // also drop the dashboard selected from main
   input.value = '';
   toastVisible.value = false;
+  api.deletePreviewDraft().catch(() => {});
 }
 
 async function confirmCreate(dashboardName: string) {
@@ -246,6 +275,7 @@ async function confirmCreate(dashboardName: string) {
       canvasCards.value = [];
       conversationId.value = null;
       dashboardStore.currentDashboard = null;
+      api.deletePreviewDraft().catch(() => {});
       showToast(`Dashboard "${dashboardName}" created! Find it in the Dashboards list.`);
     }
   } catch (e: any) {

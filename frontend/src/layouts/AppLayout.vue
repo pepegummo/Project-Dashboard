@@ -6,9 +6,19 @@ import TopBar from '@/components/layout/TopBar.vue'
 import LEDCarousel from '@/components/led/LEDCarousel.vue'
 import ToastNotification from '@/components/layout/ToastNotification.vue'
 import { useScreenMode } from '@/composables/useScreenMode'
+import { useDashboardStore } from '@/stores/dashboard.store'
+import { api } from '@/services/api.service'
 
 const { isLED, isMobile } = useScreenMode()
 const route = useRoute()
+const dashboardStore = useDashboardStore()
+
+// Remember the dashboard the user opens in the main app as the AI page's view state,
+// so it survives refresh (and replaces any AI preview). Skip LED kiosk mode — its
+// carousel rotates dashboards and would clobber the user's view.
+watch(() => dashboardStore.currentDashboard?.id, (id) => {
+  if (id && !isLED.value) api.putSelectedDashboard(id).catch(() => {})
+})
 
 // ── Sidebar state ───────────────────────────────────────────────────────────
 const sidebarOpen = ref(false)       // mobile overlay

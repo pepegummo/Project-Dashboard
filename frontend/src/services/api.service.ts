@@ -286,6 +286,23 @@ class ApiService {
     return data.data;
   }
 
+  async getPreviewDraft() {
+    const { data } = await this.client.get<ApiResponse<{ conversationId: string; dashboardId?: string; data: any } | null>>('/ai/preview-draft');
+    return data.data;
+  }
+
+  async putPreviewDraft(payload: { conversationId: string | null; data: unknown }) {
+    await this.client.put('/ai/preview-draft', payload);
+  }
+
+  async deletePreviewDraft() {
+    await this.client.delete('/ai/preview-draft');
+  }
+
+  async putSelectedDashboard(dashboardId: string) {
+    await this.client.put('/ai/selected-dashboard', { dashboardId });
+  }
+
   async chat(conversationId: string, message: string, context?: string) {
     const { data } = await this.client.post<ApiResponse<AiMessage[]>>('/ai/chat', { conversationId, message, ...(context ? { context } : {}) }, { timeout: 120_000 });
     return data.data;
