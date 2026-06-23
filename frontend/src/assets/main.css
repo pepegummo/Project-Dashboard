@@ -117,3 +117,10 @@
   z-index: 20 !important;
   position: relative;
 }
+/* Persistent ring on a click-selected (mentioned) preview widget */
+.widget-selected {
+  outline: 2px solid var(--accent-violet, #8b5cf6);
+  outline-offset: -2px;
+  border-radius: 6px;
+  z-index: 15;
+}

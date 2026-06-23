@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { ClipboardList, CheckCircle2, Plus } from 'lucide-vue-next';
 import type { DashboardWidget, WidgetLayout, WidgetType, WidgetConfig } from '@/types';
 import GridStackCanvas from '@/components/dashboard/GridStackCanvas.vue';
@@ -10,6 +10,7 @@ import { useMachineStore } from '@/stores/machine.store';
 interface PreviewWidget {
   type: string; title: string; machine: string; machineUuid?: string;
   metric: string; unit: string; min?: number; max?: number;
+  startDateTime?: string; endDateTime?: string;
 }
 
 const props = defineProps<{
@@ -18,6 +19,8 @@ const props = defineProps<{
     widgets: PreviewWidget[];
     summary: string;
   };
+  highlightId?: string;
+  resetToken?: number;
 }>();
 
 const emit = defineEmits<{
@@ -25,6 +28,7 @@ const emit = defineEmits<{
   'remove-widget': [index: number];
   'add-widget': [widget: PreviewWidget];
   'update-widget': [index: number, data: Partial<PreviewWidget>];
+  'mention-widget': [payload: { text: string; selected: boolean }];
 }>();
 
 const machineStore = useMachineStore();
@@ -33,6 +37,11 @@ onMounted(() => machineStore.fetchMachines());
 const localName = ref(props.result.dashboardName);
 
 const localLayouts = ref<Record<string, WidgetLayout>>({});
+// preview widget id -> the exact mention token appended to the AI input (so removal is exact)
+const selected = ref<Record<string, string>>({});
+const selectedIds = computed(() => Object.keys(selected.value));
+// Parent bumps resetToken after a message is sent → clear the mention rings.
+watch(() => props.resetToken, () => { selected.value = {}; });
 const showToolbox = ref(false);
 const showConfigModal = ref(false);
 const editingPreviewIdx = ref(-1);
@@ -58,6 +67,8 @@ const previewWidgets = computed<DashboardWidget[]>(() =>
         unit: w.unit || '',
         ...(w.min !== undefined ? { min: w.min } : {}),
         ...(w.max !== undefined ? { max: w.max } : {}),
+        ...(w.startDateTime ? { startDateTime: w.startDateTime } : {}),
+        ...(w.endDateTime ? { endDateTime: w.endDateTime } : {}),
       },
       machineId: w.machineUuid || undefined,
       machine: w.machine ? { id: w.machineUuid || '', name: w.machine, type: 'sensor' as any, fields: [] } : undefined,
@@ -68,6 +79,19 @@ const previewWidgets = computed<DashboardWidget[]>(() =>
 
 function onLayoutChange(layouts: Array<{ id: string; layout: WidgetLayout }>) {
   for (const { id, layout } of layouts) localLayouts.value[id] = layout;
+}
+
+function onSelectPreviewWidget(widget: DashboardWidget) {
+  if (selected.value[widget.id]) {
+    const token = selected.value[widget.id];
+    const { [widget.id]: _, ...rest } = selected.value;
+    selected.value = rest;
+    emit('mention-widget', { text: token, selected: false });
+  } else {
+    const token = `@${widget.title} `;
+    selected.value = { ...selected.value, [widget.id]: token };
+    emit('mention-widget', { text: token, selected: true });
+  }
 }
 
 function onEditPreviewWidget(widget: DashboardWidget) {
@@ -114,6 +138,8 @@ function onSaveWidget(data: { machineId?: string; widgetType: WidgetType; title?
     unit: (data.config.unit as string) ?? '',
     ...(data.config.min !== undefined ? { min: data.config.min as number } : {}),
     ...(data.config.max !== undefined ? { max: data.config.max as number } : {}),
+    ...(data.config.startDateTime ? { startDateTime: data.config.startDateTime as string } : {}),
+    ...(data.config.endDateTime ? { endDateTime: data.config.endDateTime as string } : {}),
   };
 
   if (editingPreviewIdx.value === -1) {
@@ -156,8 +182,11 @@ function onSaveWidget(data: { machineId?: string; widgetType: WidgetType; title?
         <GridStackCanvas
           ref="gridRef"
           :widgets="previewWidgets"
+          :selected-ids="selectedIds"
+          :highlighted-id="props.highlightId"
           @edit-widget="onEditPreviewWidget"
           @remove-widget="onRemovePreviewWidget"
+          @select-widget="onSelectPreviewWidget"
           @layout-change="onLayoutChange"
         />
       </div>

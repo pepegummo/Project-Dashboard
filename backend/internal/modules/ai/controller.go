@@ -26,9 +26,11 @@ Rules:
 2. Use exact machine names and dashboard names. If the user mentions a name directly (e.g. "CW-01"), use it as-is — only call get_machines or list_dashboards when the name is ambiguous or unknown.
 3. Do only what was asked; no extra chained actions.
 4. After any change confirm briefly in plain text.
-5. preview_add_widget and preview_remove_widget are ONLY for a new dashboard being composed this turn (after preview_dashboard was called and not yet confirmed). For any existing dashboard use add_widget_to_dashboard / remove_widget directly.
+5. preview_add_widget, preview_remove_widget and preview_update_widget are ONLY for a new dashboard being composed this turn (after preview_dashboard was called and not yet confirmed). To edit a widget already in the preview (e.g. change its title or metric), use preview_update_widget with the widget's current title. For any existing dashboard use add_widget_to_dashboard / remove_widget directly.
 6. preview_dashboard: pick machine_overview for general/status, machine_production for output/count, machine_maintenance for health/alerts. The user confirms via button — do not ask them to type confirm.
 7. If the answer is already in the provided dashboard context (widgets/values on screen), answer from it directly — do not call a tool.
+8. Line/trend chart widgets support an absolute date range. To change it, call preview_update_widget with start_date/end_date as YYYY-MM-DD (convert any DD/MM/YYYY the user gives). Never claim only preset ranges (5m, 1h, 7d, …) are supported.
+9. Reply entirely in the same language as the user's latest message. Never mix languages within a reply.
 /no_think`
 
 // ── Groq / OpenAI-compatible API types ───────────────────────────────────────
@@ -108,6 +110,8 @@ func (ctrl *Controller) dispatch(c *fiber.Ctx, toolName string, rawArgs json.Raw
 		}
 		json.Unmarshal(rawArgs, &a)
 		return map[string]any{"removed": true, "widgetTitle": a.WidgetTitle}, nil
+	case "preview_update_widget":
+		return ctrl.action.PreviewUpdateWidget(ctx, user.OrgId, rawArgs)
 	case "create_custom_dashboard":
 		return ctrl.action.Handle(ctx, user.OrgId, user.Sub, rawArgs)
 	case "add_widget_to_dashboard":
@@ -263,8 +267,11 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	}
 
 	// Send only the tools this message needs: read tools always, mutating tools
-	// for editors, builder tools only when the message shows build/edit intent.
-	tools := buildGroqTools(middleware.GetUser(c).Role, body.Message)
+	// for editors, builder tools when the message shows build/edit intent OR a
+	// dashboard preview is on screen (context present) — the latter is language-
+	// agnostic, so in-session edits work for non-English messages too.
+	includeBuilder := wantsBuilderTools(body.Message) || body.Context != ""
+	tools := buildGroqTools(middleware.GetUser(c).Role, includeBuilder)
 
 	// Agentic loop (max 5 iterations). Tools are sent on the first call only;
 	// after a tool round the next call is just the final text summary, so we
@@ -347,6 +354,7 @@ func toGroqTool(t map[string]any) map[string]any {
 // on every loop call.
 var builderHints = []string{
 	"create", "add", "remove", "delete", "build", "make", "set up", "setup",
+	"change", "edit", "rename", "update",
 	"dashboard", "widget", "gauge", "chart", "kpi", "card", "table", "alarm",
 	"alert", "monitor", "preview", "threshold", "ack", "acknowledge", "resolve",
 }
@@ -364,16 +372,15 @@ func wantsBuilderTools(msg string) bool {
 // buildGroqTools returns the tools the LLM may call. Read tools always pass.
 // Mutating tools require admin/editor (matches dispatch's RBAC), and all builder
 // tools are gated behind build/edit intent in the message.
-func buildGroqTools(role, message string) []map[string]any {
+func buildGroqTools(role string, includeBuilder bool) []map[string]any {
 	canWrite := role == "admin" || role == "editor"
-	builder := wantsBuilderTools(message)
 	out := make([]map[string]any, 0, len(AllTools()))
 	for _, t := range AllTools() {
 		name := t["name"].(string)
 		if isWriteTool(name) && !canWrite {
 			continue
 		}
-		if isBuilderTool(name) && !builder {
+		if isBuilderTool(name) && !includeBuilder {
 			continue
 		}
 		out = append(out, toGroqTool(t))

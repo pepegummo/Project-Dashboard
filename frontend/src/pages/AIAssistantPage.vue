@@ -21,9 +21,16 @@ const machineStore = useMachineStore();
 const telemetryStore = useTelemetryStore();
 const canvasCards = ref<CanvasCard[]>([]);
 const highlightId = ref<string | undefined>(undefined);
+const previewHighlightId = ref<string | undefined>(undefined);
+const selectionResetToken = ref(0);
 const processing = ref(false);
 const input = ref('');
 const canvasRef = ref<HTMLElement | null>(null);
+
+function onMentionWidget({ text, selected }: { text: string; selected: boolean }) {
+  input.value = selected ? input.value + text : input.value.replace(text, '');
+}
+
 const conversationId = ref<string | null>(null);
 
 // Editor state for live canvas
@@ -134,6 +141,7 @@ async function sendMessage() {
   const text = input.value.trim();
   if (!text || processing.value) return;
   input.value = '';
+  selectionResetToken.value++;   // clear the widget mention rings once the message is sent
   processing.value = true;
 
   try {
@@ -171,11 +179,22 @@ async function sendMessage() {
         const r = msg.toolResult as any;
         const previewCard = canvasCards.value.find(c => c.kind === 'preview') as any;
         if (r?.widgetTitle && previewCard) {
-          const rt = r.widgetTitle.toLowerCase();
-          const idx = previewCard.result.widgets.findIndex(
-            (w: any) => { const wt = (w.title ?? '').toLowerCase(); return wt === rt || wt.includes(rt) || rt.includes(wt); }
-          );
+          const idx = findPreviewWidgetIdx(previewCard, r.widgetTitle);
           if (idx >= 0) previewCard.result.widgets.splice(idx, 1);
+        }
+      }
+      if (msg.toolName === 'preview_update_widget') {
+        const r = msg.toolResult as any;
+        const previewCard = canvasCards.value.find(c => c.kind === 'preview') as any;
+        if (r?.widgetTitle && r.changes && previewCard) {
+          const idx = findPreviewWidgetIdx(previewCard, r.widgetTitle);
+          if (idx >= 0) {
+            Object.assign(previewCard.result.widgets[idx], r.changes);
+            // Flash the edited widget so the change is visible. Clear first so re-editing
+            // the same widget still triggers the highlight watch; set after the remount settles.
+            previewHighlightId.value = undefined;
+            nextTick(() => { previewHighlightId.value = `preview-${idx}`; });
+          }
         }
       }
     }
@@ -207,6 +226,15 @@ async function confirmCreate(dashboardName: string) {
   } finally {
     processing.value = false;
   }
+}
+
+// Locate a preview widget by (fuzzy) title — shared by the remove/update chat handlers.
+function findPreviewWidgetIdx(previewCard: any, title: string): number {
+  const rt = title.toLowerCase();
+  return previewCard.result.widgets.findIndex((w: any) => {
+    const wt = (w.title ?? '').toLowerCase();
+    return wt === rt || wt.includes(rt) || rt.includes(wt);
+  });
 }
 
 function removePreviewWidget(index: number) {
@@ -250,10 +278,13 @@ function handleKeydown(e: KeyboardEvent) {
         <PreviewCanvasCard
           v-if="card.kind === 'preview'"
           :result="(card as any).result"
+          :highlight-id="previewHighlightId"
+          :reset-token="selectionResetToken"
           @confirm="confirmCreate"
           @remove-widget="removePreviewWidget"
           @add-widget="addPreviewWidget"
           @update-widget="updatePreviewWidget"
+          @mention-widget="onMentionWidget"
         />
         <CreatedCanvasCard
           v-else-if="card.kind === 'created'"

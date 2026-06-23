@@ -12,11 +12,13 @@ const props = withDefaults(defineProps<{
   widgets: DashboardWidget[];
   readonly?: boolean;
   highlightedId?: string;
+  selectedIds?: string[];
 }>(), { readonly: false });
 const emit = defineEmits<{
   'layout-change': [layouts: Array<{ id: string; layout: WidgetLayout }>];
   'edit-widget': [widget: DashboardWidget];
   'remove-widget': [widgetId: string];
+  'select-widget': [widget: DashboardWidget];
 }>();
 
 const gridRef = ref<HTMLElement | null>(null);
@@ -92,6 +94,7 @@ function addWidgetToGrid(widget: DashboardWidget) {
 
   const content = document.createElement('div');
   content.classList.add('grid-stack-item-content');
+  if (props.selectedIds?.includes(widget.id)) el.classList.add('widget-selected');
   el.appendChild(content);
 
   grid.el.appendChild(el);
@@ -103,6 +106,7 @@ function addWidgetToGrid(widget: DashboardWidget) {
     ...(props.readonly ? {} : {
       onEdit: () => emit('edit-widget', widget),
       onRemove: () => emit('remove-widget', widget.id),
+      onSelect: () => emit('select-widget', widget),
     }),
   });
   if (pinia) app.use(pinia);
@@ -151,6 +155,20 @@ watch(
     el.classList.add('widget-highlight');
     setTimeout(() => el.classList.remove('widget-highlight'), 3200);
   },
+);
+
+// Selection: toggle a persistent ring on the selected cells
+watch(
+  () => props.selectedIds,
+  (ids) => {
+    if (!gridRef.value) return;
+    const set = new Set(ids ?? []);
+    gridRef.value.querySelectorAll('[gs-id]').forEach((el) => {
+      const id = el.getAttribute('gs-id');
+      el.classList.toggle('widget-selected', !!id && set.has(id));
+    });
+  },
+  { deep: true },
 );
 
 // Deep watch handles additions, removals, and config edits

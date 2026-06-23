@@ -8,6 +8,7 @@ const props = defineProps<{
   widget: DashboardWidget;
   onEdit?: () => void;
   onRemove?: () => void;
+  onSelect?: () => void;
 }>();
 
 // Dynamic component loading by widget type (shared map — see useWidgetComponents)
@@ -35,7 +36,7 @@ const typeIcon = computed(() => {
 
 <template>
   <!-- `group` on the outer div so header buttons appear on ANY hover -->
-  <div class="flex flex-col h-full bg-surface-100 group">
+  <div class="flex flex-col h-full bg-surface-100 group" @click="onSelect?.()">
     <!-- Header -->
     <div class="flex items-center gap-2 px-3 py-2 border-b border-white/5 flex-shrink-0 min-h-[36px]">
       <div class="gs-drag-handle cursor-grab active:cursor-grabbing p-0.5 -ml-1 text-gray-600 hover:text-gray-400 transition-colors">

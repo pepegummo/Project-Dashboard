@@ -123,6 +123,26 @@ var PreviewRemoveWidgetTool = map[string]any{
 	},
 }
 
+var PreviewUpdateWidgetTool = map[string]any{
+	"name":        "preview_update_widget",
+	"description": "Edit a widget in the in-progress preview plan (no DB write). Locate it by its current title; pass only the fields to change.",
+	"input_schema": map[string]any{
+		"type":     "object",
+		"required": []string{"widget_title"},
+		"properties": map[string]any{
+			"widget_title": map[string]any{"type": "string", "description": "Current title of the widget to edit."},
+			"new_title":    map[string]any{"type": "string"},
+			"type":         map[string]any{"type": "string"},
+			"metric":       map[string]any{"type": "string"},
+			"unit":         map[string]any{"type": "string"},
+			"min":          map[string]any{"type": "number"},
+			"max":          map[string]any{"type": "number"},
+			"start_date":   map[string]any{"type": "string", "description": "Absolute window start as YYYY-MM-DD (chart widgets). Convert any DD/MM/YYYY the user gives."},
+			"end_date":     map[string]any{"type": "string", "description": "Absolute window end as YYYY-MM-DD (chart widgets)."},
+		},
+	},
+}
+
 var AddWidgetTool = map[string]any{
 	"name":        "add_widget_to_dashboard",
 	"description": "Add one widget to an EXISTING dashboard (by name).",
@@ -193,6 +213,7 @@ func AllTools() []map[string]any {
 		PreviewDashboardTool,
 		PreviewAddWidgetTool,
 		PreviewRemoveWidgetTool,
+		PreviewUpdateWidgetTool,
 		AddWidgetTool,
 		RemoveWidgetTool,
 		CreateAlertTool,
@@ -217,6 +238,7 @@ var builderTools = map[string]bool{
 	"preview_dashboard":       true,
 	"preview_add_widget":      true,
 	"preview_remove_widget":   true,
+	"preview_update_widget":   true,
 	"add_widget_to_dashboard": true,
 	"remove_widget":           true,
 	"create_alert":            true,
@@ -292,10 +314,12 @@ type PreviewWidget struct {
 	Title       string  `json:"title"`
 	Machine     string  `json:"machine"`
 	MachineUUID string  `json:"machineUuid,omitempty"` // resolved UUID — enables live data in preview
-	Metric      string  `json:"metric"`
-	Unit        string  `json:"unit"`
-	Min         float64 `json:"min,omitempty"`
-	Max         float64 `json:"max,omitempty"`
+	Metric        string  `json:"metric"`
+	Unit          string  `json:"unit"`
+	Min           float64 `json:"min,omitempty"`
+	Max           float64 `json:"max,omitempty"`
+	StartDateTime string  `json:"startDateTime,omitempty"` // absolute window start (datetime-local) for chart widgets
+	EndDateTime   string  `json:"endDateTime,omitempty"`
 }
 
 type PreviewDashboardResult struct {

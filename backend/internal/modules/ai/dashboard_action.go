@@ -165,7 +165,18 @@ func (a *DashboardAction) Handle(ctx context.Context, orgID, userID string, rawA
 				}
 			}
 			if pw.Type == "line-chart" {
-				cfg["liveMode"] = true
+				// Absolute date window takes precedence over the live (rolling) window.
+				if pw.StartDateTime != "" || pw.EndDateTime != "" {
+					cfg["liveMode"] = false
+					if pw.StartDateTime != "" {
+						cfg["startDateTime"] = pw.StartDateTime
+					}
+					if pw.EndDateTime != "" {
+						cfg["endDateTime"] = pw.EndDateTime
+					}
+				} else {
+					cfg["liveMode"] = true
+				}
 			}
 			cfgJSON, _ := json.Marshal(cfg)
 			mid := pw.MachineUUID
@@ -255,6 +266,63 @@ func (a *DashboardAction) PreviewAddWidget(ctx context.Context, orgID string, ra
 	return pw, nil
 }
 
+// PreviewUpdateWidget returns the partial changes to apply to a preview widget
+// (located client-side by title). No DB write — only the provided fields are returned.
+func (a *DashboardAction) PreviewUpdateWidget(ctx context.Context, orgID string, rawArgs json.RawMessage) (map[string]any, error) {
+	var args struct {
+		WidgetTitle string   `json:"widget_title"`
+		NewTitle    string   `json:"new_title"`
+		Type        string   `json:"type"`
+		Metric      string   `json:"metric"`
+		Unit        string   `json:"unit"`
+		Min         *float64 `json:"min"`
+		Max         *float64 `json:"max"`
+		StartDate   string   `json:"start_date"`
+		EndDate     string   `json:"end_date"`
+	}
+	if err := json.Unmarshal(rawArgs, &args); err != nil {
+		return nil, middleware.NewAppError(400, "VALIDATION_ERROR", "Malformed tool arguments")
+	}
+	if strings.TrimSpace(args.WidgetTitle) == "" {
+		return nil, middleware.NewAppError(400, "VALIDATION_ERROR", "widget_title is required")
+	}
+
+	changes := map[string]any{}
+	if strings.TrimSpace(args.NewTitle) != "" {
+		changes["title"] = args.NewTitle
+	}
+	if t := strings.TrimSpace(args.Type); t != "" {
+		if !isAllowedType(t) {
+			return nil, middleware.NewAppError(400, "VALIDATION_ERROR", fmt.Sprintf("unknown widget type %q", t))
+		}
+		changes["type"] = t
+	}
+	if m := strings.TrimSpace(args.Metric); m != "" {
+		changes["metric"] = m
+	}
+	if args.Unit != "" {
+		changes["unit"] = args.Unit
+	}
+	if args.Min != nil {
+		changes["min"] = *args.Min
+	}
+	if args.Max != nil {
+		changes["max"] = *args.Max
+	}
+	if s := strings.TrimSpace(args.StartDate); s != "" {
+		changes["startDateTime"] = toDatetimeLocal(s, false)
+	}
+	if e := strings.TrimSpace(args.EndDate); e != "" {
+		changes["endDateTime"] = toDatetimeLocal(e, true)
+	}
+
+	return map[string]any{
+		"updated":     true,
+		"widgetTitle": args.WidgetTitle,
+		"changes":     changes,
+	}, nil
+}
+
 // Preview builds the dashboard plan without any DB writes.
 func (a *DashboardAction) Preview(ctx context.Context, orgID string, rawArgs json.RawMessage) (PreviewDashboardResult, error) {
 	var args TemplateDashboardArgs
@@ -334,6 +402,27 @@ func buildConfig(w ToolWidget) json.RawMessage {
 	}
 	b, _ := json.Marshal(cfg)
 	return b
+}
+
+// toDatetimeLocal normalizes a model-supplied date into a "YYYY-MM-DDTHH:MM"
+// datetime-local string (what LineChartWidget's config.startDateTime expects).
+// A date-only value expands to start-of-day, or end-of-day when endOfDay is set.
+func toDatetimeLocal(s string, endOfDay bool) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if len(s) == 10 { // YYYY-MM-DD
+		if endOfDay {
+			return s + "T23:59"
+		}
+		return s + "T00:00"
+	}
+	s = strings.TrimSuffix(s, "Z") // datetime-local has no timezone
+	if i := strings.Index(s, "T"); i >= 0 && len(s) >= 16 {
+		return s[:16]
+	}
+	return s
 }
 
 func isAllowedType(t string) bool {
