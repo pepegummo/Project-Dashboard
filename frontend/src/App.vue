@@ -2,8 +2,10 @@
 import { computed } from 'vue';
 import { useRoute } from 'vue-router';
 import AppLayout from '@/layouts/AppLayout.vue';
+import { useAuthStore } from '@/stores/auth.store';
 
 const route = useRoute();
+const auth = useAuthStore();
 const isBlankLayout = computed(() => route.meta.layout === 'blank');
 </script>
 
@@ -13,7 +15,7 @@ const isBlankLayout = computed(() => route.meta.layout === 'blank');
       <RouterView />
     </template>
     <AppLayout v-else>
-      <RouterView />
+      <RouterView :key="auth.activeOrgId ?? ''" />
     </AppLayout>
   </div>
 </template>

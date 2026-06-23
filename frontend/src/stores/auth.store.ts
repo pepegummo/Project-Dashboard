@@ -14,11 +14,18 @@ function isExpired(t: string): boolean {
   }
 }
 
+function decodeOrgId(t: string): string | null {
+  try { return JSON.parse(atob(t.split('.')[1])).orgId ?? null; }
+  catch { return null; }
+}
+
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<User | null>(null);
   const token = ref<string | null>(localStorage.getItem('auth_token'));
-  const organizations = ref<OrgOption[]>([]);
-  const activeOrgId = ref<string | null>(null);
+  const organizations = ref<OrgOption[]>(
+    JSON.parse(localStorage.getItem('auth_orgs') ?? 'null') ?? []
+  );
+  const activeOrgId = ref<string | null>(token.value ? decodeOrgId(token.value) : null);
   const loading = ref(false);
   const error = ref<string | null>(null);
 
@@ -37,6 +44,7 @@ export const useAuthStore = defineStore('auth', () => {
       token.value = result.token;
       user.value = result.user;
       organizations.value = result.organizations ?? [];
+      localStorage.setItem('auth_orgs', JSON.stringify(organizations.value));
       activeOrgId.value = result.user.organizationId;
       // Multiple orgs → don't persist yet; hold the token in memory so switch-org
       // works, but a refresh before the user picks an org sends them back to login.
@@ -80,6 +88,7 @@ export const useAuthStore = defineStore('auth', () => {
     token.value = null;
     organizations.value = [];
     activeOrgId.value = null;
+    localStorage.removeItem('auth_orgs');
     api.setToken(null);
     wsService.disconnect();
     // Full reload to /login also drops any lingering store state. Matches the

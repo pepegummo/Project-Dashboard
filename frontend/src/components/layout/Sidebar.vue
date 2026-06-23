@@ -1,17 +1,18 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth.store';
 import { useAlertStore } from '@/stores/alert.store';
 import {
   LayoutDashboard, MonitorSpeaker, Bell, Bot,
-  Factory, ChevronRight, LogOut, Settings, X,
+  Factory, ChevronRight, LogOut, Settings, X, Building2,
 } from 'lucide-vue-next';
 
 defineProps<{ showClose?: boolean }>()
 const emit = defineEmits<{ close: [] }>()
 
 const route = useRoute();
+const router = useRouter();
 const auth = useAuthStore();
 const alertStore = useAlertStore();
 
@@ -24,6 +25,12 @@ const navItems = [
 
 const isActive = (path: string) => route.path.startsWith(path);
 const alertCount = computed(() => alertStore.openCount);
+const memberOrgs = computed(() => auth.organizations.filter(o => o.isMember));
+
+async function onOrgChange(e: Event) {
+  await auth.switchOrg((e.target as HTMLSelectElement).value);
+  router.push('/dashboards');
+}
 </script>
 
 <template>
@@ -46,6 +53,22 @@ const alertCount = computed(() => alertStore.openCount);
       >
         <X class="w-4 h-4" />
       </button>
+    </div>
+
+    <!-- Org switcher (only shown when user has access to multiple orgs) -->
+    <div v-if="memberOrgs.length > 1" class="px-3 py-2 border-b border-white/5">
+      <div class="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-surface-200/50">
+        <Building2 class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+        <select
+          :value="auth.activeOrgId ?? ''"
+          class="flex-1 bg-transparent text-xs text-gray-300 outline-none cursor-pointer"
+          @change="onOrgChange"
+        >
+          <option v-for="org in memberOrgs" :key="org.id" :value="org.id" class="bg-surface-100 text-gray-200">
+            {{ org.name }}
+          </option>
+        </select>
+      </div>
     </div>
 
     <!-- Navigation -->
