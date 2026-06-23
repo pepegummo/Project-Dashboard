@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted } from 'vue';
-import { Sparkles, Send, Loader2, Bot, Save, Plus } from 'lucide-vue-next';
+import { ref, computed, nextTick, onMounted } from 'vue';
+import { Sparkles, Send, Loader2, Bot, Save, Plus, Trash2 } from 'lucide-vue-next';
 import { api } from '@/services/api.service';
 import { useDashboardStore } from '@/stores/dashboard.store';
 import { useMachineStore } from '@/stores/machine.store';
@@ -23,6 +23,8 @@ const canvasCards = ref<CanvasCard[]>([]);
 const highlightId = ref<string | undefined>(undefined);
 const previewHighlightId = ref<string | undefined>(undefined);
 const selectionResetToken = ref(0);
+// While an AI preview card is on screen, it's the latest dashboard — hide the live grid.
+const hasPreview = computed(() => canvasCards.value.some(c => c.kind === 'preview'));
 const processing = ref(false);
 const input = ref('');
 const canvasRef = ref<HTMLElement | null>(null);
@@ -124,15 +126,32 @@ function updatePreviewWidget(index: number, data: any) {
 function buildDashboardContext(): string {
   const card = canvasCards.value.find(c => c.kind === 'preview') as any;
   const widgets = card?.result?.widgets ?? [];
-  if (!widgets.length) return '';
-  const lines = widgets.map((w: any) => {
-    const val = w.machineUuid && w.metric
-      ? telemetryStore.getFieldValue(w.machineUuid, w.metric)
-      : undefined;
-    const shown = val !== undefined ? ` = ${val}${w.unit ?? ''}` : '';
-    return `- ${w.type} "${w.title}" — machine ${w.machine}, metric ${w.metric}${shown}`;
-  });
-  return `Current dashboard preview "${card.result.dashboardName}" on screen:\n${lines.join('\n')}`;
+  if (widgets.length) {
+    const lines = widgets.map((w: any) => {
+      const val = w.machineUuid && w.metric
+        ? telemetryStore.getFieldValue(w.machineUuid, w.metric)
+        : undefined;
+      const shown = val !== undefined ? ` = ${val}${w.unit ?? ''}` : '';
+      return `- ${w.type} "${w.title}" — machine ${w.machine}, metric ${w.metric}${shown}`;
+    });
+    return `Current dashboard preview "${card.result.dashboardName}" on screen:\n${lines.join('\n')}`;
+  }
+
+  // No AI preview — fall back to the live dashboard loaded in the grid so the AI
+  // can answer about the existing dashboard the user is looking at.
+  const live = dashboardStore.widgets;
+  if (live.length) {
+    const lines = live.map((w) => {
+      const metric = w.config?.field;
+      const uuid = w.machineId ?? w.machine?.id;
+      const val = uuid && metric ? telemetryStore.getFieldValue(uuid, metric) : undefined;
+      const shown = val !== undefined ? ` = ${val}${w.config?.unit ?? ''}` : '';
+      return `- ${w.widgetType} "${w.title ?? ''}" — machine ${w.machine?.name ?? ''}, metric ${metric ?? ''}${shown}`;
+    });
+    return `Current dashboard "${dashboardStore.currentDashboard?.name ?? ''}" on screen (existing/saved):\n${lines.join('\n')}`;
+  }
+
+  return '';
 }
 
 // ── Chat ────────────────────────────────────────────────────────────────────
@@ -204,6 +223,14 @@ async function sendMessage() {
     processing.value = false;
     scrollToBottom();
   }
+}
+
+function clearChat() {
+  canvasCards.value = [];
+  conversationId.value = null;
+  dashboardStore.currentDashboard = null;   // also drop the dashboard selected from main
+  input.value = '';
+  toastVisible.value = false;
 }
 
 async function confirmCreate(dashboardName: string) {
@@ -294,7 +321,7 @@ function handleKeydown(e: KeyboardEvent) {
       </template>
 
       <!-- Live widget grid -->
-      <div v-if="dashboardStore.widgets.length" class="mt-2">
+      <div v-if="dashboardStore.widgets.length && !hasPreview" class="mt-2">
         <!-- Mini toolbar -->
         <div class="flex items-center justify-between mb-2">
           <p class="text-xs text-gray-500">{{ dashboardStore.widgets.length }} widgets · drag to move, gear to configure</p>
@@ -361,6 +388,15 @@ function handleKeydown(e: KeyboardEvent) {
 
       <div class="spotlight-bar">
         <Sparkles class="w-4 h-4 text-gray-500 flex-shrink-0" />
+        <button
+          v-if="canvasCards.length || conversationId || dashboardStore.widgets.length"
+          :disabled="processing"
+          title="Clear chat"
+          class="w-8 h-8 rounded-xl hover:bg-white/5 disabled:opacity-30 flex items-center justify-center transition-colors flex-shrink-0 text-gray-500 hover:text-gray-300"
+          @click="clearChat"
+        >
+          <Trash2 class="w-4 h-4" />
+        </button>
         <textarea
           v-model="input"
           rows="1"
