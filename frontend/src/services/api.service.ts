@@ -1,5 +1,5 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
-import type { ApiResponse, Dashboard, DashboardWidget, Machine, MachineField, Alert, AlertEvent, AiConversation, AiMessage, AiTool, TelemetrySeries, TelemetrySnapshot } from '@/types';
+import type { ApiResponse, Dashboard, DashboardWidget, Machine, MachineField, Alert, AlertEvent, AiConversation, AiMessage, AiTool, TelemetrySeries, TelemetrySnapshot, OrgOption } from '@/types';
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:4000';
 
@@ -27,12 +27,23 @@ class ApiService {
       (err: AxiosError<{ success: false; error: { code: string; message: string } }>) => {
         if (err.response?.status === 401) {
           localStorage.removeItem('auth_token');
-          // Don't redirect to login from public pages (e.g. /led kiosk share link)
-          if (!window.location.pathname.startsWith('/led')) {
+          const path = window.location.pathname;
+          // Don't redirect from public pages (/led kiosk) or from /login itself —
+          // a failed login is a 401 and must show its error, not reload the page.
+          if (!path.startsWith('/led') && !path.startsWith('/login')) {
             window.location.href = '/login';
           }
         }
-        const message = err.response?.data?.error?.message ?? err.message;
+        let message: string;
+        if (!err.response) {
+          // No HTTP response → offline, server down, or timeout.
+          if (!navigator.onLine) message = 'You appear to be offline. Check your connection.';
+          else if (err.code === 'ECONNABORTED') message = 'The server took too long to respond. Please try again.';
+          else message = 'Cannot reach the server. Please try again.';
+        } else {
+          message = err.response.data?.error?.message
+            ?? (err.response.status >= 500 ? 'Something went wrong on our side. Please try again.' : err.message);
+        }
         return Promise.reject(new Error(message));
       },
     );
@@ -53,7 +64,12 @@ class ApiService {
 
   // ─── Auth ──────────────────────────────────────────────────────────────────
   async login(email: string, password: string) {
-    const { data } = await this.client.post<ApiResponse<{ token: string; user: any }>>('/auth/login', { email, password });
+    const { data } = await this.client.post<ApiResponse<{ token: string; user: any; organizations: OrgOption[] }>>('/auth/login', { email, password });
+    return data.data;
+  }
+
+  async switchOrg(organizationId: string) {
+    const { data } = await this.client.post<ApiResponse<{ token: string }>>('/auth/switch-org', { organizationId });
     return data.data;
   }
 

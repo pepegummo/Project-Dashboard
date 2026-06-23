@@ -18,6 +18,9 @@ func RunAll(ctx context.Context, pool *pgxpool.Pool) error {
 	if err := EnsureSeed(ctx, pool); err != nil {
 		return fmt.Errorf("seed: %w", err)
 	}
+	if err := EnsureDemoOrgs(ctx, pool); err != nil {
+		return fmt.Errorf("demo orgs: %w", err)
+	}
 	return nil
 }
 
@@ -241,6 +244,15 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool) error {
 		`ALTER TABLE ai_preview_drafts ADD COLUMN IF NOT EXISTS dashboard_id UUID`,
 		`ALTER TABLE ai_preview_drafts ALTER COLUMN data DROP NOT NULL`,
 
+		// ── user_organizations ───────────────────────────────────────────────
+		// Membership join: one user can belong to many orgs. Admins bypass this
+		// (they get every org); non-admins are limited to their rows here.
+		`CREATE TABLE IF NOT EXISTS user_organizations (
+			user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			PRIMARY KEY (user_id, organization_id)
+		)`,
+
 		// ── audit_logs ───────────────────────────────────────────────────────
 		`CREATE TABLE IF NOT EXISTS audit_logs (
 			id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -335,6 +347,8 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool) error {
 		// ai
 		`CREATE INDEX IF NOT EXISTS idx_aiconv_user ON ai_conversations (user_id, updated_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_aimsg_conv  ON ai_messages (conversation_id, created_at ASC)`,
+		// user_organizations
+		`CREATE INDEX IF NOT EXISTS idx_uo_user ON user_organizations (user_id)`,
 		// audit
 		`CREATE INDEX IF NOT EXISTS idx_audit_user     ON audit_logs (user_id, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_resource ON audit_logs (resource, resource_id)`,
@@ -582,5 +596,204 @@ func EnsureSeed(ctx context.Context, pool *pgxpool.Pool) error {
 	}
 
 	fmt.Println(" done ✅")
+	return nil
+}
+
+// ─── Demo Orgs ──────────────────────────────────────────────────────────────────
+
+// EnsureDemoOrgs seeds 3 mock organizations (each with its own factory, machines,
+// fields, admin user, and a default dashboard) so the login page can offer a
+// multi-tenant demo. Idempotent: fixed UUIDs + ON CONFLICT DO NOTHING, so it runs
+// safely on every startup regardless of whether the main seed has run.
+// All admins share the password "Demo@1234". No telemetry is seeded.
+func EnsureDemoOrgs(ctx context.Context, pool *pgxpool.Pool) error {
+	hash, err := bcrypt.GenerateFromPassword([]byte("Demo@1234"), 12)
+	if err != nil {
+		return fmt.Errorf("bcrypt: %w", err)
+	}
+	f := func(v float64) *float64 { return &v }
+
+	type field struct {
+		key, label, unit           string
+		min, max, thr, upper, lower *float64
+		isKey                      bool
+	}
+	type machine struct {
+		id, name, mtype string
+		fields          []field
+	}
+	type widget struct {
+		id, machineID, wType, title, layout, config string
+	}
+	type demoOrg struct {
+		orgID, slug, name           string
+		factoryID, lineID, lineName string
+		userID, adminEmail          string
+		dashboardID                 string
+		machines                    []machine
+		widgets                     []widget
+	}
+
+	orgs := []demoOrg{
+		{
+			orgID: "00000000-0000-0000-0000-0000000a0000", slug: "nova-bottling", name: "Nova Bottling",
+			factoryID: "00000000-0000-0000-0000-0000000a0001", lineID: "00000000-0000-0000-0000-0000000a0002", lineName: "Line 1 — Bottling",
+			userID: "00000000-0000-0000-0000-0000000a0003", adminEmail: "admin@nova-bottling.com",
+			dashboardID: "00000000-0000-0000-0000-0000000a0004",
+			machines: []machine{
+				{"00000000-0000-0000-0000-0000000a0010", "Filler FL-01", "filler", []field{
+					{"fill_volume", "Fill Volume", "ml", f(0), f(1000), f(500), f(515), f(485), true},
+					{"fill_rate", "Fill Rate", "bpm", f(0), f(600), f(300), f(330), f(270), false},
+				}},
+				{"00000000-0000-0000-0000-0000000a0011", "Capper CP-01", "capper", []field{
+					{"torque", "Cap Torque", "Nm", f(0), f(5), f(2), f(2.2), f(1.8), true},
+					{"speed", "Speed", "bpm", f(0), f(600), f(300), f(330), f(270), false},
+				}},
+				{"00000000-0000-0000-0000-0000000a0012", "Labeler LB-01", "labeler", []field{
+					{"throughput", "Throughput", "bpm", f(0), f(600), f(300), f(330), f(270), true},
+					{"misalign", "Misaligned", "pcs", f(0), f(9999), f(0), f(5), f(0), false},
+				}},
+			},
+			widgets: []widget{
+				{"00000000-0000-0000-0000-0000000a0020", "00000000-0000-0000-0000-0000000a0010", "line-chart", "Fill Volume", `{"x":0,"y":0,"w":6,"h":4}`, `{"field":"fill_volume","timeRange":"1h","color":"#3b82f6"}`},
+				{"00000000-0000-0000-0000-0000000a0021", "00000000-0000-0000-0000-0000000a0011", "gauge", "Cap Torque", `{"x":6,"y":0,"w":3,"h":4}`, `{"field":"torque","min":0,"max":5,"unit":"Nm"}`},
+				{"00000000-0000-0000-0000-0000000a0022", "00000000-0000-0000-0000-0000000a0012", "kpi-card", "Throughput", `{"x":9,"y":0,"w":3,"h":4}`, `{"field":"throughput","unit":"bpm","precision":0}`},
+				{"00000000-0000-0000-0000-0000000a0023", "", "alarm-panel", "Active Alerts", `{"x":0,"y":4,"w":12,"h":4}`, `{"maxItems":10,"severities":["warning","critical"]}`},
+			},
+		},
+		{
+			orgID: "00000000-0000-0000-0000-0000000b0000", slug: "sakura-textiles", name: "Sakura Textiles",
+			factoryID: "00000000-0000-0000-0000-0000000b0001", lineID: "00000000-0000-0000-0000-0000000b0002", lineName: "Line 1 — Weaving",
+			userID: "00000000-0000-0000-0000-0000000b0003", adminEmail: "admin@sakura-textiles.com",
+			dashboardID: "00000000-0000-0000-0000-0000000b0004",
+			machines: []machine{
+				{"00000000-0000-0000-0000-0000000b0010", "Loom LM-01", "loom", []field{
+					{"rpm", "Loom RPM", "rpm", f(0), f(800), f(400), f(440), f(360), true},
+					{"tension", "Warp Tension", "N", f(0), f(200), f(100), f(110), f(90), false},
+				}},
+				{"00000000-0000-0000-0000-0000000b0011", "Dyeing Vat DV-01", "dyeing", []field{
+					{"temp", "Bath Temp", "°C", f(0), f(120), f(60), f(66), f(54), true},
+					{"ph", "pH", "", f(0), f(14), f(7), f(7.5), f(6.5), false},
+				}},
+				{"00000000-0000-0000-0000-0000000b0012", "Dryer DR-01", "dryer", []field{
+					{"temp", "Air Temp", "°C", f(0), f(200), f(120), f(132), f(108), true},
+					{"humidity", "Humidity", "%RH", f(0), f(100), f(30), f(33), f(27), false},
+				}},
+			},
+			widgets: []widget{
+				{"00000000-0000-0000-0000-0000000b0020", "00000000-0000-0000-0000-0000000b0010", "line-chart", "Loom RPM", `{"x":0,"y":0,"w":6,"h":4}`, `{"field":"rpm","timeRange":"1h","color":"#10b981"}`},
+				{"00000000-0000-0000-0000-0000000b0021", "00000000-0000-0000-0000-0000000b0011", "gauge", "Bath Temp", `{"x":6,"y":0,"w":3,"h":4}`, `{"field":"temp","min":0,"max":120,"unit":"°C"}`},
+				{"00000000-0000-0000-0000-0000000b0022", "00000000-0000-0000-0000-0000000b0012", "kpi-card", "Dryer Humidity", `{"x":9,"y":0,"w":3,"h":4}`, `{"field":"humidity","unit":"%RH","precision":0}`},
+				{"00000000-0000-0000-0000-0000000b0023", "", "alarm-panel", "Active Alerts", `{"x":0,"y":4,"w":12,"h":4}`, `{"maxItems":10,"severities":["warning","critical"]}`},
+			},
+		},
+		{
+			orgID: "00000000-0000-0000-0000-0000000c0000", slug: "andes-brewing", name: "Andes Brewing",
+			factoryID: "00000000-0000-0000-0000-0000000c0001", lineID: "00000000-0000-0000-0000-0000000c0002", lineName: "Line 1 — Brewhouse",
+			userID: "00000000-0000-0000-0000-0000000c0003", adminEmail: "admin@andes-brewing.com",
+			dashboardID: "00000000-0000-0000-0000-0000000c0004",
+			machines: []machine{
+				{"00000000-0000-0000-0000-0000000c0010", "Mash Tun MT-01", "mash", []field{
+					{"temp", "Mash Temp", "°C", f(0), f(100), f(65), f(68), f(62), true},
+					{"gravity", "Specific Gravity", "SG", f(1), f(1.1), f(1.05), f(1.06), f(1.04), false},
+				}},
+				{"00000000-0000-0000-0000-0000000c0011", "Fermenter FV-01", "fermenter", []field{
+					{"temp", "Ferment Temp", "°C", f(0), f(40), f(18), f(20), f(16), true},
+					{"pressure", "Pressure", "bar", f(0), f(3), f(1), f(1.2), f(0.8), false},
+				}},
+				{"00000000-0000-0000-0000-0000000c0012", "Bottling Line BL-01", "bottling", []field{
+					{"throughput", "Throughput", "bpm", f(0), f(500), f(250), f(275), f(225), true},
+					{"fill_level", "Fill Level", "%", f(0), f(100), f(98), f(100), f(96), false},
+				}},
+			},
+			widgets: []widget{
+				{"00000000-0000-0000-0000-0000000c0020", "00000000-0000-0000-0000-0000000c0010", "line-chart", "Mash Temp", `{"x":0,"y":0,"w":6,"h":4}`, `{"field":"temp","timeRange":"1h","color":"#f59e0b"}`},
+				{"00000000-0000-0000-0000-0000000c0021", "00000000-0000-0000-0000-0000000c0011", "gauge", "Fermenter Pressure", `{"x":6,"y":0,"w":3,"h":4}`, `{"field":"pressure","min":0,"max":3,"unit":"bar"}`},
+				{"00000000-0000-0000-0000-0000000c0022", "00000000-0000-0000-0000-0000000c0012", "kpi-card", "Bottling Throughput", `{"x":9,"y":0,"w":3,"h":4}`, `{"field":"throughput","unit":"bpm","precision":0}`},
+				{"00000000-0000-0000-0000-0000000c0023", "", "alarm-panel", "Active Alerts", `{"x":0,"y":4,"w":12,"h":4}`, `{"maxItems":10,"severities":["warning","critical"]}`},
+			},
+		},
+	}
+
+	for _, o := range orgs {
+		if _, err := pool.Exec(ctx, `INSERT INTO organizations (id, name, slug, plan) VALUES ($1,$2,$3,'starter') ON CONFLICT (id) DO NOTHING`,
+			o.orgID, o.name, o.slug); err != nil {
+			return fmt.Errorf("org %s: %w", o.slug, err)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO factories (id, organization_id, name, timezone) VALUES ($1,$2,$3,'UTC') ON CONFLICT (id) DO NOTHING`,
+			o.factoryID, o.orgID, o.name+" Plant"); err != nil {
+			return fmt.Errorf("factory %s: %w", o.slug, err)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO production_lines (id, factory_id, name, status) VALUES ($1,$2,$3,'active') ON CONFLICT (id) DO NOTHING`,
+			o.lineID, o.factoryID, o.lineName); err != nil {
+			return fmt.Errorf("line %s: %w", o.slug, err)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO users (id, organization_id, email, name, password_hash, role, is_active)
+			VALUES ($1,$2,$3,'Demo Admin',$4,'admin',TRUE) ON CONFLICT (id) DO NOTHING`,
+			o.userID, o.orgID, o.adminEmail, string(hash)); err != nil {
+			return fmt.Errorf("user %s: %w", o.slug, err)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO dashboards (id, organization_id, user_id, name, description, is_default, tags)
+			VALUES ($1,$2,$3,'Production Overview','Demo dashboard',TRUE,ARRAY['demo']) ON CONFLICT (id) DO NOTHING`,
+			o.dashboardID, o.orgID, o.userID); err != nil {
+			return fmt.Errorf("dashboard %s: %w", o.slug, err)
+		}
+
+		for _, m := range o.machines {
+			if _, err := pool.Exec(ctx, `INSERT INTO machines (id, production_line_id, name, type, status)
+				VALUES ($1,$2,$3,$4,'online') ON CONFLICT (id) DO NOTHING`,
+				m.id, o.lineID, m.name, m.mtype); err != nil {
+				return fmt.Errorf("machine %s: %w", m.name, err)
+			}
+			for _, fld := range m.fields {
+				unit := (*string)(nil)
+				if fld.unit != "" {
+					u := fld.unit
+					unit = &u
+				}
+				if _, err := pool.Exec(ctx, `INSERT INTO machine_fields
+					(id, machine_id, key, label, unit, data_type, min, max, threshold, upper_limit, lower_limit, precision, is_key)
+					VALUES (gen_random_uuid(),$1,$2,$3,$4,'number',$5,$6,$7,$8,$9,2,$10)
+					ON CONFLICT (machine_id, key) DO NOTHING`,
+					m.id, fld.key, fld.label, unit, fld.min, fld.max, fld.thr, fld.upper, fld.lower, fld.isKey); err != nil {
+					return fmt.Errorf("field %s.%s: %w", m.name, fld.key, err)
+				}
+			}
+		}
+
+		for _, w := range o.widgets {
+			var machineID interface{} = w.machineID
+			if w.machineID == "" {
+				machineID = nil
+			}
+			if _, err := pool.Exec(ctx, `INSERT INTO dashboard_widgets (id, dashboard_id, machine_id, widget_type, title, layout, config)
+				VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb) ON CONFLICT (id) DO NOTHING`,
+				w.id, o.dashboardID, machineID, w.wType, w.title, w.layout, w.config); err != nil {
+				return fmt.Errorf("widget %s: %w", w.id[len(w.id)-4:], err)
+			}
+		}
+	}
+
+	// Limited non-admin user to demonstrate the org picker's locked state.
+	// Member of ACME + Nova only → Sakura + Andes show darkened for them.
+	// (Admins bypass membership and see every org.)
+	const (
+		viewerID = "00000000-0000-0000-0000-0000000d0001"
+		acmeOrg  = "00000000-0000-0000-0000-000000000001"
+		novaOrg  = "00000000-0000-0000-0000-0000000a0000"
+	)
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id, organization_id, email, name, password_hash, role, is_active)
+		VALUES ($1,$2,'viewer@acme-foods.com','Demo Viewer',$3,'viewer',TRUE) ON CONFLICT (id) DO NOTHING`,
+		viewerID, acmeOrg, string(hash)); err != nil {
+		return fmt.Errorf("viewer user: %w", err)
+	}
+	for _, orgID := range []string{acmeOrg, novaOrg} {
+		if _, err := pool.Exec(ctx, `INSERT INTO user_organizations (user_id, organization_id)
+			VALUES ($1,$2) ON CONFLICT DO NOTHING`, viewerID, orgID); err != nil {
+			return fmt.Errorf("membership %s: %w", orgID, err)
+		}
+	}
+
+	fmt.Println("✅ Demo orgs ready")
 	return nil
 }

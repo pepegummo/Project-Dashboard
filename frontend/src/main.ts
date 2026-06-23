@@ -28,4 +28,6 @@ app.use(pinia);
 app.use(router);
 app.component('v-chart', ECharts);
 
-app.mount('#app');
+// Mount only once the router has resolved the initial route, so the guard's
+// redirects settle before first paint (no flash of a route we're leaving).
+router.isReady().then(() => app.mount('#app'));

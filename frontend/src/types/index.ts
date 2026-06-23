@@ -9,6 +9,12 @@ export interface User {
   preferences?: Record<string, unknown>;
 }
 
+export interface OrgOption {
+  id: string;
+  name: string;
+  isMember: boolean;
+}
+
 export interface LoginCredentials {
   email: string;
   password: string;

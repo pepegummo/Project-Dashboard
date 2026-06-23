@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { useRoute } from 'vue-router';
-import { Wifi, WifiOff, Bell, Menu } from 'lucide-vue-next';
+import { Activity, Bell, Menu } from 'lucide-vue-next';
 import { useAlertStore } from '@/stores/alert.store';
 import { useWebSocket } from '@/composables/useWebSocket';
 
@@ -49,8 +49,7 @@ const dateStr = () => now.value.toLocaleDateString('en-US', { weekday: 'short', 
         class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium"
         :class="isConnected ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'"
       >
-        <Wifi v-if="isConnected" class="w-3.5 h-3.5" />
-        <WifiOff v-else class="w-3.5 h-3.5" />
+        <Activity class="w-3.5 h-3.5" />
         <span>{{ isConnected ? 'Live' : 'Offline' }}</span>
       </div>
 

@@ -11,8 +11,9 @@ import (
 )
 
 type LoginResponse struct {
-	Token string      `json:"token"`
-	User  PublicUser  `json:"user"`
+	Token         string      `json:"token"`
+	User          PublicUser  `json:"user"`
+	Organizations []OrgOption `json:"organizations"`
 }
 
 type PublicUser struct {
@@ -41,23 +42,15 @@ func (s *Service) Login(ctx context.Context, email, password, ip, userAgent stri
 		return nil, middleware.NewAppError(401, "INVALID_CREDENTIALS", "Invalid email or password")
 	}
 
-	// Build JWT
-	expiresIn := 24 * time.Hour
-	claims := middleware.JwtClaims{
-		Sub:   user.ID,
-		OrgId: user.OrganizationID,
-		Role:  user.Role,
-		Email: user.Email,
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiresIn)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
+	// Token is scoped to the user's home org; the picker can switch it after login.
+	tokenStr, err := signToken(user.ID, user.OrganizationID, user.Role, user.Email)
+	if err != nil {
+		return nil, err
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenStr, err := token.SignedString([]byte(config.Env.JwtSecret))
+	orgs, err := s.repo.ListOrgs(ctx, user.ID, user.Role)
 	if err != nil {
-		return nil, middleware.NewAppError(500, "TOKEN_ERROR", "Failed to generate token")
+		return nil, middleware.NewAppError(500, "DB_ERROR", "Failed to load organizations")
 	}
 
 	// Fire-and-forget side effects
@@ -73,7 +66,39 @@ func (s *Service) Login(ctx context.Context, email, password, ip, userAgent stri
 			Role:           user.Role,
 			OrganizationID: user.OrganizationID,
 		},
+		Organizations: orgs,
 	}, nil
+}
+
+// SwitchOrg re-issues a JWT scoped to orgID, if the user is allowed to enter it.
+func (s *Service) SwitchOrg(ctx context.Context, userID, role, email, orgID string) (string, error) {
+	ok, err := s.repo.HasOrgAccess(ctx, userID, role, orgID)
+	if err != nil {
+		return "", middleware.NewAppError(500, "DB_ERROR", "Failed to check access")
+	}
+	if !ok {
+		return "", middleware.NewAppError(403, "FORBIDDEN", "No access to this organization")
+	}
+	return signToken(userID, orgID, role, email)
+}
+
+// signToken mints a 24h HS256 JWT for the given identity + active org.
+func signToken(userID, orgID, role, email string) (string, error) {
+	claims := middleware.JwtClaims{
+		Sub:   userID,
+		OrgId: orgID,
+		Role:  role,
+		Email: email,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+		},
+	}
+	tokenStr, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(config.Env.JwtSecret))
+	if err != nil {
+		return "", middleware.NewAppError(500, "TOKEN_ERROR", "Failed to generate token")
+	}
+	return tokenStr, nil
 }
 
 func (s *Service) GetProfile(ctx context.Context, userID string) (*PublicUser, error) {

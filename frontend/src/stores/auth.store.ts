@@ -2,17 +2,30 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { api } from '@/services/api.service';
 import { wsService } from '@/services/ws.service';
-import type { User } from '@/types';
+import type { User, OrgOption } from '@/types';
+
+// Decode a JWT's exp claim. Unparseable or past-due → expired.
+function isExpired(t: string): boolean {
+  try {
+    const { exp } = JSON.parse(atob(t.split('.')[1]));
+    return !exp || exp * 1000 <= Date.now();
+  } catch {
+    return true;
+  }
+}
 
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<User | null>(null);
   const token = ref<string | null>(localStorage.getItem('auth_token'));
+  const organizations = ref<OrgOption[]>([]);
+  const activeOrgId = ref<string | null>(null);
   const loading = ref(false);
   const error = ref<string | null>(null);
 
-  // Only the token is checked — user is loaded async after refresh.
-  // If the token is expired the 401 interceptor in api.service.ts clears it and redirects.
-  const isAuthenticated = computed(() => !!token.value);
+  // A token is "authenticated" only if it hasn't expired. Without this check a stale
+  // token would route a refresh straight into the dashboard, which then 401s and bounces
+  // back to /login — the brief dashboard flash.
+  const isAuthenticated = computed(() => !!token.value && !isExpired(token.value));
   const isAdmin = computed(() => user.value?.role === 'admin');
   const isEditor = computed(() => ['admin', 'editor'].includes(user.value?.role ?? ''));
 
@@ -23,7 +36,14 @@ export const useAuthStore = defineStore('auth', () => {
       const result = await api.login(email, password);
       token.value = result.token;
       user.value = result.user;
-      api.setToken(result.token);
+      organizations.value = result.organizations ?? [];
+      activeOrgId.value = result.user.organizationId;
+      // Multiple orgs → don't persist yet; hold the token in memory so switch-org
+      // works, but a refresh before the user picks an org sends them back to login.
+      // Single org → persist immediately (no picker step).
+      const accessible = organizations.value.filter(o => o.isMember);
+      if (accessible.length > 1) api.setOverrideToken(result.token);
+      else api.setToken(result.token);
       wsService.connect(result.token);
       return true;
     } catch (err) {
@@ -32,6 +52,18 @@ export const useAuthStore = defineStore('auth', () => {
     } finally {
       loading.value = false;
     }
+  }
+
+  // Re-issue the token scoped to another org and reconnect the WS to it.
+  async function switchOrg(orgId: string) {
+    const { token: newToken } = await api.switchOrg(orgId);
+    token.value = newToken;
+    activeOrgId.value = orgId;
+    // Org is now chosen — commit the token to localStorage and drop the in-memory hold.
+    api.setOverrideToken(null);
+    api.setToken(newToken);
+    wsService.disconnect();
+    wsService.connect(newToken);
   }
 
   async function loadProfile() {
@@ -46,16 +78,24 @@ export const useAuthStore = defineStore('auth', () => {
   function logout() {
     user.value = null;
     token.value = null;
+    organizations.value = [];
+    activeOrgId.value = null;
     api.setToken(null);
     wsService.disconnect();
+    // Full reload to /login also drops any lingering store state. Matches the
+    // 401 interceptor in api.service.ts.
+    window.location.href = '/login';
   }
 
-  // Restore session on app start
-  if (token.value) {
+  // Restore session on app start — but only for a still-valid token.
+  if (token.value && !isExpired(token.value)) {
     api.setToken(token.value);
     wsService.connect(token.value);   // reconnect WebSocket after page refresh
     loadProfile();
+  } else if (token.value) {
+    token.value = null;               // drop the stale token so the guard sends us to /login
+    api.setToken(null);
   }
 
-  return { user, token, loading, error, isAuthenticated, isAdmin, isEditor, login, logout, loadProfile };
+  return { user, token, organizations, activeOrgId, loading, error, isAuthenticated, isAdmin, isEditor, login, switchOrg, logout, loadProfile };
 });
