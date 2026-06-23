@@ -3,10 +3,11 @@ import { ref, onMounted, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useDashboardStore } from '@/stores/dashboard.store';
 import { useMachineStore } from '@/stores/machine.store';
+import { useAuthStore } from '@/stores/auth.store';
 import { useWidgetViewStateStore } from '@/stores/widget-view-state.store';
 import { useLedExport } from '@/composables/useLedExport';
 import { useToast } from '@/composables/useToast';
-import { Save, Plus, ArrowLeft, Loader2, LayoutGrid, Monitor, ExternalLink, Download } from 'lucide-vue-next';
+import { Save, Plus, ArrowLeft, Loader2, LayoutGrid, Monitor, ExternalLink, Upload } from 'lucide-vue-next';
 import GridStackCanvas from '@/components/dashboard/GridStackCanvas.vue';
 import WidgetToolbox from '@/components/dashboard/WidgetToolbox.vue';
 import WidgetConfigModal from '@/components/dashboard/WidgetConfigModal.vue';
@@ -16,6 +17,7 @@ const route = useRoute();
 const router = useRouter();
 const dashboardStore = useDashboardStore();
 const machineStore = useMachineStore();
+const authStore = useAuthStore();
 const widgetViewStateStore = useWidgetViewStateStore();
 
 // ── LED Export ─────────────────────────────────────────────────────────────────
@@ -68,6 +70,7 @@ function exportDashboard() {
   if (!dashboard) return;
 
   const exportData = {
+    orgId: authStore.activeOrgId,
     name: dashboard.name,
     description: dashboard.description ?? '',
     tags: dashboard.tags ?? [],
@@ -162,7 +165,7 @@ async function onRemoveWidget(widgetId: string) {
           title="Export dashboard config as JSON"
           @click="exportDashboard"
         >
-          <Download class="w-4 h-4" />
+          <Upload class="w-4 h-4" />
           Export
         </button>
 

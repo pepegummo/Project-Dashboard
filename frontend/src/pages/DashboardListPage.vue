@@ -2,12 +2,14 @@
 import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useDashboardStore } from '@/stores/dashboard.store';
+import { useAuthStore } from '@/stores/auth.store';
 import { useToast } from '@/composables/useToast';
-import { Plus, Upload, LayoutDashboard, Star, Globe, Trash2, Edit3, Loader2 } from 'lucide-vue-next';
+import { Plus, Download, LayoutDashboard, Star, Globe, Trash2, Edit3, Loader2 } from 'lucide-vue-next';
 import type { Dashboard } from '@/types';
 
 const router = useRouter();
 const dashboardStore = useDashboardStore();
+const authStore = useAuthStore();
 const toast = useToast();
 
 const showCreate = ref(false);
@@ -52,6 +54,11 @@ async function importDashboard(event: Event) {
 
     if (!data.name || !Array.isArray(data.widgets)) {
       toast.show('Invalid dashboard config file', 'error');
+      return;
+    }
+
+    if (data.orgId && data.orgId !== authStore.activeOrgId) {
+      toast.show('Cannot import: this dashboard was exported from a different organization', 'error');
       return;
     }
 
@@ -111,7 +118,7 @@ const timeAgo = (date: string) => {
           @click="importFileRef?.click()"
         >
           <Loader2 v-if="importing" class="w-4 h-4 animate-spin" />
-          <Upload v-else class="w-4 h-4" />
+          <Download v-else class="w-4 h-4" />
           {{ importing ? 'Importing…' : 'Import' }}
         </button>
         <button class="btn-primary" @click="showCreate = true">
