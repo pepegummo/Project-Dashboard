@@ -17,7 +17,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-const groqModel = "qwen/qwen3-32b"
+const groqModel = "openai/gpt-oss-120b"
 const groqBaseURL = "https://api.groq.com/openai/v1/chat/completions"
 const systemPrompt = `You are IotVision AI for an industrial IoT platform. Use tools to read data and make changes.
 
