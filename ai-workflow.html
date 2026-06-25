@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IotVision AI — Workflow</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', sans-serif; background: #0f1117; color: #e2e8f0; min-height: 100vh; padding: 32px 16px; }
+  h1 { font-size: 1.6rem; color: #7dd3fc; margin-bottom: 4px; }
+  .subtitle { color: #64748b; font-size: .85rem; margin-bottom: 32px; }
+  h2 { font-size: .95rem; color: #94a3b8; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 14px; }
+  h3 { font-size: .88rem; color: #cbd5e1; margin-bottom: 8px; }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 1200px; margin: 0 auto 20px; }
+  .full { grid-column: 1 / -1; }
+  .thirds { grid-template-columns: 1fr 1fr 1fr; }
+
+  .card { background: #1e2330; border: 1px solid #2d3748; border-radius: 12px; padding: 20px; }
+  .card.blue   { border-color: #1d4ed8; }
+  .card.green  { border-color: #15803d; }
+  .card.amber  { border-color: #b45309; }
+  .card.purple { border-color: #7e22ce; }
+  .card.rose   { border-color: #9f1239; }
+  .card.teal   { border-color: #0f766e; }
+
+  /* section spacing */
+  .section { max-width: 1200px; margin: 0 auto 20px; }
+
+  /* ── Overview flow ── */
+  .flow { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; }
+  .step { flex: 1; min-width: 110px; background: #0f1117; border: 1px solid #2d3748; border-radius: 10px; padding: 14px 10px; text-align: center; }
+  .step .icon { font-size: 1.5rem; margin-bottom: 6px; }
+  .step .name  { font-size: .85rem; font-weight: 600; color: #e2e8f0; margin-bottom: 4px; }
+  .step .label { font-size: .74rem; color: #64748b; line-height: 1.4; }
+  .arrow { display: flex; align-items: center; padding: 0 4px; color: #4a5568; font-size: 1.2rem; align-self: center; flex-shrink: 0; }
+
+  /* ── Row items ── */
+  .row { display: flex; gap: 10px; margin-bottom: 10px; align-items: flex-start; }
+  .row-label { font-size: .78rem; font-weight: 700; border-radius: 5px; padding: 3px 10px; white-space: nowrap; flex-shrink: 0; min-width: 90px; text-align: center; }
+  .row-body { font-size: .81rem; color: #94a3b8; line-height: 1.55; }
+  .row-body strong { color: #e2e8f0; }
+
+  /* ── Decision box ── */
+  .decision { background: #131720; border: 1px solid #2d3748; border-left: 3px solid #d97706; border-radius: 8px; padding: 10px 14px; margin: 6px 0; }
+  .decision .q { font-size: .78rem; font-weight: 700; color: #fbbf24; margin-bottom: 4px; }
+  .decision .detail { font-size: .8rem; color: #94a3b8; line-height: 1.6; }
+  .yes { color: #4ade80; font-weight: 700; }
+  .no  { color: #f87171; font-weight: 700; }
+  .warn { color: #fb923c; font-weight: 700; }
+
+  /* ── Code / monospace ── */
+  code { background: #131720; border-radius: 4px; padding: 1px 6px; font-family: monospace; font-size: .83em; color: #a78bfa; }
+  .path { color: #38bdf8; }
+
+  /* ── Badge ── */
+  .badge { display: inline-block; font-size: .63rem; border-radius: 4px; padding: 1px 6px; margin-right: 3px; font-weight: 700; }
+  .badge.r { background: #0c4a6e; color: #7dd3fc; }
+  .badge.w { background: #78350f; color: #fcd34d; }
+  .badge.b { background: #3b0764; color: #d8b4fe; }
+  .badge.fe{ background: #134e4a; color: #5eead4; }
+
+  /* ── Tags ── */
+  .tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+  .tag { background: #131720; border: 1px solid #374151; border-radius: 5px; padding: 2px 8px; font-size: .77rem; font-family: monospace; color: #e2e8f0; }
+  .tag.trigger { border-color: #4ade80; color: #4ade80; }
+
+  /* ── Tools grid ── */
+  .tools-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+  .tool-chip { background: #131720; border-radius: 8px; padding: 10px 12px; border-left: 3px solid #4a5568; }
+  .tool-chip.read    { border-color: #0ea5e9; }
+  .tool-chip.write   { border-color: #f59e0b; }
+  .tool-chip.builder { border-color: #a855f7; }
+  .tool-chip .tname  { font-size: .8rem; font-weight: 700; color: #e2e8f0; font-family: monospace; }
+  .tool-chip .tdesc  { font-size: .73rem; color: #64748b; margin-top: 3px; line-height: 1.4; }
+
+  /* ── Agentic loop ── */
+  .loop-box { background: #131720; border: 1px dashed #374151; border-radius: 10px; padding: 14px; margin-top: 10px; }
+  .loop-iter { display: flex; align-items: flex-start; gap: 10px; padding: 10px 0; border-bottom: 1px solid #1e2330; }
+  .loop-iter:last-child { border-bottom: none; }
+  .iter-num { background: #1e2330; border-radius: 50%; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-size: .73rem; font-weight: 700; color: #7dd3fc; flex-shrink: 0; margin-top: 2px; }
+  .iter-body { font-size: .8rem; color: #94a3b8; line-height: 1.6; }
+  .iter-body strong { color: #e2e8f0; }
+
+  /* ── Retry box ── */
+  .retry-box { margin-top: 12px; background: #131720; border-radius: 8px; padding: 12px; }
+  .retry-row { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; border-bottom: 1px solid #1e2330; }
+  .retry-row:last-child { border-bottom: none; }
+  .retry-tag { font-size: .7rem; font-weight: 700; border-radius: 4px; padding: 2px 8px; white-space: nowrap; flex-shrink: 0; }
+  .retry-body { font-size: .78rem; color: #94a3b8; line-height: 1.5; }
+  .retry-body strong { color: #e2e8f0; }
+
+  /* ── Preview flow ── */
+  .pflow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 10px 0; }
+  .pstep { background: #131720; border-radius: 8px; padding: 10px 12px; font-size: .8rem; text-align: center; min-width: 130px; flex: 1; }
+  .pstep .ptitle { font-weight: 700; color: #e2e8f0; font-size: .82rem; margin-bottom: 3px; }
+  .pstep .pdesc  { font-size: .74rem; color: #64748b; line-height: 1.4; }
+
+  /* ── API table ── */
+  .api-table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+  .api-table th { text-align: left; color: #64748b; font-weight: 600; font-size: .73rem; padding: 4px 8px; border-bottom: 1px solid #2d3748; }
+  .api-table td { padding: 6px 8px; border-bottom: 1px solid #1a2030; color: #94a3b8; vertical-align: top; }
+  .api-table tr:last-child td { border-bottom: none; }
+  .method { font-size: .68rem; font-weight: 700; border-radius: 3px; padding: 1px 6px; }
+  .get  { background: #052e16; color: #4ade80; }
+  .post { background: #172554; color: #93c5fd; }
+  .put  { background: #431407; color: #fdba74; }
+  .del  { background: #450a0a; color: #fca5a5; }
+
+  /* ── DB tables ── */
+  .db-table { background: #131720; border-radius: 8px; padding: 12px; margin-bottom: 10px; }
+  .db-table:last-child { margin-bottom: 0; }
+  .db-name { font-family: monospace; font-size: .85rem; font-weight: 700; color: #7dd3fc; margin-bottom: 6px; }
+  .db-cols { display: flex; flex-wrap: wrap; gap: 4px; }
+  .db-col { font-size: .73rem; background: #1e2330; border-radius: 4px; padding: 2px 8px; color: #94a3b8; font-family: monospace; }
+  .db-col.pk { color: #fbbf24; border: 1px solid #78350f; }
+  .db-col.fk { color: #a78bfa; }
+
+  /* ── Example ── */
+  .example { background: #131720; border-radius: 8px; padding: 14px; }
+  .msg { display: flex; gap: 10px; margin-bottom: 8px; align-items: flex-start; }
+  .msg .who { font-size: .7rem; font-weight: 700; border-radius: 4px; padding: 2px 8px; white-space: nowrap; flex-shrink: 0; margin-top: 1px; }
+  .msg.user  .who { background: #1d4ed8; color: #fff; }
+  .msg.ai    .who { background: #15803d; color: #fff; }
+  .msg.tool  .who { background: #7e22ce; color: #fff; }
+  .msg.sys   .who { background: #374151; color: #d1d5db; }
+  .msg.fe    .who { background: #0f766e; color: #fff; }
+  .msg .text { font-size: .8rem; color: #cbd5e1; line-height: 1.55; }
+
+  /* ── RBAC ── */
+  .rbac-row { display: flex; gap: 10px; margin-bottom: 8px; }
+  .rbac-role { background: #131720; border-radius: 6px; padding: 5px 12px; font-size: .78rem; font-weight: 700; min-width: 65px; text-align: center; flex-shrink: 0; }
+  .rbac-role.admin  { border: 1px solid #ef4444; color: #ef4444; }
+  .rbac-role.editor { border: 1px solid #f59e0b; color: #f59e0b; }
+  .rbac-role.viewer { border: 1px solid #0ea5e9; color: #0ea5e9; }
+  .rbac-can { font-size: .79rem; color: #94a3b8; line-height: 1.6; }
+
+  /* ── Hint groups ── */
+  .hint-group { margin-bottom: 12px; }
+  .hint-title { font-size: .78rem; color: #64748b; margin-bottom: 6px; font-weight: 600; }
+
+  /* ── Template cards ── */
+  .tmpl-card { background: #131720; border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; border-left: 3px solid #4a5568; }
+  .tmpl-card:last-child { margin-bottom: 0; }
+  .tmpl-name { font-family: monospace; font-size: .82rem; font-weight: 700; color: #e2e8f0; margin-bottom: 4px; }
+  .tmpl-widgets { font-size: .76rem; color: #64748b; }
+
+  @media (max-width: 750px) {
+    .grid { grid-template-columns: 1fr; }
+    .thirds { grid-template-columns: 1fr; }
+    .flow, .pflow { flex-direction: column; }
+    .arrow { transform: rotate(90deg); align-self: center; }
+  }
+</style>
+</head>
+<body>
+
+<div style="max-width:1200px;margin:0 auto">
+  <h1>IotVision AI — Workflow</h1>
+  <p class="subtitle">อธิบายการทำงานของ AI ตั้งแต่ User ส่ง message จนได้ response · Model: <code>qwen/qwen3-32b</code> via Groq API</p>
+
+  <!-- ══════════════════════════════════════════════════════════════════ -->
+  <!-- 1. OVERVIEW FLOW                                                   -->
+  <!-- ══════════════════════════════════════════════════════════════════ -->
+  <div class="card full section">
+    <h2>ภาพรวม Flow (POST /api/ai/chat)</h2>
+    <div class="flow" style="gap:5px">
+      <div class="step" style="border-color:#1d4ed8">
+        <div class="icon">💬</div>
+        <div class="name">User ส่ง message</div>
+        <div class="label">{ message, conversationId, context }</div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="step" style="border-color:#374151">
+        <div class="icon">💾</div>
+        <div class="name">บันทึก user msg</div>
+        <div class="label">INSERT ai_messages<br>role = "user"</div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="step" style="border-color:#b45309">
+        <div class="icon">🔍</div>
+        <div class="name">Hint Detection</div>
+        <div class="label">scan คำสำคัญ<br>→ includeBuilder?</div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="step" style="border-color:#7e22ce">
+        <div class="icon">🛠</div>
+        <div class="name">Tool Selection</div>
+        <div class="label">filter tools<br>ตาม role + intent</div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="step" style="border-color:#0ea5e9">
+        <div class="icon">🤖</div>
+        <div class="name">Groq API Loop</div>
+        <div class="label">qwen3-32b<br>max 5 iterations</div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="step" style="border-color:#15803d">
+        <div class="icon">⚡</div>
+        <div class="name">Execute Tool</div>
+        <div class="label">dispatch() → DB<br>หรือ plain text</div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="step" style="border-color:#15803d">
+        <div class="icon">✅</div>
+        <div class="name">Response</div>
+        <div class="label">บันทึก messages<br>return to frontend</div>
+      </div>
+    </div>
+    <p style="font-size:.76rem;color:#4a5568;margin-top:10px">
+      ⚠ <code>create_custom_dashboard</code> ไม่ได้อยู่ใน flow นี้ — มันถูก call จาก frontend โดยตรง (ปุ่ม Confirm) ผ่าน <code>POST /api/ai/tools/execute</code> ดูส่วน Preview Flow ด้านล่าง
+    </p>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════ -->
+  <!-- 2. API ROUTES + HINT DETECTION                                     -->
+  <!-- ══════════════════════════════════════════════════════════════════ -->
+  <div class="grid section">
+    <div class="card teal">
+      <h2>API Routes <span style="font-size:.7rem;color:#4a5568;font-weight:400;text-transform:none">(ทุก route ต้องผ่าน JWT auth)</span></h2>
+      <table class="api-table">
+        <tr><th>Method</th><th>Path</th><th>ทำอะไร</th></tr>
+        <tr>
+          <td><span class="method post">POST</span></td>
+          <td><code class="path">/chat</code></td>
+          <td>Main chat — รับ message → AI loop → return messages</td>
+        </tr>
+        <tr>
+          <td><span class="method post">POST</span></td>
+          <td><code class="path">/tools/execute</code></td>
+          <td>Frontend call tool โดยตรง (ใช้สำหรับปุ่ม Confirm สร้าง dashboard)</td>
+        </tr>
+        <tr>
+          <td><span class="method get">GET</span></td>
+          <td><code class="path">/tools</code></td>
+          <td>List tool schemas ทั้งหมด 14 ตัว</td>
+        </tr>
+        <tr>
+          <td><span class="method get">GET</span></td>
+          <td><code class="path">/conversations</code></td>
+          <td>List conversations ของ user</td>
+        </tr>
+        <tr>
+          <td><span class="method post">POST</span></td>
+          <td><code class="path">/conversations</code></td>
+          <td>สร้าง conversation ใหม่</td>
+        </tr>
+        <tr>
+          <td><span class="method get">GET</span></td>
+          <td><code class="path">/conversations/:id/messages</code></td>
+          <td>ดึง messages ใน conversation</td>
+        </tr>
+        <tr>
+          <td><span class="method get">GET</span></td>
+          <td><code class="path">/preview-draft</code></td>
+          <td>ดึง preview state ของ user (draft หรือ dashboard ที่เลือก)</td>
+        </tr>
+        <tr>
+          <td><span class="method put">PUT</span></td>
+          <td><code class="path">/preview-draft</code></td>
+          <td>บันทึก preview draft data ลง DB</td>
+        </tr>
+        <tr>
+          <td><span class="method del">DEL</span></td>
+          <td><code class="path">/preview-draft</code></td>
+          <td>ลบ preview draft (หลัง confirm หรือ cancel)</td>
+        </tr>
+        <tr>
+          <td><span class="method put">PUT</span></td>
+          <td><code class="path">/selected-dashboard</code></td>
+          <td>บันทึก dashboard ที่ user เลือกดูอยู่</td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="card amber">
+      <h2>Step 1 — Hint Detection</h2>
+      <p style="font-size:.8rem;color:#94a3b8;margin-bottom:12px">
+        <code>wantsBuilderTools(message)</code> scan หาคำสำคัญใน message<br>
+        ถ้าเจอ → <code>includeBuilder = true</code> → ส่ง builder tools ไปกับ request<br>
+        <span style="color:#f59e0b;font-size:.76rem">⚠ เฉพาะ action verbs — nouns ("dashboard","chart","กราฟ") ถูกเอาออกแล้ว เพราะทำให้เกิด false positive เช่น "อธิบายกราฟ" ไม่ควรเป็น builder intent</span>
+      </p>
+
+      <div class="hint-group">
+        <div class="hint-title">🇬🇧 English — action verbs only</div>
+        <div class="tags">
+          <span class="tag">create</span><span class="tag">add</span><span class="tag">remove</span>
+          <span class="tag">delete</span><span class="tag">build</span><span class="tag">make</span>
+          <span class="tag">set up</span><span class="tag">setup</span><span class="tag">change</span>
+          <span class="tag">edit</span><span class="tag">rename</span><span class="tag">update</span>
+          <span class="tag">ack</span><span class="tag">acknowledge</span><span class="tag">resolve</span>
+        </div>
+      </div>
+
+      <div class="hint-group">
+        <div class="hint-title">🇹🇭 ภาษาไทย — action verbs only</div>
+        <div class="tags">
+          <span class="tag trigger">สร้าง</span><span class="tag trigger">เพิ่ม</span>
+          <span class="tag trigger">ลบ</span><span class="tag trigger">แก้ไข</span>
+          <span class="tag trigger">เปลี่ยน</span><span class="tag trigger">ปรับ</span>
+          <span class="tag trigger">ตั้งค่า</span><span class="tag trigger">อัปเดต</span>
+          <span class="tag trigger">อัพเดท</span><span class="tag trigger">ยืนยัน</span>
+          <span class="tag trigger">ลบออก</span>
+        </div>
+      </div>
+
+      <div class="decision">
+        <div class="q">Force true เสมอ ถ้า:</div>
+        <div class="detail">
+          <span class="yes">✓</span> <code>context</code> มีค่า (มี dashboard อยู่บนหน้าจอ)<br>
+          <span class="warn">⚠ Fallback:</span> hint miss แต่ model เรียก builder tool → Groq ตอบ error <code>"not in request.tools"</code> → code retry อัตโนมัติด้วย full tools
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════ -->
+  <!-- 3. TOOL SELECTION + RBAC                                           -->
+  <!-- ══════════════════════════════════════════════════════════════════ -->
+  <div class="grid section">
+    <div class="card purple">
+      <h2>Step 2 — Tool Selection</h2>
+      <p style="font-size:.79rem;color:#94a3b8;margin-bottom:12px"><code>buildGroqTools(role, includeBuilder)</code> กรอง 3 ชั้น:</p>
+
+      <div class="row" style="margin-bottom:8px">
+        <div class="row-label" style="background:#0c4a6e;color:#7dd3fc">READ</div>
+        <div class="row-body">
+          <strong>ส่งเสมอ</strong> ทุก role ดูได้<br>
+          <code>get_machines</code> · <code>get_latest_telemetry</code> · <code>get_telemetry_trend</code><br>
+          <code>get_active_alerts</code> · <code>get_daily_count</code> · <code>list_dashboards</code>
+        </div>
+      </div>
+
+      <div class="row" style="margin-bottom:8px">
+        <div class="row-label" style="background:#78350f;color:#fcd34d">WRITE</div>
+        <div class="row-body">
+          ส่งเฉพาะ <strong>admin / editor</strong> เท่านั้น<br>
+          <code>add_widget_to_dashboard</code> · <code>remove_widget</code><br>
+          <code>create_alert</code> · <code>manage_alert_event</code>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="row-label" style="background:#3b0764;color:#d8b4fe">BUILDER</div>
+        <div class="row-body">
+          ส่งเฉพาะเมื่อ <strong>includeBuilder = true</strong><br>
+          <code>preview_dashboard</code> · <code>preview_add_widget</code><br>
+          <code>preview_remove_widget</code> · <code>preview_update_widget</code><br>
+          + write tools ทั้งหมดข้างบน
+        </div>
+      </div>
+
+      <p style="font-size:.73rem;color:#4a5568;margin-top:10px">
+        💡 ลด token: tool schema หนัก ~1k tokens ต่อตัว — ส่งแค่ที่จำเป็น<br>
+        หลัง iteration แรก <code>callTools = nil</code> → iteration ถัดไปไม่ส่ง tools ซ้ำ
+      </p>
+    </div>
+
+    <div class="card green">
+      <h2>RBAC — Role-Based Access</h2>
+      <p style="font-size:.79rem;color:#94a3b8;margin-bottom:12px">enforce 2 ชั้น: <strong>(1)</strong> ไม่ส่ง tool schema ไปให้ model และ <strong>(2)</strong> <code>dispatch()</code> check role อีกครั้งก่อน execute จริง</p>
+
+      <div class="rbac-row">
+        <div class="rbac-role viewer">viewer</div>
+        <div class="rbac-can">
+          ✅ อ่าน telemetry, alerts, dashboards<br>
+          ❌ ไม่สามารถสร้าง / แก้ไข / ลบ ใดๆ
+        </div>
+      </div>
+      <div class="rbac-row">
+        <div class="rbac-role editor">editor</div>
+        <div class="rbac-can">
+          ✅ ทุกอย่างของ viewer<br>
+          ✅ add/remove widget, create alert<br>
+          ✅ ack / resolve alert event
+        </div>
+      </div>
+      <div class="rbac-row">
+        <div class="rbac-role admin">admin</div>
+        <div class="rbac-can">
+          ✅ ทุกอย่างของ editor<br>
+          ✅ สร้าง dashboard ใหม่ (via confirm button)<br>
+          ✅ manage ทุก alert
+        </div>
+      </div>
+
+      <hr style="border-color:#1e2330;margin:12px 0">
+      <h3 style="margin-bottom:8px">Machine Name Resolution</h3>
+      <div class="decision">
+        <div class="q">ค้นหายังไง?</div>
+        <div class="detail">
+          ใช้ SQL <code>LOWER(name) LIKE '%' || LOWER($input) || '%'</code><br>
+          → partial match ได้ เช่น "cw01" เจอ "CW-01"<br>
+          → exact match ได้ priority สูงกว่า partial match<br>
+          → org-scoped เสมอ (ผ่าน factory → production_line → machine)
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════ -->
+  <!-- 4. AGENTIC LOOP                                                    -->
+  <!-- ══════════════════════════════════════════════════════════════════ -->
+  <div class="card blue full section">
+    <h2>Step 3 — Agentic Loop (max 5 iterations)</h2>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div>
+        <div class="loop-box">
+          <div class="loop-iter">
+            <div class="iter-num">1</div>
+            <div class="iter-body">
+              <strong>Build messages array:</strong><br>
+              system_prompt + history (8 messages ล่าสุด จาก DB) + context (dashboard บนหน้าจอ ถ้ามี)<br>
+              <span style="color:#4a5568;font-size:.74rem">⚠ tool messages (role="tool") ไม่ถูกใส่ใน history — มีแค่ user + assistant เท่านั้น</span>
+            </div>
+          </div>
+          <div class="loop-iter">
+            <div class="iter-num">2</div>
+            <div class="iter-body">
+              <strong>Call Groq API</strong> พร้อม tools (iteration แรก) หรือไม่มี tools (iteration ถัดไป)<br>
+              → รอ response จาก qwen3-32b
+            </div>
+          </div>
+          <div class="loop-iter">
+            <div class="iter-num">3</div>
+            <div class="iter-body">
+              ถ้า <code>finish_reason = "tool_calls"</code> → <strong>execute tool</strong> ผ่าน <code>dispatch()</code><br>
+              → บันทึก tool message ลง DB (role="tool")<br>
+              → append tool result กลับเข้า messages array<br>
+              → loop ต่อ (iteration ถัดไปไม่ส่ง tools)
+            </div>
+          </div>
+          <div class="loop-iter">
+            <div class="iter-num">4</div>
+            <div class="iter-body">
+              ถ้า <code>finish_reason ≠ "tool_calls"</code> → <strong>บันทึก assistant message</strong> ลง DB<br>
+              → return response กลับ frontend
+            </div>
+          </div>
+          <div class="loop-iter">
+            <div class="iter-num">✗</div>
+            <div class="iter-body">
+              ถ้าครบ 5 iterations แล้วยังไม่จบ → exit loop โดยไม่มี response text
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h3 style="margin-bottom:8px;color:#94a3b8">Retry Logic (3 paths)</h3>
+        <div class="retry-box">
+          <div class="retry-row">
+            <div class="retry-tag" style="background:#0c4a6e;color:#7dd3fc">PATH 1</div>
+            <div class="retry-body">
+              <strong>error: "not in request.tools"</strong><br>
+              hint scan miss แต่ model เรียก builder tool → Groq reject<br>
+              → set <code>includeBuilder = true</code> → retry พร้อม full tools (1 ครั้ง)
+            </div>
+          </div>
+          <div class="retry-row">
+            <div class="retry-tag" style="background:#3b0764;color:#d8b4fe">PATH 2</div>
+            <div class="retry-body">
+              <strong>error: "Tool choice is none"</strong><br>
+              qwen3 reasoning model พยายาม chain tools ใน summary call (ไม่มี tools ใน request)<br>
+              → retry พร้อม original tools array (qwen3-specific bug)
+            </div>
+          </div>
+          <div class="retry-row">
+            <div class="retry-tag" style="background:#78350f;color:#fcd34d">PATH 3</div>
+            <div class="retry-body">
+              <strong>error: "Failed to call a function"</strong><br>
+              model generate malformed tool call → Groq parse ล้มเหลว<br>
+              → retry โดยไม่ส่ง tools เลย (plain text fallback)
+            </div>
+          </div>
+          <div class="retry-row">
+            <div class="retry-tag" style="background:#134e4a;color:#5eead4">RATE LIMIT</div>
+            <div class="retry-body">
+              <strong>HTTP 429 Too Many Requests</strong><br>
+              อ่าน <code>Retry-After</code> header (max 8s) → sleep → retry สูงสุด 3 ครั้ง
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════ -->
+  <!-- 5. PREVIEW 2-STEP FLOW                                             -->
+  <!-- ══════════════════════════════════════════════════════════════════ -->
+  <div class="card rose full section">
+    <h2>Preview Flow — สร้าง Dashboard (2 ขั้นตอน)</h2>
+    <p style="font-size:.79rem;color:#94a3b8;margin-bottom:14px">
+      การสร้าง dashboard ไม่ได้เกิดจาก LLM โดยตรง — LLM แค่ "วางแผน" แล้วให้ User ยืนยัน Frontend เป็นคนสร้างจริง
+    </p>
+
+    <div class="pflow">
+      <div class="pstep" style="border:1px solid #1d4ed8">
+        <div class="ptitle">1. User ขอสร้าง</div>
+        <div class="pdesc">"สร้างแดชบอร์ด CW-01"<br>→ POST /api/ai/chat</div>
+      </div>
+      <div class="arrow" style="font-size:1.4rem">→</div>
+      <div class="pstep" style="border:1px solid #7e22ce">
+        <div class="ptitle">2. LLM เรียก preview_dashboard</div>
+        <div class="pdesc">ระบุ machine + template<br>(machine_overview / production / maintenance)</div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="pstep" style="border:1px solid #7e22ce">
+        <div class="ptitle">3. preview() — ไม่เขียน DB</div>
+        <div class="pdesc">resolve machine ID + fields<br>expand template → widgets<br>return PreviewDashboardResult</div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="pstep" style="border:1px solid #b45309">
+        <div class="ptitle">4. บันทึก Preview Draft</div>
+        <div class="pdesc">Frontend PUT /preview-draft<br>→ INSERT ai_preview_drafts<br>(per-user, persist ข้าม refresh)</div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="pstep" style="border:1px solid #15803d">
+        <div class="ptitle">5. User กดปุ่ม Confirm</div>
+        <div class="pdesc">Frontend เรียก<br>POST /tools/execute<br>{ toolName: "create_custom_dashboard" }</div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="pstep" style="border:1px solid #15803d">
+        <div class="ptitle">6. สร้างจริง ใน DB</div>
+        <div class="pdesc">INSERT dashboards<br>INSERT widgets (ทุกตัวใน plan)<br>DELETE preview_draft</div>
+      </div>
+    </div>
+
+    <div style="margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div>
+        <h3 style="margin-bottom:8px">3 Templates ที่มี</h3>
+        <div class="tmpl-card" style="border-color:#0ea5e9">
+          <div class="tmpl-name">machine_overview</div>
+          <div class="tmpl-widgets">kpi-card (Speed) · gauge (Speed Gauge) · kpi-card (Throughput) · line-chart (Trend)<br>ใช้เมื่อ: ต้องการ overview สถานะทั่วไป</div>
+        </div>
+        <div class="tmpl-card" style="border-color:#4ade80">
+          <div class="tmpl-name">machine_production</div>
+          <div class="tmpl-widgets">kpi-card (Count) · line-chart (Output) · status-card (Status)<br>ใช้เมื่อ: ต้องการดู output / ยอดผลิต</div>
+        </div>
+        <div class="tmpl-card" style="border-color:#fb923c">
+          <div class="tmpl-name">machine_maintenance</div>
+          <div class="tmpl-widgets">alarm-panel (Alarms) · daily-count (Downtime) · table (History)<br>ใช้เมื่อ: ต้องการดู health / alerts</div>
+        </div>
+      </div>
+
+      <div>
+        <h3 style="margin-bottom:8px">Preview Modifications (ก่อน Confirm)</h3>
+        <div style="font-size:.79rem;color:#94a3b8;line-height:1.7">
+          หลัง LLM เรียก <code>preview_dashboard</code> แล้ว User ยังสั่งแก้ได้ผ่าน:<br><br>
+          <code>preview_add_widget</code> — เพิ่ม widget ใน plan (validate แต่ไม่เขียน DB)<br>
+          <code>preview_remove_widget</code> — ลบ widget จาก plan (client-side เท่านั้น)<br>
+          <code>preview_update_widget</code> — แก้ title / metric / unit / min / max / date range<br><br>
+          ⚠ tools เหล่านี้ใช้ได้เฉพาะกับ preview draft — dashboard จริงใช้ <code>add_widget_to_dashboard</code> / <code>remove_widget</code>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════ -->
+  <!-- 6. ALL TOOLS                                                        -->
+  <!-- ══════════════════════════════════════════════════════════════════ -->
+  <div class="card full section">
+    <h2>Tools ทั้งหมด 14 ตัว (ตาม AllTools() ใน schema.go)</h2>
+    <p style="font-size:.76rem;color:#4a5568;margin-bottom:12px">เหล่านี้คือ tools ที่ถูกส่งให้ LLM — <code>create_custom_dashboard</code> ไม่อยู่ในนี้ (เรียกจาก frontend โดยตรง)</p>
+    <div class="tools-grid">
+      <div class="tool-chip read">
+        <div class="tname">get_machines</div>
+        <div class="tdesc"><span class="badge r">READ</span>list เครื่องจักรทั้งหมด + metric fields</div>
+      </div>
+      <div class="tool-chip read">
+        <div class="tname">get_latest_telemetry</div>
+        <div class="tdesc"><span class="badge r">READ</span>ค่า sensor ล่าสุดของเครื่อง</div>
+      </div>
+      <div class="tool-chip read">
+        <div class="tname">get_telemetry_trend</div>
+        <div class="tdesc"><span class="badge r">READ</span>avg/min/max ตาม time window (5m…30d)</div>
+      </div>
+      <div class="tool-chip read">
+        <div class="tname">get_active_alerts</div>
+        <div class="tdesc"><span class="badge r">READ</span>alert events ที่ยังเปิดอยู่ (พร้อม event_id)</div>
+      </div>
+      <div class="tool-chip read">
+        <div class="tname">get_daily_count</div>
+        <div class="tdesc"><span class="badge r">READ</span>ยอดผลิตต่อวัน (default 7 วัน)</div>
+      </div>
+      <div class="tool-chip read">
+        <div class="tname">list_dashboards</div>
+        <div class="tdesc"><span class="badge r">READ</span>dashboards + widget count ของ org</div>
+      </div>
+      <div class="tool-chip builder">
+        <div class="tname">preview_dashboard</div>
+        <div class="tdesc"><span class="badge b">BUILDER</span>STEP 1: สร้าง plan ไม่เขียน DB — user ต้อง confirm</div>
+      </div>
+      <div class="tool-chip builder">
+        <div class="tname">preview_add_widget</div>
+        <div class="tdesc"><span class="badge b">BUILDER</span>เพิ่ม widget ใน preview plan เท่านั้น</div>
+      </div>
+      <div class="tool-chip builder">
+        <div class="tname">preview_remove_widget</div>
+        <div class="tdesc"><span class="badge b">BUILDER</span>ลบ widget จาก preview plan (client-side)</div>
+      </div>
+      <div class="tool-chip builder">
+        <div class="tname">preview_update_widget</div>
+        <div class="tdesc"><span class="badge b">BUILDER</span>แก้ widget ใน preview (title / metric / date range)</div>
+      </div>
+      <div class="tool-chip write">
+        <div class="tname">add_widget_to_dashboard</div>
+        <div class="tdesc"><span class="badge w">WRITE</span><span class="badge b">BUILDER</span>เพิ่ม widget ใน dashboard จริง (by name)</div>
+      </div>
+      <div class="tool-chip write">
+        <div class="tname">remove_widget</div>
+        <div class="tdesc"><span class="badge w">WRITE</span><span class="badge b">BUILDER</span>ลบ widget จาก dashboard จริง (case-insensitive title)</div>
+      </div>
+      <div class="tool-chip write">
+        <div class="tname">create_alert</div>
+        <div class="tdesc"><span class="badge w">WRITE</span><span class="badge b">BUILDER</span>สร้าง threshold alert rule</div>
+      </div>
+      <div class="tool-chip write">
+        <div class="tname">manage_alert_event</div>
+        <div class="tdesc"><span class="badge w">WRITE</span><span class="badge b">BUILDER</span>ack / resolve open alert event (ต้องมี event_id)</div>
+      </div>
+    </div>
+
+    <div style="margin-top:12px;padding:10px 14px;background:#131720;border-radius:8px;border-left:3px solid #0f766e">
+      <span style="font-size:.77rem;color:#5eead4;font-weight:700">create_custom_dashboard</span>
+      <span style="font-size:.77rem;color:#64748b;margin-left:6px">
+        <span class="badge fe">FRONTEND</span> ไม่อยู่ใน AllTools() — frontend เรียกผ่าน <code>POST /tools/execute</code> หลัง user กด Confirm
+        เท่านั้น LLM ไม่รู้จัก tool นี้
+      </span>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════ -->
+  <!-- 7. DB TABLES + TOKEN OPT                                           -->
+  <!-- ══════════════════════════════════════════════════════════════════ -->
+  <div class="grid section">
+    <div class="card">
+      <h2>Database Tables (AI Module)</h2>
+      <div class="db-table">
+        <div class="db-name">ai_conversations</div>
+        <div class="db-cols">
+          <span class="db-col pk">id</span>
+          <span class="db-col fk">user_id</span>
+          <span class="db-col">title</span>
+          <span class="db-col">created_at</span>
+          <span class="db-col">updated_at</span>
+        </div>
+      </div>
+      <div class="db-table">
+        <div class="db-name">ai_messages</div>
+        <div class="db-cols">
+          <span class="db-col pk">id</span>
+          <span class="db-col fk">conversation_id</span>
+          <span class="db-col">role <span style="color:#64748b">(user/assistant/tool)</span></span>
+          <span class="db-col">content</span>
+          <span class="db-col">tool_name</span>
+          <span class="db-col">tool_input</span>
+          <span class="db-col">tool_result</span>
+          <span class="db-col">created_at</span>
+        </div>
+      </div>
+      <div class="db-table">
+        <div class="db-name">ai_preview_drafts</div>
+        <div style="font-size:.75rem;color:#64748b;margin-bottom:6px">1 row ต่อ user (UPSERT on conflict user_id)</div>
+        <div class="db-cols">
+          <span class="db-col pk">user_id</span>
+          <span class="db-col fk">conversation_id</span>
+          <span class="db-col fk">dashboard_id</span>
+          <span class="db-col">data <span style="color:#64748b">(JSONB preview)</span></span>
+          <span class="db-col">updated_at</span>
+        </div>
+        <div style="font-size:.74rem;color:#64748b;margin-top:8px">
+          ⚠ มีอยู่ 2 mode ต่อ row:<br>
+          <strong style="color:#94a3b8">draft mode</strong> — conversation_id + data มีค่า, dashboard_id = NULL (กำลัง preview)<br>
+          <strong style="color:#94a3b8">selected mode</strong> — dashboard_id มีค่า, data = NULL (user เลือกดู dashboard เดิม)
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Token Cost Optimizations</h2>
+      <div style="display:grid;gap:8px">
+        <div style="background:#131720;border-radius:8px;padding:10px 12px">
+          <div style="font-size:.83rem;font-weight:700;color:#7dd3fc;margin-bottom:3px">🔍 Hint-based tool filter</div>
+          <div style="font-size:.76rem;color:#64748b">ส่งแค่ tools ที่จำเป็น — ไม่ส่ง builder tools สำหรับ Q&A ธรรมดา (~8 tools แทน 14)</div>
+        </div>
+        <div style="background:#131720;border-radius:8px;padding:10px 12px">
+          <div style="font-size:.83rem;font-weight:700;color:#7dd3fc;margin-bottom:3px">🗂 History cap 8 messages</div>
+          <div style="font-size:.76rem;color:#64748b">ตัด history เก่า เก็บแค่ 8 messages ล่าสุด (user + assistant เท่านั้น ไม่รวม tool messages)</div>
+        </div>
+        <div style="background:#131720;border-radius:8px;padding:10px 12px">
+          <div style="font-size:.83rem;font-weight:700;color:#7dd3fc;margin-bottom:3px">🚫 Drop tools after iter 1</div>
+          <div style="font-size:.76rem;color:#64748b"><code>callTools = nil</code> หลัง iteration แรก — iteration ถัดไปไม่ส่ง tool array ซ้ำ (ประหยัด ~14k tokens)</div>
+        </div>
+        <div style="background:#131720;border-radius:8px;padding:10px 12px">
+          <div style="font-size:.83rem;font-weight:700;color:#7dd3fc;margin-bottom:3px">🙈 reasoning_format: hidden</div>
+          <div style="font-size:.76rem;color:#64748b">ซ่อน thinking tokens ไม่ให้อยู่ใน output — ลด output tokens จาก qwen3 reasoning</div>
+        </div>
+        <div style="background:#131720;border-radius:8px;padding:10px 12px">
+          <div style="font-size:.83rem;font-weight:700;color:#7dd3fc;margin-bottom:3px">📍 Context injection (conditional)</div>
+          <div style="font-size:.76rem;color:#64748b">ส่ง dashboard context เฉพาะเมื่อมี (on-screen state) inject หลัง history เสมอ (recency wins)</div>
+        </div>
+        <div style="background:#131720;border-radius:8px;padding:10px 12px">
+          <div style="font-size:.83rem;font-weight:700;color:#7dd3fc;margin-bottom:3px">⚡ /no_think flag</div>
+          <div style="font-size:.76rem;color:#64748b">ต่อท้าย system prompt → บอก qwen3 ไม่ต้อง think ยาวสำหรับ Q&A ธรรมดา</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════ -->
+  <!-- 8. EXAMPLE CONVERSATION                                            -->
+  <!-- ══════════════════════════════════════════════════════════════════ -->
+  <div class="card full section">
+    <h2>ตัวอย่าง — "สร้างแดชบอร์ดเกี่ยวกับ CW-01"</h2>
+    <div class="example">
+      <div class="msg user">
+        <div class="who">USER</div>
+        <div class="text">สร้างแดชบอร์ดเกี่ยวกับเครื่องจักร CW-01 ให้หน่อย</div>
+      </div>
+      <div class="msg sys">
+        <div class="who">SYSTEM</div>
+        <div class="text">
+          <strong>hint scan:</strong> "สร้าง" + "แดชบอร์ด" match → <code>includeBuilder = true</code><br>
+          <strong>buildGroqTools("admin", true)</strong> → ส่ง 14 tools ทั้งหมด<br>
+          <strong>buildGroqMessages:</strong> load history ล่าสุด 8 msgs (user+assistant only) + context (ถ้ามี)<br>
+          <strong>บันทึก user message ลง DB</strong>
+        </div>
+      </div>
+      <div class="msg tool">
+        <div class="who">ITER 1</div>
+        <div class="text">
+          Groq → <code>finish_reason = "tool_calls"</code><br>
+          tool: <code>get_machines()</code> → ค้นหา machine ชื่อ CW-01 (LIKE search) → ได้ machine info + fields<br>
+          บันทึก tool message ลง DB (role="tool")
+        </div>
+      </div>
+      <div class="msg tool">
+        <div class="who">ITER 2</div>
+        <div class="text">
+          Groq → <code>finish_reason = "tool_calls"</code> (ไม่มี tools ใน request แล้ว)<br>
+          tool: <code>preview_dashboard({ machine: "CW-01", template: "machine_overview" })</code><br>
+          → <strong>ไม่เขียน DB</strong> — return PreviewDashboardResult (4 widgets)<br>
+          บันทึก tool message ลง DB
+        </div>
+      </div>
+      <div class="msg ai">
+        <div class="who">ITER 3</div>
+        <div class="text">
+          Groq → <code>finish_reason = "stop"</code><br>
+          text: "นี่คือ preview แดชบอร์ดสำหรับ CW-01 ครับ กดปุ่มยืนยันเพื่อสร้างจริง"<br>
+          บันทึก assistant message ลง DB → return response
+        </div>
+      </div>
+      <div class="msg fe">
+        <div class="who">FRONTEND</div>
+        <div class="text">
+          แสดง preview panel + ปุ่ม Confirm<br>
+          PUT /preview-draft → บันทึก preview data ลง <code>ai_preview_drafts</code>
+        </div>
+      </div>
+      <div class="msg fe">
+        <div class="who">USER CONFIRM</div>
+        <div class="text">
+          User กดปุ่ม Confirm → frontend เรียก <code>POST /tools/execute</code><br>
+          <code>{ toolName: "create_custom_dashboard", params: { machine: "CW-01", template: "machine_overview", widgets: [...] } }</code><br>
+          → INSERT dashboard + 4 widgets ลง DB<br>
+          → DELETE preview_draft<br>
+          → redirect ไป /dashboards/:id
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p style="text-align:center;color:#2d3748;font-size:.72rem;margin-top:8px;padding-bottom:32px">IotVision AI · qwen/qwen3-32b via Groq · controller.go + dashboard_action.go + tool_actions.go</p>
+</div>
+</body>
+</html>

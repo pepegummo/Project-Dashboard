@@ -17,7 +17,8 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-const groqModel = "openai/gpt-oss-120b"
+const groqModel = "qwen/qwen3-32b"
+// const groqModel = "openai/gpt-oss-120b"
 const groqBaseURL = "https://api.groq.com/openai/v1/chat/completions"
 const systemPrompt = `You are IotVision AI for an industrial IoT platform. Use tools to read data and make changes.
 
@@ -336,6 +337,20 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	for i := 0; i < 5; i++ {
 		resp, err := callGroq(msgs, callTools)
 		if err != nil {
+			// Groq rejected a tool call because it wasn't in request.tools — the model
+			// inferred builder intent that our hint scan missed. Retry once with full tools.
+			if !includeBuilder && strings.Contains(err.Error(), "not in request.tools") {
+				includeBuilder = true
+				callTools = buildGroqTools(middleware.GetUser(c).Role, true)
+				resp, err = callGroq(msgs, callTools)
+			}
+			// qwen3 reasoning models try to chain tools even on no-tool summary calls.
+			// Groq surfaces this as "Tool choice is none" — retry with the full toolset.
+			if strings.Contains(err.Error(), "Tool choice is none") {
+				resp, err = callGroq(msgs, tools)
+			}
+		}
+		if err != nil {
 			return middleware.NewAppError(502, "AI_ERROR", fmt.Sprintf("Groq API error: %v", err))
 		}
 		if len(resp.Choices) == 0 {
@@ -408,10 +423,12 @@ func toGroqTool(t map[string]any) map[string]any {
 // read-only Q&A that only needs the read tools, and Groq re-bills the tool array
 // on every loop call.
 var builderHints = []string{
+	// English — action verbs only (nouns like "dashboard","chart" caused false positives)
 	"create", "add", "remove", "delete", "build", "make", "set up", "setup",
-	"change", "edit", "rename", "update",
-	"dashboard", "widget", "gauge", "chart", "kpi", "card", "table", "alarm",
-	"alert", "monitor", "preview", "threshold", "ack", "acknowledge", "resolve",
+	"change", "edit", "rename", "update", "ack", "acknowledge", "resolve",
+	// Thai — action verbs only
+	"สร้าง", "เพิ่ม", "ลบ", "แก้ไข", "เปลี่ยน", "ปรับ", "ตั้งค่า", "อัปเดต", "อัพเดท",
+	"ยืนยัน", "ลบออก",
 }
 
 func wantsBuilderTools(msg string) bool {

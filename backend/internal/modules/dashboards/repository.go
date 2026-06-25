@@ -23,6 +23,7 @@ type Dashboard struct {
 	CreatedAt      time.Time       `json:"createdAt"`
 	UpdatedAt      time.Time       `json:"updatedAt"`
 	Count          *DashCount      `json:"_count,omitempty"`
+	WidgetLayouts  json.RawMessage `json:"widgetLayouts"`
 	Widgets        []Widget        `json:"widgets,omitempty"`
 }
 
@@ -62,7 +63,8 @@ func (r *Repository) FindAll(ctx context.Context, orgID, userID string) ([]Dashb
 	rows, err := database.Pool.Query(ctx, `
 		SELECT d.id, d.name, d.description, d.organization_id, d.user_id,
 		       d.is_public, d.is_default, d.tags, d.created_at, d.updated_at,
-		       (SELECT COUNT(*) FROM dashboard_widgets WHERE dashboard_id = d.id) AS widget_count
+		       (SELECT COUNT(*) FROM dashboard_widgets WHERE dashboard_id = d.id) AS widget_count,
+		       COALESCE((SELECT JSON_AGG(JSON_BUILD_OBJECT('type', widget_type, 'x', (layout->>'x')::int, 'y', (layout->>'y')::int, 'w', (layout->>'w')::int, 'h', (layout->>'h')::int) ORDER BY created_at) FROM dashboard_widgets WHERE dashboard_id = d.id), '[]'::json) AS widget_layouts
 		FROM dashboards d
 		WHERE d.organization_id = $1
 		ORDER BY d.created_at DESC
@@ -77,10 +79,11 @@ func (r *Repository) FindAll(ctx context.Context, orgID, userID string) ([]Dashb
 		var d Dashboard
 		var tags []string
 		var widgetCount int
+		var widgetLayouts json.RawMessage
 		if err := rows.Scan(
 			&d.ID, &d.Name, &d.Description, &d.OrganizationID, &d.UserID,
 			&d.IsPublic, &d.IsDefault, &tags, &d.CreatedAt, &d.UpdatedAt,
-			&widgetCount,
+			&widgetCount, &widgetLayouts,
 		); err != nil {
 			return nil, err
 		}
@@ -89,7 +92,11 @@ func (r *Repository) FindAll(ctx context.Context, orgID, userID string) ([]Dashb
 		} else {
 			d.Tags = []string{}
 		}
+		if widgetLayouts == nil {
+			widgetLayouts = json.RawMessage("[]")
+		}
 		d.Count = &DashCount{Widgets: widgetCount}
+		d.WidgetLayouts = widgetLayouts
 		dashboards = append(dashboards, d)
 	}
 	return dashboards, nil

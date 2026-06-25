@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IotVision AI — Sequence Diagram</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', sans-serif; background: #0f1117; color: #e2e8f0; padding: 32px 16px; }
+  h1 { font-size: 1.5rem; color: #7dd3fc; margin-bottom: 4px; }
+  .subtitle { color: #64748b; font-size: .85rem; margin-bottom: 32px; }
+  h2 { font-size: .95rem; color: #94a3b8; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 12px; }
+  .section { max-width: 1100px; margin: 0 auto 32px; background: #1e2330; border: 1px solid #2d3748; border-radius: 12px; padding: 24px; }
+  .section.blue   { border-color: #1d4ed8; }
+  .section.green  { border-color: #15803d; }
+  .section.amber  { border-color: #b45309; }
+  .section.purple { border-color: #7e22ce; }
+  .mermaid { background: #131720; border-radius: 8px; padding: 16px; overflow-x: auto; }
+  .note { font-size: .78rem; color: #64748b; margin-top: 10px; line-height: 1.6; }
+  code { background: #131720; border-radius: 4px; padding: 1px 6px; font-family: monospace; font-size: .82em; color: #a78bfa; }
+</style>
+</head>
+<body>
+
+<div style="max-width:1100px;margin:0 auto">
+  <h1>IotVision AI — Sequence Diagram</h1>
+  <p class="subtitle">แสดงการสื่อสารระหว่าง User · Backend · Groq · Database · Model: <code>qwen/qwen3-32b</code></p>
+
+  <!-- ── Case 1: Simple Q&A ── -->
+  <div class="section blue">
+    <h2>Case 1 — Simple Q&A ("hello" / ถามข้อมูลทั่วไป)</h2>
+    <div class="mermaid">
+sequenceDiagram
+    actor U as User
+    participant FE as Frontend
+    participant BE as Backend (Go)
+    participant Groq as Groq API
+    participant DB as Database
+
+    U->>FE: พิมพ์ "hello"
+    FE->>BE: POST /chat { message, conversationId }
+    BE->>DB: INSERT ai_messages (role=user)
+    BE->>DB: SELECT ai_messages (history ≤8 msgs)
+    note over BE: hint scan: ไม่เจอ action verb<br/>includeBuilder = false<br/>ส่ง 6 READ tools
+    BE->>Groq: POST /completions { messages, tools×6 }
+    Groq-->>BE: finish_reason="stop" content="Hello!"
+    BE->>DB: INSERT ai_messages (role=assistant)
+    BE-->>FE: { messages }
+    FE-->>U: แสดงข้อความ "Hello!"
+    </div>
+    <p class="note">⚠ 6 READ tools ถูกส่งไปด้วยแต่ model ไม่เรียกใช้ เพราะ system prompt rule 1: "Plain text for greetings — no tool call"</p>
+  </div>
+
+  <!-- ── Case 2: Q&A with Tool ── -->
+  <div class="section amber">
+    <h2>Case 2 — ถามข้อมูล + ต้องใช้ Tool ("speed ของ CW-01 เท่าไหร่?")</h2>
+    <div class="mermaid">
+sequenceDiagram
+    actor U as User
+    participant FE as Frontend
+    participant BE as Backend (Go)
+    participant Groq as Groq API
+    participant DB as Database
+
+    U->>FE: "speed ของ CW-01 เท่าไหร่?"
+    FE->>BE: POST /chat { message, conversationId }
+    BE->>DB: INSERT ai_messages (role=user)
+    BE->>DB: SELECT ai_messages (history)
+    note over BE: hint scan: ไม่เจอ action verb<br/>includeBuilder = false → 6 READ tools
+    BE->>Groq: POST /completions { messages, tools×6 }
+
+    note over Groq: รู้ชื่อ CW-01 ชัดเจน (rule 2)<br/>เลือก get_latest_telemetry
+    Groq-->>BE: finish_reason="tool_calls"<br/>tool: get_latest_telemetry("CW-01")
+
+    BE->>DB: SELECT telemetry_raw WHERE machine=CW-01
+    DB-->>BE: { speed: 1200, timestamp: ... }
+    BE->>DB: INSERT ai_messages (role=tool)
+
+    note over BE: callTools = nil (drop tools)
+    BE->>Groq: POST /completions { messages + tool result }
+    Groq-->>BE: finish_reason="stop"<br/>content="ความเร็วของ CW-01 ตอนนี้ 1,200 rpm"
+
+    BE->>DB: INSERT ai_messages (role=assistant)
+    BE-->>FE: { messages }
+    FE-->>U: แสดงคำตอบ
+    </div>
+    <p class="note">Groq call 2 ครั้ง — ครั้งแรก model เลือก tool, ครั้งสองสรุปผลเป็นข้อความ</p>
+  </div>
+
+  <!-- ── Case 3: Create Dashboard ── -->
+  <div class="section green">
+    <h2>Case 3 — สร้าง Dashboard ("create dashboard about CW-01")</h2>
+    <div class="mermaid">
+sequenceDiagram
+    actor U as User
+    participant FE as Frontend
+    participant BE as Backend (Go)
+    participant Groq as Groq API
+    participant DB as Database
+
+    U->>FE: "create dashboard about CW-01"
+    FE->>BE: POST /chat { message, conversationId }
+    BE->>DB: INSERT ai_messages (role=user)
+    BE->>DB: SELECT ai_messages (history)
+    note over BE: hint scan: "create" match ✓<br/>includeBuilder = true → 14 tools
+    BE->>Groq: POST /completions { messages, tools×14 }
+
+    note over Groq: ชื่อ CW-01 ชัดเจน (rule 2)<br/>เลือก preview_dashboard
+    Groq-->>BE: finish_reason="tool_calls"<br/>tool: preview_dashboard({machine:"CW-01", template:"machine_overview"})
+
+    note over BE: Preview — ไม่เขียน DB
+    BE->>DB: SELECT machine_fields WHERE machine=CW-01
+    DB-->>BE: fields: [speed, temp, vibration]
+    BE->>DB: INSERT ai_messages (role=tool)
+
+    note over BE: callTools = nil (drop tools)
+    BE->>Groq: POST /completions { messages + preview result }
+    Groq-->>BE: finish_reason="stop"<br/>content="นี่คือ preview dashboard ครับ กดยืนยัน..."
+
+    BE->>DB: INSERT ai_messages (role=assistant)
+    BE-->>FE: { messages, toolResult: {widgets:[...]} }
+    FE->>BE: PUT /preview-draft { data: preview }
+    BE->>DB: UPSERT ai_preview_drafts
+    FE-->>U: แสดง preview panel + ปุ่ม Confirm
+
+    note over U,DB: User กดปุ่ม Confirm
+    U->>FE: กด Confirm
+    FE->>BE: POST /tools/execute { toolName:"create_custom_dashboard", params:{...} }
+    BE->>DB: INSERT dashboards
+    BE->>DB: INSERT dashboard_widgets ×4
+    DB-->>BE: { dashboardId }
+    BE-->>FE: { success, dashboardId, url }
+    FE->>BE: DELETE /preview-draft
+    BE->>DB: DELETE ai_preview_drafts
+    FE-->>U: redirect → /dashboards/:id
+    </div>
+    <p class="note">
+      Groq call 2 ครั้ง — <code>create_custom_dashboard</code> ไม่ได้อยู่ใน tools ที่ส่งให้ AI เลย Frontend เรียกตรงผ่าน <code>/tools/execute</code> หลัง user กด Confirm เท่านั้น
+    </p>
+  </div>
+
+  <!-- ── Case 4: Edit Preview Widget ── -->
+  <div class="section purple">
+    <h2>Case 4 — แก้ Widget ใน Preview ("change metric to temperature")</h2>
+    <div class="mermaid">
+sequenceDiagram
+    actor U as User
+    participant FE as Frontend
+    participant BE as Backend (Go)
+    participant Groq as Groq API
+    participant DB as Database
+
+    note over U,DB: มี preview dashboard อยู่บนหน้าจอแล้ว
+    U->>FE: "change metric to temperature"
+    FE->>BE: POST /chat { message, conversationId, context: previewData }
+
+    BE->>DB: INSERT ai_messages (role=user)
+    BE->>DB: SELECT ai_messages (history)
+    note over BE: hint scan: "change" match ✓<br/>+ context มีค่า → includeBuilder = true → 14 tools
+    BE->>Groq: POST /completions { messages, context, tools×14 }
+
+    note over Groq: มี preview context → เห็น widget ปัจจุบัน<br/>เลือก preview_update_widget
+    Groq-->>BE: finish_reason="tool_calls"<br/>tool: preview_update_widget({widget_title:"Trend", metric:"temperature"})
+
+    note over BE: ไม่เขียน DB — แค่ return changes
+    BE-->>BE: PreviewUpdateWidget() → {updated:true, changes:{metric:"temperature"}}
+    BE->>DB: INSERT ai_messages (role=tool)
+
+    BE->>Groq: POST /completions { messages + changes result }
+    Groq-->>BE: finish_reason="stop"<br/>content="อัปเดต metric เป็น temperature แล้วครับ"
+
+    BE->>DB: INSERT ai_messages (role=assistant)
+    BE-->>FE: { messages, toolResult: {changes} }
+    FE->>FE: apply changes ใน preview state (local)
+    FE->>BE: PUT /preview-draft { data: updated preview }
+    BE->>DB: UPSERT ai_preview_drafts
+    FE-->>U: preview อัปเดตแล้ว
+    </div>
+    <p class="note"><code>preview_update_widget</code> ไม่ query DB เลย — แค่ validate แล้ว return changes กลับมา Frontend เป็นคน apply ใน local state เอง</p>
+  </div>
+
+</div>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      background: '#131720',
+      primaryColor: '#1e2330',
+      primaryTextColor: '#e2e8f0',
+      primaryBorderColor: '#4a5568',
+      lineColor: '#4a5568',
+      secondaryColor: '#1e2330',
+      tertiaryColor: '#1e2330',
+      actorBkg: '#1e2330',
+      actorBorder: '#4a5568',
+      actorTextColor: '#e2e8f0',
+      actorLineColor: '#4a5568',
+      noteBkgColor: '#1a2535',
+      noteTextColor: '#94a3b8',
+      noteBorderColor: '#2d3748',
+      activationBkgColor: '#1d4ed8',
+      activationBorderColor: '#3b82f6',
+      sequenceNumberColor: '#e2e8f0',
+      signalColor: '#7dd3fc',
+      signalTextColor: '#e2e8f0',
+      labelBoxBkgColor: '#1e2330',
+      labelBoxBorderColor: '#4a5568',
+      labelTextColor: '#94a3b8',
+      loopTextColor: '#94a3b8',
+    },
+    sequence: {
+      diagramMarginX: 20,
+      diagramMarginY: 20,
+      actorMargin: 60,
+      width: 160,
+      height: 50,
+      boxMargin: 10,
+      boxTextMargin: 5,
+      noteMargin: 10,
+      messageMargin: 35,
+      mirrorActors: false,
+      useMaxWidth: true,
+    }
+  });
+</script>
+</body>
+</html>

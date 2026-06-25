@@ -177,6 +177,7 @@ export interface Dashboard {
   widgets?: DashboardWidget[];
   user?: { id: string; name: string };
   _count?: { widgets: number };
+  widgetLayouts?: Array<{ type: WidgetType; x: number; y: number; w: number; h: number }>;
   createdAt: string;
   updatedAt: string;
 }

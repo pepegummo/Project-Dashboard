@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
+import type { Component } from 'vue';
 import { useRouter } from 'vue-router';
 import { useDashboardStore } from '@/stores/dashboard.store';
 import { useAuthStore } from '@/stores/auth.store';
 import { useToast } from '@/composables/useToast';
-import { Plus, Download, LayoutDashboard, Star, Globe, Trash2, Edit3, Loader2 } from 'lucide-vue-next';
+import { Plus, Download, Star, Globe, Trash2, Edit3, Loader2, TrendingUp, Gauge, Target, Activity, Table, Bell, CalendarDays, LayoutGrid } from 'lucide-vue-next';
 import type { Dashboard } from '@/types';
 
 const router = useRouter();
@@ -93,6 +94,32 @@ const timeAgo = (date: string) => {
   if (hrs < 24) return `${hrs}h ago`;
   return `${Math.floor(hrs / 24)}d ago`;
 };
+
+const WIDGET_ICONS: Record<string, Component> = {
+  'line-chart':  TrendingUp,
+  'gauge':       Gauge,
+  'kpi-card':    Target,
+  'status-card': Activity,
+  'table':       Table,
+  'alarm-panel': Bell,
+  'daily-count': CalendarDays,
+};
+
+type WL = { type: string; x: number; y: number; w: number; h: number }
+
+function maxRows(layouts: WL[]): number {
+  return Math.max(...layouts.map(l => l.y + l.h))
+}
+
+function cellStyle(wl: WL, rows: number) {
+  const COLS = 12
+  return {
+    left:   `${(wl.x / COLS) * 100}%`,
+    top:    `${(wl.y / rows) * 100}%`,
+    width:  `${(wl.w / COLS) * 100}%`,
+    height: `${(wl.h / rows) * 100}%`,
+  }
+}
 </script>
 
 <template>
@@ -142,11 +169,27 @@ const timeAgo = (date: string) => {
         @click="openDashboard(d)"
       >
         <!-- Preview area -->
-        <div class="h-28 bg-gradient-to-br from-surface-200 to-surface-300 rounded-lg mb-4 flex items-center justify-center overflow-hidden relative">
-          <div class="absolute inset-0 opacity-20 grid grid-cols-3 gap-1.5 p-2">
-            <div v-for="i in 6" :key="i" class="bg-white/10 rounded" />
+        <div class="h-44 bg-gradient-to-br from-surface-200 to-surface-300 rounded-lg mb-4 overflow-hidden relative">
+          <div class="absolute inset-0 p-1.5">
+            <div class="relative w-full h-full">
+              <template v-if="d.widgetLayouts?.length">
+                <div
+                  v-for="(wl, i) in d.widgetLayouts"
+                  :key="i"
+                  :style="cellStyle(wl, maxRows(d.widgetLayouts))"
+                  class="absolute p-0.5"
+                >
+                  <div class="w-full h-full flex flex-col items-center justify-center gap-0.5 bg-white/10 rounded">
+                    <component :is="WIDGET_ICONS[wl.type] ?? LayoutGrid" class="w-3.5 h-3.5 text-white/60" />
+                    <span class="text-[8px] text-white/40 capitalize leading-none">{{ wl.type.replace(/-/g, ' ') }}</span>
+                  </div>
+                </div>
+              </template>
+              <div v-else class="w-full h-full flex items-center justify-center">
+                <LayoutGrid class="w-6 h-6 text-white/20" />
+              </div>
+            </div>
           </div>
-          <LayoutDashboard class="w-8 h-8 text-white/20" />
           <div
             v-if="d.isDefault"
             class="absolute top-2 left-2 badge badge-blue"
