@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AI Query Widget — Sequence Diagrams</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --border: #2a2d3e;
+    --accent: #6366f1; --green: #22c55e; --yellow: #eab308;
+    --red: #ef4444; --text: #e2e8f0; --muted: #64748b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; line-height: 1.6; }
+
+  header { background: #13151f; border-bottom: 1px solid var(--border); padding: 2rem 3rem; }
+  header h1 {
+    font-size: 1.6rem; font-weight: 700;
+    background: linear-gradient(90deg, #6366f1, #a78bfa);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    margin-bottom: 0.3rem;
+  }
+  header p { color: var(--muted); font-size: 0.88rem; }
+
+  nav {
+    display: flex; gap: 0.4rem; padding: 0.8rem 3rem;
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    flex-wrap: wrap; position: sticky; top: 0; z-index: 100;
+  }
+  nav a {
+    text-decoration: none; padding: 0.3rem 0.8rem; border-radius: 5px;
+    font-size: 0.78rem; font-weight: 500; border: 1px solid var(--border);
+    color: var(--muted); transition: all 0.15s;
+  }
+  nav a:hover, nav a.active { color: var(--text); border-color: var(--accent); background: #1e2040; }
+  nav a.hl { color: #c084fc; border-color: #3d1b6e; background: #180d2e; }
+
+  main { padding: 2rem 3rem; max-width: 1400px; margin: 0 auto; }
+
+  .section { margin-bottom: 3rem; scroll-margin-top: 72px; }
+  .section-header { display: flex; align-items: center; gap: 0.9rem; margin-bottom: 1.1rem; }
+  .badge {
+    font-size: 0.68rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 0.22rem 0.55rem; border-radius: 4px;
+  }
+  .badge.core    { background: #2d1b4e; color: #c084fc; border: 1px solid #4d2b7e; }
+  .badge.graph   { background: #1a2e1a; color: #4ade80; border: 1px solid #2a5a2a; }
+  .badge.example { background: #1e2e4a; color: #60a5fa; border: 1px solid #2e4a8f; }
+  .badge.old     { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
+
+  .section-header h2 { font-size: 1.1rem; font-weight: 600; }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .card-meta {
+    display: flex; gap: 1.5rem; padding: 0.85rem 1.4rem;
+    border-bottom: 1px solid var(--border); background: #13151f; flex-wrap: wrap;
+  }
+  .meta-item { display: flex; align-items: center; gap: 0.45rem; font-size: 0.78rem; }
+  .meta-item .label { color: var(--muted); }
+  .meta-item .value.good { color: var(--green); font-weight: 600; }
+  .meta-item .value.warn { color: var(--yellow); font-weight: 600; }
+  .meta-item .value.bad  { color: var(--red); font-weight: 600; }
+
+  .diagram-wrap { padding: 1.4rem; overflow-x: auto; }
+  .diagram-wrap .mermaid { min-width: 580px; }
+
+  .note {
+    display: flex; align-items: flex-start; gap: 0.55rem;
+    padding: 0.8rem 1.4rem; border-top: 1px solid var(--border);
+    background: #13151f; font-size: 0.8rem; color: var(--muted);
+  }
+  .note strong { color: var(--text); }
+
+  /* example queries grid */
+  .examples-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 1rem; padding: 1.25rem 1.4rem;
+  }
+  .ex-card {
+    background: #13151f; border: 1px solid var(--border); border-radius: 8px;
+    padding: 1rem; font-size: 0.82rem;
+  }
+  .ex-card .q { color: #a5b4fc; font-style: italic; margin-bottom: 0.5rem; font-size: 0.85rem; }
+  .ex-card .tool { color: var(--muted); font-family: monospace; font-size: 0.75rem; margin-bottom: 0.3rem; }
+  .ex-card .widget-out { color: #4ade80; font-size: 0.78rem; }
+  .ex-card .label { color: var(--muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 0.2rem; }
+
+  /* tool table */
+  .tool-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+  .tool-table th {
+    background: #13151f; color: var(--muted); font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.7rem;
+    padding: 0.6rem 1rem; text-align: left; border-bottom: 2px solid var(--border);
+  }
+  .tool-table td { padding: 0.55rem 1rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .tool-table tr:last-child td { border-bottom: none; }
+  .tool-table tr:hover td { background: #1e2235; }
+  .tool-table td:first-child { font-family: monospace; color: #a5b4fc; font-size: 0.78rem; white-space: nowrap; }
+
+  .pill {
+    display: inline-block; padding: 0.18rem 0.5rem;
+    border-radius: 4px; font-size: 0.72rem; font-weight: 600;
+  }
+  .pill.new    { background: #2d1b4e; color: #c084fc; border: 1px solid #4d2b7e; }
+  .pill.exist  { background: #1a2e1a; color: #4ade80; border: 1px solid #2a5a2a; }
+  .pill.gate   { background: #2d2412; color: #fbbf24; border: 1px solid #4a3a1a; }
+
+  hr.div { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+  footer { text-align: center; padding: 2rem; color: var(--muted); font-size: 0.78rem; border-top: 1px solid var(--border); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AI Query → Text + Widget</h1>
+  <p>User asks natural language → Knowledge graph gives context → AI answers in text and renders a widget — no dashboard setup needed</p>
+</header>
+
+<nav>
+  <a class="hl" href="#main-flow">Main Flow</a>
+  <a class="hl" href="#graph-role">Graph Role</a>
+  <a class="hl" href="#tool-registry">Tool Registry</a>
+  <a class="hl" href="#examples">Query Examples</a>
+  <a href="#old-problem" style="margin-left:auto">Old problem (keyword hints)</a>
+</nav>
+
+<main>
+
+<!-- ══════════════════════ MAIN FLOW ══════════════════════ -->
+<div class="section" id="main-flow">
+  <div class="section-header">
+    <span class="badge core">Core Flow</span>
+    <h2>User asks a question → AI answers in text + shows a widget</h2>
+  </div>
+  <div class="card">
+    <div class="card-meta">
+      <div class="meta-item"><span class="label">Example question</span><span class="value good">"how many pieces in range 100–200 today?"</span></div>
+      <div class="meta-item"><span class="label">Output</span><span class="value good">text answer + inline widget</span></div>
+      <div class="meta-item"><span class="label">User setup needed</span><span class="value good">none (low code)</span></div>
+    </div>
+    <div class="diagram-wrap">
+      <div class="mermaid">
+sequenceDiagram
+  participant U  as User (chat)
+  participant AP as AI Handler
+  participant DB as Postgres
+  participant G  as Groq (qwen3-32b)
+  participant FE as Frontend (Vue)
+
+  U->>AP: "how many pieces in range 100-200 today?"
+
+  rect rgb(15, 25, 50)
+    Note over AP,DB: Step 1 — Build Factory Knowledge Graph (no keyword check)
+    AP->>DB: SELECT machines + machine_fields (org-scoped)
+    DB-->>AP: [{CW-01, field:output, unit:pcs/hr, min:0, max:1200}]
+    AP->>DB: SELECT dashboards + widgets
+    DB-->>AP: [existing dashboards...]
+    Note over AP: Graph tells AI:<br/>• "output" = pcs/hr field on CW-01<br/>• range 100–200 maps to this field<br/>• no need to ask "which machine?"
+  end
+
+  rect rgb(25, 20, 50)
+    Note over AP,G: Step 2 — Tool Registry consulted (graph-driven, no keywords)
+    AP->>G: [sys] systemPrompt<br/>[sys] "=== Factory Graph ===<br/>  CW-01: output(pcs/hr)[0-1200]<br/>  TS-01: temp(°C)[0-150]"<br/>[usr] "how many pieces in range 100-200 today?"<br/>tools: [get_telemetry_trend, get_daily_count, answer_with_widget, ...]
+  end
+
+  rect rgb(30, 25, 10)
+    Note over AP,DB: Step 3 — AI calls data tool (understands context from graph)
+    G-->>AP: tool_call: get_telemetry_trend({<br/>  machine_id: "CW-01",<br/>  metric: "output",<br/>  time_range: "24h"<br/>})
+    AP->>DB: SELECT time_bucket, avg(output)<br/>FROM telemetry_raw<br/>WHERE machine_id=CW-01 AND time > now()-24h<br/>GROUP BY time_bucket ORDER BY time
+    DB-->>AP: [{10:00, avg:145}, {10:30, avg:178}, {11:00, avg:210}, ...]
+  end
+
+  rect rgb(15, 35, 20)
+    Note over AP,G: Step 4 — AI computes answer + widget spec
+    AP->>G: tool_result: [{time, value}...48 points]
+    G-->>AP: tool_call: answer_with_widget({<br/>  text: "CW-01 was in 100–200 pcs/hr for 5.5 hrs today (69% of shift). Peak at 11:00 with 198 pcs/hr.",<br/>  widget: {<br/>    type: "line-chart",<br/>    machine: "CW-01",<br/>    metric: "output",<br/>    time_range: "24h",<br/>    highlight_min: 100,<br/>    highlight_max: 200<br/>  }<br/>})
+  end
+
+  AP-->>FE: {<br/>  role: "assistant",<br/>  content: "CW-01 was in 100–200 pcs/hr for 5.5 hrs today (69% of shift)...",<br/>  widget: { type:"line-chart", machine:"CW-01", metric:"output", highlight:[100,200] }<br/>}
+
+  rect rgb(20, 15, 40)
+    Note over FE: Step 5 — Frontend renders inline
+    FE->>FE: Show text answer in chat bubble
+    FE->>FE: Mount LineChartWidget as CanvasCard<br/>(reuses existing widget components)<br/>highlight band 100–200 on Y axis
+  end
+
+  FE-->>U: Text answer + line chart with range highlighted
+      </div>
+    </div>
+    <div class="note">
+      <strong>Key:</strong> The knowledge graph at Step 1 is why the AI knows "pieces" = <code>output</code> field on CW-01 in <code>pcs/hr</code> — without asking the user to specify. No keyword hints involved.
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════ GRAPH ROLE ══════════════════════ -->
+<div class="section" id="graph-role">
+  <div class="section-header">
+    <span class="badge graph">Graph Role</span>
+    <h2>What the knowledge graph gives the AI (injected as system message)</h2>
+  </div>
+  <div class="card">
+    <div class="diagram-wrap">
+      <div class="mermaid">
+sequenceDiagram
+  participant U  as User
+  participant G  as Groq (qwen3-32b)
+  participant GR as Factory Graph (in prompt)
+
+  Note over G,GR: Graph is injected BEFORE every message — AI reads it like docs
+
+  U->>G: "how many pieces between 100 and 200 today?"
+
+  rect rgb(20, 20, 40)
+    Note over G,GR: AI reads graph context (no tool call needed)
+    G->>GR: "pieces" → which field?
+    GR-->>G: CW-01.output (pcs/hr, range 0–1200)
+    G->>GR: "100 to 200" → valid range for this field?
+    GR-->>G: yes, within [0, 1200]
+    G->>GR: "today" → which time range?
+    GR-->>G: 24h (standard), use get_telemetry_trend
+  end
+
+  Note over G: AI now knows EXACTLY which tool to call<br/>and with which parameters<br/>— no clarification question needed
+
+  G-->>U: Calls get_telemetry_trend({machine:"CW-01", metric:"output", time_range:"24h"})
+
+  Note over G,GR: WITHOUT graph — AI would ask:<br/>"Which machine do you mean?"<br/>"What unit is 'pieces' in?"<br/>"Which field tracks production count?"
+      </div>
+    </div>
+    <div style="padding: 1.25rem 1.4rem; border-top: 1px solid var(--border);">
+      <p style="font-size:0.82rem; color:var(--muted); margin-bottom:0.8rem">What gets injected as a system message before every chat turn:</p>
+      <pre style="background:#0d0f18; border:1px solid var(--border); border-radius:8px; padding:1rem; font-size:0.78rem; color:#e2e8f0; overflow-x:auto; line-height:1.7">=== Factory Knowledge Graph ===
+MACHINES (3):
+  [a1b2c3d4] CW-01 (checkweigher) — online
+    Fields: output(pcs/hr)[0-1200] thr:1000, reject_count(count), line_speed(m/min)
+  [e5f6a7b8] TS-01 (temp_sensor) — online
+    Fields: temp(°C)[0-150] thr:85, humidity(%)[0-100]
+  [c9d0e1f2] CB-01 (conveyor) — warning
+    Fields: speed(m/min)[0-60], vibration(mm/s)
+
+DASHBOARDS (2):
+  [11223344] "Production Floor" — 4 widget(s)
+  [55667788] "Maintenance" — 2 widget(s)
+
+ALERT RULES (1):
+  [aabbccdd] CW-01.output lt 1000</pre>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════ TOOL REGISTRY ══════════════════════ -->
+<div class="section" id="tool-registry">
+  <div class="section-header">
+    <span class="badge core">Tool Registry</span>
+    <h2>Tools the AI can use — graph-driven selection, no keyword hints</h2>
+  </div>
+  <div class="card">
+    <div class="diagram-wrap" style="padding-bottom:0">
+      <div class="mermaid">
+sequenceDiagram
+  participant AP as AI Handler
+  participant RE as Tool Registry
+  participant FG as FactoryGraph
+
+  Note over AP,RE: OLD (removed): wantsBuilderTools(message)<br/>→ checks Thai+English keyword list → breaks on synonyms
+
+  AP->>FG: BuildFactoryGraph(orgID)
+  FG-->>AP: {machines:[3], dashboards:[2], fieldsWithUnits: true}
+
+  AP->>RE: SelectTools(graph, role="editor")
+
+  Note over RE: For each tool entry in registry:<br/>  1. roleRank[entry.minRole] <= roleRank[role] ?<br/>  2. entry.graphGate(graph) == true ?<br/><br/>  get_telemetry_trend  → nil gate → always ✓<br/>  get_daily_count      → nil gate → always ✓<br/>  answer_with_widget   → nil gate → always ✓  ← NEW<br/>  preview_dashboard    → machines>0 → ✓<br/>  add_widget           → dashboards>0 → ✓<br/>  execute_migration    → hasUnits() → ✓
+
+  RE-->>AP: selected tools (no keywords, pure graph state)
+      </div>
+    </div>
+    <div style="overflow-x:auto; border-top: 1px solid var(--border);">
+      <table class="tool-table">
+        <thead>
+          <tr>
+            <th>Tool</th>
+            <th>Status</th>
+            <th>graphGate</th>
+            <th>Used when user asks</th>
+            <th>Widget output</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>get_latest_telemetry</td>
+            <td><span class="pill exist">existing</span></td>
+            <td>always</td>
+            <td>"what is current temp / speed / output?"</td>
+            <td>kpi-card, gauge, status-card</td>
+          </tr>
+          <tr>
+            <td>get_telemetry_trend</td>
+            <td><span class="pill exist">existing</span></td>
+            <td>always</td>
+            <td>"how many pieces in range X–Y", "trend over last hour"</td>
+            <td>line-chart (with highlight band)</td>
+          </tr>
+          <tr>
+            <td>get_daily_count</td>
+            <td><span class="pill exist">existing</span></td>
+            <td>always</td>
+            <td>"how many pieces today / this week?"</td>
+            <td>daily-count, bar chart</td>
+          </tr>
+          <tr>
+            <td>get_active_alerts</td>
+            <td><span class="pill exist">existing</span></td>
+            <td>always</td>
+            <td>"any alarms right now?", "what's wrong?"</td>
+            <td>alarm-panel</td>
+          </tr>
+          <tr style="background:#180d2e22">
+            <td>answer_with_widget</td>
+            <td><span class="pill new">NEW</span></td>
+            <td>always</td>
+            <td>Any question — AI calls this last to package text + widget spec together</td>
+            <td>any widget type</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="note">
+      <strong>answer_with_widget</strong> is the key new tool. It takes the AI's computed answer and a widget spec, and returns both together so the frontend can render text + widget in a single chat turn.
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════ EXAMPLES ══════════════════════ -->
+<div class="section" id="examples">
+  <div class="section-header">
+    <span class="badge example">Query Examples</span>
+    <h2>What users can ask — how graph + tools handle each</h2>
+  </div>
+  <div class="card">
+    <div class="examples-grid">
+
+      <div class="ex-card">
+        <div class="label">Range query</div>
+        <div class="q">"how many pieces in range 100–200 today?"</div>
+        <div class="label">Graph resolves</div>
+        <div class="tool">CW-01.output (pcs/hr) → get_telemetry_trend(24h)</div>
+        <div class="label">Widget</div>
+        <div class="widget-out">line-chart | output over 24h | highlight band [100–200]</div>
+      </div>
+
+      <div class="ex-card">
+        <div class="label">Current value</div>
+        <div class="q">"what is the current temperature?"</div>
+        <div class="label">Graph resolves</div>
+        <div class="tool">TS-01.temp (°C) → get_latest_telemetry</div>
+        <div class="label">Widget</div>
+        <div class="widget-out">gauge | temp | 0–150°C | current value shown</div>
+      </div>
+
+      <div class="ex-card">
+        <div class="label">Production count</div>
+        <div class="q">"how many pieces did we make this week?"</div>
+        <div class="label">Graph resolves</div>
+        <div class="tool">CW-01.output → get_daily_count(days:7)</div>
+        <div class="label">Widget</div>
+        <div class="widget-out">daily-count | 7-day bar chart</div>
+      </div>
+
+      <div class="ex-card">
+        <div class="label">Status check</div>
+        <div class="q">"is the conveyor running normally?"</div>
+        <div class="label">Graph resolves</div>
+        <div class="tool">CB-01 status=warning → get_latest_telemetry + get_active_alerts</div>
+        <div class="label">Widget</div>
+        <div class="widget-out">status-card | CB-01 | warning + alarm-panel</div>
+      </div>
+
+      <div class="ex-card">
+        <div class="label">Trend comparison</div>
+        <div class="q">"show output trend for last 6 hours"</div>
+        <div class="label">Graph resolves</div>
+        <div class="tool">CW-01.output → get_telemetry_trend(6h)</div>
+        <div class="label">Widget</div>
+        <div class="widget-out">line-chart | 6h window | live mode off</div>
+      </div>
+
+      <div class="ex-card">
+        <div class="label">Multi-field</div>
+        <div class="q">"compare speed and output on CW-01"</div>
+        <div class="label">Graph resolves</div>
+        <div class="tool">CW-01.speed + CW-01.output → get_telemetry_trend ×2</div>
+        <div class="label">Widget</div>
+        <div class="widget-out">line-chart | dual series | same time window</div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════ answer_with_widget tool detail ══════════════════════ -->
+<div class="section" id="answer-tool">
+  <div class="section-header">
+    <span class="badge core">New Tool Detail</span>
+    <h2>answer_with_widget — how text + widget are returned together</h2>
+  </div>
+  <div class="card">
+    <div class="diagram-wrap">
+      <div class="mermaid">
+sequenceDiagram
+  participant G  as Groq
+  participant AP as AI Handler
+  participant FE as Frontend
+
+  Note over G: After calling data tool(s) and computing the answer...
+
+  G-->>AP: tool_call: answer_with_widget({<br/>  text: "CW-01 ran in 100–200 pcs/hr for 5.5 hrs (69% of shift). Peak 198 pcs/hr at 11:00.",<br/>  widget: {<br/>    type: "line-chart",<br/>    machine: "CW-01",<br/>    metric: "output",<br/>    time_range: "24h",<br/>    highlight_min: 100,<br/>    highlight_max: 200,<br/>    title: "Output Rate — Today"<br/>  }<br/>})
+
+  AP->>AP: dispatch("answer_with_widget") →<br/>validate widget spec,<br/>resolve machine UUID,<br/>return {text, widget} as tool_result
+
+  AP-->>G: tool_result: {ok: true, widget_spec: {...resolved...}}
+
+  G-->>AP: assistant message (empty or brief confirm)
+
+  AP-->>FE: Message[] containing:<br/>  • role:"tool", toolName:"answer_with_widget",<br/>    toolResult: { text:"...", widget:{type,machine_uuid,metric,...} }
+
+  rect rgb(20, 15, 40)
+    Note over FE: Frontend renders (AIAssistantPage.vue)
+    FE->>FE: if msg.toolName == "answer_with_widget":<br/>  show msg.toolResult.text as chat bubble<br/>  mount widget component from msg.toolResult.widget<br/>  push to canvasCards as QueryResultCard
+  end
+
+  FE-->>FE: User sees: text answer + live widget side by side
+      </div>
+    </div>
+    <div style="padding: 1.25rem 1.4rem; border-top: 1px solid var(--border);">
+      <p style="font-size:0.82rem; color:var(--muted); margin-bottom:0.75rem"><strong style="color:var(--text)">answer_with_widget schema (schema.go):</strong></p>
+      <pre style="background:#0d0f18; border:1px solid var(--border); border-radius:8px; padding:1rem; font-size:0.78rem; color:#e2e8f0; overflow-x:auto; line-height:1.7">var AnswerWithWidgetTool = map[string]any{
+    "name": "answer_with_widget",
+    "description": "Package a text answer with a widget that visualizes the data. " +
+        "Call this LAST after fetching data. The widget renders inline in the chat.",
+    "input_schema": map[string]any{
+        "type":     "object",
+        "required": []string{"text", "widget"},
+        "properties": map[string]any{
+            "text": map[string]any{
+                "type":        "string",
+                "description": "The text answer to show in the chat bubble.",
+            },
+            "widget": map[string]any{
+                "type": "object",
+                "required": []string{"type", "machine", "metric"},
+                "properties": map[string]any{
+                    "type":          map[string]any{"type": "string",
+                                     "enum": []string{"line-chart","gauge","kpi-card","status-card","daily-count"}},
+                    "machine":       map[string]any{"type": "string", "description": "Machine name (e.g. CW-01)"},
+                    "metric":        map[string]any{"type": "string", "description": "Field key (e.g. output)"},
+                    "title":         map[string]any{"type": "string"},
+                    "time_range":    map[string]any{"type": "string",
+                                     "enum": []string{"5m","15m","30m","1h","6h","24h","7d"}},
+                    "highlight_min": map[string]any{"type": "number", "description": "Lower bound of range to highlight"},
+                    "highlight_max": map[string]any{"type": "number", "description": "Upper bound of range to highlight"},
+                    "unit":          map[string]any{"type": "string"},
+                    "min":           map[string]any{"type": "number"},
+                    "max":           map[string]any{"type": "number"},
+                },
+            },
+        },
+    },
+}</pre>
+    </div>
+  </div>
+</div>
+
+<hr class="div" />
+
+<!-- ══════════════════════ OLD PROBLEM ══════════════════════ -->
+<div class="section" id="old-problem">
+  <div class="section-header">
+    <span class="badge old">Old Problem</span>
+    <h2>What the keyword hint was doing — and why it breaks</h2>
+  </div>
+  <div class="card">
+    <div class="diagram-wrap">
+      <div class="mermaid">
+sequenceDiagram
+  participant U  as User
+  participant AP as AI Handler (old)
+  participant G  as Groq
+
+  Note over AP: wantsBuilderTools(message) — runs on every message
+
+  U->>AP: "how many pieces in range 100-200?"
+  AP->>AP: scan for keywords: "create","add","สร้าง","เพิ่ม",...
+  Note over AP: ❌ "how many pieces" has no builder keyword<br/>→ includeBuilder = false<br/>→ only read tools sent to Groq
+
+  U->>AP: "แสดง output ช่วงวันนี้"
+  AP->>AP: scan for "แสดง"... not in keyword list
+  Note over AP: ❌ misses — "แสดง" means "show" in Thai<br/>→ builder tools excluded again
+
+  U->>AP: "show output graph"
+  AP->>AP: "show" not in keyword list (only "create","add",...)
+  Note over AP: ❌ misses — user wants a widget but hint doesn't trigger
+
+  Note over AP,G: New approach: graph tells AI what's available.<br/>answer_with_widget is always in the tool list.<br/>AI decides when to produce a widget — no keyword needed.
+      </div>
+    </div>
+    <div class="note">
+      <strong>Root cause:</strong> keyword hints were gating <em>builder tools</em> (create/edit). But query-to-widget doesn't need builder tools at all — it needs <code>answer_with_widget</code> which is always available. The keyword gate was solving the wrong problem.
+    </div>
+  </div>
+</div>
+
+</main>
+
+<footer>IotVision · AI Query Widget · 2026-06-25</footer>
+
+<script>
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'dark',
+  themeVariables: {
+    background: '#1a1d27',
+    primaryColor: '#6366f1',
+    primaryTextColor: '#e2e8f0',
+    primaryBorderColor: '#4f52a0',
+    lineColor: '#4f52a0',
+    secondaryColor: '#1e2235',
+    tertiaryColor: '#13151f',
+    actorBkg: '#1e2235',
+    actorBorder: '#4f52a0',
+    actorTextColor: '#e2e8f0',
+    actorLineColor: '#4f52a0',
+    signalColor: '#a5b4fc',
+    signalTextColor: '#e2e8f0',
+    labelBoxBkgColor: '#1a1d27',
+    labelBoxBorderColor: '#4f52a0',
+    labelTextColor: '#e2e8f0',
+    loopTextColor: '#a5b4fc',
+    noteBorderColor: '#4f52a0',
+    noteBkgColor: '#1e2235',
+    noteTextColor: '#e2e8f0',
+    activationBorderColor: '#6366f1',
+    activationBkgColor: '#1e2040',
+    fontSize: '13px',
+  },
+  sequence: {
+    actorMargin: 50, width: 155, height: 40,
+    boxMargin: 8, boxTextMargin: 4, noteMargin: 8,
+    messageMargin: 28, mirrorActors: false, useMaxWidth: true,
+  }
+});
+</script>
+</body>
+</html>

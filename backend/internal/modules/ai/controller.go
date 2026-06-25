@@ -322,28 +322,12 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 		msgs = append(msgs, groqMessage{Role: "system", Content: &ctxContent})
 	}
 
-	// Send only the tools this message needs: read tools always, mutating tools
-	// for editors, builder tools when the message shows build/edit intent OR a
-	// dashboard preview is on screen (context present) — the latter is language-
-	// agnostic, so in-session edits work for non-English messages too.
-	includeBuilder := wantsBuilderTools(body.Message) || body.Context != ""
-	tools := buildGroqTools(middleware.GetUser(c).Role, includeBuilder)
+	tools := buildGroqTools(middleware.GetUser(c).Role)
 
-	// Agentic loop (max 5 iterations). Tools are sent on the first call only;
-	// after a tool round the next call is just the final text summary, so we
-	// drop the (~1k-token) tool array from it. This forgoes cross-call tool
-	// chaining — already discouraged by system-prompt rule #3.
 	callTools := tools
 	for i := 0; i < 5; i++ {
 		resp, err := callGroq(msgs, callTools)
 		if err != nil {
-			// Groq rejected a tool call because it wasn't in request.tools — the model
-			// inferred builder intent that our hint scan missed. Retry once with full tools.
-			if !includeBuilder && strings.Contains(err.Error(), "not in request.tools") {
-				includeBuilder = true
-				callTools = buildGroqTools(middleware.GetUser(c).Role, true)
-				resp, err = callGroq(msgs, callTools)
-			}
 			// qwen3 reasoning models try to chain tools even on no-tool summary calls.
 			// Groq surfaces this as "Tool choice is none" — retry with the full toolset.
 			if strings.Contains(err.Error(), "Tool choice is none") {
@@ -418,41 +402,14 @@ func toGroqTool(t map[string]any) map[string]any {
 	}
 }
 
-// builderHints are words that signal a create/edit/alert request. If none appear
-// in the user's message we skip the 7 builder tool schemas — most chat traffic is
-// read-only Q&A that only needs the read tools, and Groq re-bills the tool array
-// on every loop call.
-var builderHints = []string{
-	// English — action verbs only (nouns like "dashboard","chart" caused false positives)
-	"create", "add", "remove", "delete", "build", "make", "set up", "setup",
-	"change", "edit", "rename", "update", "ack", "acknowledge", "resolve",
-	// Thai — action verbs only
-	"สร้าง", "เพิ่ม", "ลบ", "แก้ไข", "เปลี่ยน", "ปรับ", "ตั้งค่า", "อัปเดต", "อัพเดท",
-	"ยืนยัน", "ลบออก",
-}
-
-func wantsBuilderTools(msg string) bool {
-	m := strings.ToLower(msg)
-	for _, h := range builderHints {
-		if strings.Contains(m, h) {
-			return true
-		}
-	}
-	return false
-}
-
-// buildGroqTools returns the tools the LLM may call. Read tools always pass.
-// Mutating tools require admin/editor (matches dispatch's RBAC), and all builder
-// tools are gated behind build/edit intent in the message.
-func buildGroqTools(role string, includeBuilder bool) []map[string]any {
+// buildGroqTools returns all tools the LLM may call, filtered only by role.
+// Mutating tools require admin/editor — viewers can only read.
+func buildGroqTools(role string) []map[string]any {
 	canWrite := role == "admin" || role == "editor"
 	out := make([]map[string]any, 0, len(AllTools()))
 	for _, t := range AllTools() {
 		name := t["name"].(string)
 		if isWriteTool(name) && !canWrite {
-			continue
-		}
-		if isBuilderTool(name) && !includeBuilder {
 			continue
 		}
 		out = append(out, toGroqTool(t))

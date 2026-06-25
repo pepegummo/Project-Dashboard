@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>AI Flow — 5 Cases</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+:root{
+  --bg:#090b12;--s1:#0f1118;--s2:#13151f;--border:#1e2133;
+  --accent:#6366f1;--purple:#a78bfa;--green:#34d399;--yellow:#fbbf24;
+  --red:#f87171;--blue:#60a5fa;--pink:#f472b6;--cyan:#22d3ee;
+  --text:#e2e8f0;--muted:#64748b;--sub:#94a3b8;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:'Inter',system-ui,sans-serif;line-height:1.6;}
+
+header{background:var(--s1);border-bottom:1px solid var(--border);padding:1.75rem 3rem;}
+header h1{font-size:1.6rem;font-weight:700;
+  background:linear-gradient(90deg,#6366f1,#a78bfa,#34d399);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
+  margin-bottom:.25rem;}
+header p{color:var(--muted);font-size:.85rem;}
+
+/* case selector tabs */
+.tabs{display:flex;gap:0;background:var(--s1);border-bottom:1px solid var(--border);
+  position:sticky;top:0;z-index:100;overflow-x:auto;}
+.tab{padding:.75rem 1.5rem;font-size:.82rem;font-weight:600;cursor:pointer;
+  border:none;background:none;color:var(--muted);border-bottom:2px solid transparent;
+  white-space:nowrap;transition:all .15s;}
+.tab:hover{color:var(--text);}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent);}
+
+main{padding:2rem 3rem;max-width:1350px;margin:0 auto;}
+
+/* case panel */
+.case-panel{display:none;flex-direction:column;gap:1.5rem;}
+.case-panel.active{display:flex;}
+
+/* case title bar */
+.case-title{display:flex;align-items:center;gap:1rem;padding:1rem 1.5rem;
+  background:var(--s1);border:1px solid var(--border);border-radius:10px;}
+.case-num{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;
+  justify-content:center;font-size:.9rem;font-weight:800;flex-shrink:0;}
+.case-title h2{font-size:1rem;font-weight:600;}
+.case-title p{font-size:.8rem;color:var(--muted);margin-top:.1rem;}
+
+/* input pills */
+.msgs{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.4rem;}
+.msg-bubble{display:inline-flex;align-items:center;gap:.4rem;padding:.3rem .75rem;
+  border-radius:20px;font-size:.8rem;font-weight:500;}
+.msg-bubble.turn1{background:#1a1f3a;border:1px solid #2a2f6a;color:#a5b4fc;}
+.msg-bubble.turn2{background:#1a2e1a;border:1px solid #2a5a2a;color:#4ade80;}
+.msg-bubble .turn-label{font-size:.65rem;color:var(--muted);}
+
+/* 3-col layout */
+.flow-grid{display:grid;grid-template-columns:1fr 2fr 1fr;gap:1rem;}
+@media(max-width:1100px){.flow-grid{grid-template-columns:1fr;}}
+
+/* side panels */
+.panel{background:var(--s1);border:1px solid var(--border);border-radius:10px;overflow:hidden;}
+.panel-head{padding:.65rem 1rem;border-bottom:1px solid var(--border);
+  font-size:.7rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em;}
+.panel-body{padding:1rem;}
+
+/* context box */
+.ctx-box{background:#0b0e1a;border:1px solid var(--border);border-radius:6px;
+  font-family:monospace;font-size:.73rem;padding:.75rem;line-height:1.65;color:var(--sub);}
+.ctx-box .ck{color:#6366f1;font-weight:600;}
+.ctx-box .cv{color:#34d399;}
+.ctx-box .cc{color:#475569;font-style:italic;}
+
+/* output box */
+.out-box{border-radius:8px;padding:.85rem 1rem;font-size:.78rem;line-height:1.6;}
+.out-box.text{background:#13151f;border:1px solid var(--border);}
+.out-box.preview{background:#0d1f1a;border:1px solid #1e5a3a;}
+.out-box.widget{background:#1a0d2e;border:1px solid #4d2b7e;}
+.out-box.ask{background:#1f1a0d;border:1px solid #5a4a1a;}
+.out-box .out-label{font-size:.65rem;font-weight:700;text-transform:uppercase;
+  letter-spacing:.08em;margin-bottom:.4rem;}
+.out-box.text   .out-label{color:var(--muted);}
+.out-box.preview .out-label{color:#34d399;}
+.out-box.widget .out-label{color:#c084fc;}
+.out-box.ask    .out-label{color:#fbbf24;}
+
+/* decision steps */
+.steps{display:flex;flex-direction:column;gap:.5rem;}
+.step{border-radius:7px;border:1px solid var(--border);overflow:hidden;}
+.step-head{padding:.45rem .85rem;font-size:.7rem;font-weight:700;
+  text-transform:uppercase;letter-spacing:.07em;display:flex;align-items:center;gap:.5rem;}
+.step-body{padding:.6rem .85rem;font-size:.78rem;color:var(--sub);
+  border-top:1px solid var(--border);line-height:1.55;}
+.step-body code{font-family:monospace;color:#a5b4fc;font-size:.75rem;}
+.step-body .highlight{color:var(--text);font-weight:500;}
+
+/* step colours */
+.step.graph  .step-head{background:#0d1a1a;color:#34d399;}
+.step.select .step-head{background:#1a1328;color:#a78bfa;}
+.step.call   .step-head{background:#0d1f14;color:#34d399;}
+.step.result .step-head{background:#1a1f0d;color:#fbbf24;}
+.step.ans    .step-head{background:#1f0d1a;color:#f472b6;}
+.step.plain  .step-head{background:#131520;color:#60a5fa;}
+
+/* tool badge */
+.tb{display:inline-block;padding:.1rem .4rem;border-radius:4px;font-size:.68rem;
+  font-weight:700;font-family:monospace;margin-left:.2rem;}
+.tb.read{background:#1a2e1a;color:#4ade80;border:1px solid #2a5a2a;}
+.tb.build{background:#1a2040;color:#60a5fa;border:1px solid #2a3a7a;}
+.tb.new{background:#2d1b4e;color:#c084fc;border:1px solid #4d2b7e;}
+.tb.none{background:#1a1a1a;color:#64748b;border:1px solid #2a2a2a;}
+
+/* decision badge */
+.db{display:inline-block;padding:.12rem .45rem;border-radius:4px;font-size:.68rem;font-weight:700;}
+.db.yes{background:#143320;color:#34d399;}
+.db.no{background:#2d1212;color:#f87171;}
+.db.skip{background:#1a1a1a;color:#64748b;}
+
+/* mermaid wrapper */
+.diagram{overflow-x:auto;padding:1rem 0;}
+.diagram .mermaid{min-width:400px;}
+
+/* legend */
+.legend{display:flex;flex-wrap:wrap;gap:.6rem;padding:.75rem 1.25rem;
+  background:var(--s1);border:1px solid var(--border);border-radius:8px;font-size:.74rem;}
+.legend-item{display:flex;align-items:center;gap:.4rem;color:var(--muted);}
+
+/* pill */
+.pill{display:inline-block;padding:.12rem .4rem;border-radius:3px;font-size:.68rem;font-weight:700;}
+.pill.g{background:#143320;color:#34d399;border:1px solid #1e5a3a;}
+.pill.y{background:#2d2412;color:#fbbf24;border:1px solid #4a3a1a;}
+.pill.r{background:#2d1212;color:#f87171;border:1px solid #4a1a1a;}
+.pill.p{background:#2d1b4e;color:#c084fc;border:1px solid #4d2b7e;}
+.pill.b{background:#1a2040;color:#60a5fa;border:1px solid #2a3a7a;}
+
+footer{text-align:center;padding:1.5rem;color:var(--muted);font-size:.75rem;
+  border-top:1px solid var(--border);margin-top:3rem;}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AI Flow — 5 Cases</h1>
+  <p>How the AI processes each type of user message: graph context · tool selection · output</p>
+</header>
+
+<div class="tabs">
+  <button class="tab active" onclick="show(0)">① hello</button>
+  <button class="tab" onclick="show(1)">② create dashboard → hello</button>
+  <button class="tab" onclick="show(2)">③ create dashboard → change metric</button>
+  <button class="tab" onclick="show(3)">④ change metric (no context)</button>
+  <button class="tab" onclick="show(4)">⑤ explain data in widget Trend</button>
+</div>
+
+<main>
+
+<!-- ══════════════════════════════════════════ CASE 1 -->
+<div class="case-panel active" id="c0">
+  <div class="case-title">
+    <div class="case-num" style="background:#1a1f3a;color:#60a5fa">1</div>
+    <div>
+      <h2>User says: "hello"</h2>
+      <p>Pure greeting — no data, no tools, no widget</p>
+      <div class="msgs">
+        <span class="msg-bubble turn1">💬 "hello"</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="flow-grid">
+    <!-- context -->
+    <div class="panel">
+      <div class="panel-head" style="color:#34d399">Graph + Context</div>
+      <div class="panel-body">
+        <div class="ctx-box">
+<span class="ck">BuildFactoryGraph(orgID)</span>
+<span class="cc">→ always runs</span>
+
+<span class="cv">machines:</span> [CW-01, TS-01, CB-01]
+<span class="cv">dashboards:</span> [2]
+<span class="cv">alerts:</span> [1]
+
+<span class="ck">body.Context:</span> <span class="cc">""  (no dashboard open)</span>
+
+<span class="ck">SelectTools(graph, "viewer")</span>
+<span class="cc">→ read tools only</span>
+<span class="cc">  (viewer: no builder/write)</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- steps -->
+    <div class="steps">
+      <div class="step graph">
+        <div class="step-head">① Build Factory Graph</div>
+        <div class="step-body">3 SQL queries, ~3ms. Injected as system message.<br/>
+          <span class="highlight">AI knows what machines/fields exist</span> — but won't need it for this message.</div>
+      </div>
+      <div class="step select">
+        <div class="step-head">② SelectTools(graph, role)</div>
+        <div class="step-body">
+          No keyword check.<br/>
+          <code>get_machines</code><span class="tb read">read</span>
+          <code>get_latest_telemetry</code><span class="tb read">read</span>
+          <code>get_telemetry_trend</code><span class="tb read">read</span>
+          <code>get_daily_count</code><span class="tb read">read</span>
+          <code>get_active_alerts</code><span class="tb read">read</span>
+          <code>answer_with_widget</code><span class="tb new">new</span>
+          <br/><br/>Builder tools excluded — <span class="pill b">viewer role</span>
+        </div>
+      </div>
+      <div class="step plain">
+        <div class="step-head">③ Groq call — finish_reason: stop</div>
+        <div class="step-body">
+          AI sees "hello" → <span class="db yes">plain text response</span><br/>
+          No tool_calls triggered. No data needed.<br/>
+          System prompt rule 1: <em>"Plain text for greetings — no tool call."</em>
+        </div>
+      </div>
+      <div class="step ans">
+        <div class="step-head">④ Save + return</div>
+        <div class="step-body">
+          <code>AddMessage(role:"assistant", content:"Hello! How can I help you today?")</code><br/>
+          Returns <code>newMessages: [user, assistant]</code>
+        </div>
+      </div>
+    </div>
+
+    <!-- output -->
+    <div class="panel">
+      <div class="panel-head" style="color:#60a5fa">Frontend Output</div>
+      <div class="panel-body" style="display:flex;flex-direction:column;gap:.75rem">
+        <div class="out-box text">
+          <div class="out-label">Chat bubble (text only)</div>
+          "Hello! How can I help you with the factory data today?"
+        </div>
+        <div style="font-size:.74rem;color:var(--muted);text-align:center">no tool call · no widget · no canvas card</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ CASE 2 -->
+<div class="case-panel" id="c1">
+  <div class="case-title">
+    <div class="case-num" style="background:#1a2e1a;color:#34d399">2</div>
+    <div>
+      <h2>Turn 1: "create dashboard about cw-01" → Turn 2: "hello"</h2>
+      <p>Dashboard created in turn 1. Turn 2 is a greeting — history shows preview in progress.</p>
+      <div class="msgs">
+        <span class="msg-bubble turn1">Turn 1 💬 "create dashboard about cw-01"</span>
+        <span class="msg-bubble turn2">Turn 2 💬 "hello"</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="diagram">
+    <div class="mermaid">
+sequenceDiagram
+  participant U  as User
+  participant AP as AI Handler
+  participant DB as Postgres
+  participant G  as Groq
+
+  Note over U,G: ── TURN 1: "create dashboard about cw-01" ──
+
+  U->>AP: "create dashboard about cw-01"
+  AP->>DB: BuildFactoryGraph(orgID)
+  DB-->>AP: {machines:[CW-01,...], dashboards:[2]}
+  Note over AP: SelectTools → builder tools included<br/>(len(machines)>0, role=editor/admin)
+  AP->>G: [sys] systemPrompt + factoryGraph<br/>[usr] "create dashboard about cw-01"<br/>tools: [read + builder + write]
+  G-->>AP: tool_call: preview_dashboard({machine:"CW-01", template:"machine_overview"})
+  AP->>DB: getMachineFieldsForMachine(CW-01)
+  DB-->>AP: [output, reject_count, line_speed]
+  AP-->>G: tool_result: {preview:true, dashboardName:"Machine Overview — CW-01", widgets:[...]}
+  G-->>AP: "Here's a preview of your CW-01 dashboard. Confirm to create it."
+  AP-->>U: preview canvas card shown + text
+
+  Note over U,G: ── TURN 2: "hello" (same conversation) ──
+
+  U->>AP: "hello"
+  AP->>DB: BuildFactoryGraph(orgID)
+  DB-->>AP: graph snapshot (same)
+  AP->>DB: GetMessages(conversationId) → last 8 messages
+  DB-->>AP: [turn1 user, turn1 tool, turn1 assistant]
+  Note over AP: SelectTools → builder tools still included
+  AP->>G: [sys] systemPrompt + factoryGraph<br/>[history] turn1 messages<br/>[usr] "hello"
+  G-->>AP: "Hello! The CW-01 dashboard preview is ready — confirm when you want to create it."
+  AP-->>U: text bubble only (preview card stays on screen)
+    </div>
+  </div>
+
+  <div class="flow-grid">
+    <div class="panel">
+      <div class="panel-head" style="color:#34d399">Turn 2 key inputs</div>
+      <div class="panel-body">
+        <div class="ctx-box">
+<span class="ck">History loaded</span> (last 8 msgs):
+  <span class="cv">user:</span>    "create dashboard about cw-01"
+  <span class="cv">tool:</span>    preview_dashboard result
+  <span class="cv">assistant:</span> "Here's a preview..."
+
+<span class="ck">body.Context:</span>
+  <span class="cc">"" or preview card state</span>
+
+<span class="ck">SelectTools:</span>
+  <span class="cc">builder tools ✓ (machines>0)</span>
+        </div>
+      </div>
+    </div>
+    <div class="steps">
+      <div class="step graph">
+        <div class="step-head">History gives AI full context</div>
+        <div class="step-body">AI reads turn 1 history — knows a preview is already on screen.<br/>
+          "hello" triggers <span class="db yes">plain text</span> that references the pending preview.<br/>
+          No new tool calls needed — state already in conversation history.</div>
+      </div>
+      <div class="step plain">
+        <div class="step-head">Greeting acknowledged with context</div>
+        <div class="step-body">AI doesn't re-call <code>preview_dashboard</code>.<br/>
+          It simply reminds the user the preview is ready to confirm.</div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head" style="color:#60a5fa">Frontend Output (Turn 2)</div>
+      <div class="panel-body" style="display:flex;flex-direction:column;gap:.75rem">
+        <div class="out-box preview">
+          <div class="out-label">Canvas card (from turn 1, still visible)</div>
+          Machine Overview — CW-01<br/>
+          <span style="font-size:.72rem;color:var(--muted)">gauge · kpi-card · line-chart · status-card</span>
+        </div>
+        <div class="out-box text">
+          <div class="out-label">New text bubble (turn 2)</div>
+          "Hello! The CW-01 dashboard preview is ready — confirm when you want to create it."
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ CASE 3 -->
+<div class="case-panel" id="c2">
+  <div class="case-title">
+    <div class="case-num" style="background:#1a2040;color:#60a5fa">3</div>
+    <div>
+      <h2>Turn 1: "create dashboard about cw-01" → Turn 2: "change metric from output to temp"</h2>
+      <p>User edits the in-progress preview — AI uses preview_update_widget (no DB write yet)</p>
+      <div class="msgs">
+        <span class="msg-bubble turn1">Turn 1 💬 "create dashboard about cw-01"</span>
+        <span class="msg-bubble turn2">Turn 2 💬 "change metric from output to temp"</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="diagram">
+    <div class="mermaid">
+sequenceDiagram
+  participant U  as User
+  participant FE as Frontend
+  participant AP as AI Handler
+  participant DB as Postgres
+  participant G  as Groq
+
+  Note over U,G: ── TURN 1: "create dashboard about cw-01" ── (same as Case 2)
+
+  U->>AP: "create dashboard about cw-01"
+  AP->>G: [graph + tools] preview_dashboard called
+  G-->>AP: preview: {dashboardName:"Machine Overview — CW-01", widgets:[gauge|output,...]}
+  AP-->>FE: PreviewCanvasCard shown
+  FE-->>U: Preview on screen
+
+  Note over U,G: ── TURN 2: "change metric from output to temp" ──
+
+  FE->>AP: POST /api/ai/chat {message:"change metric from output to temp",<br/>  context: "Preview: Machine Overview — CW-01\nwidgets: gauge(output), kpi(output), line-chart(output)"}
+
+  AP->>DB: BuildFactoryGraph(orgID)
+  DB-->>AP: {machines:[CW-01,TS-01,...]}
+
+  Note over AP: body.Context != "" → always includes builder tools<br/>SelectTools: builder tools ✓ (machines>0 AND context present)
+
+  AP->>G: [sys] systemPrompt<br/>[sys] factoryGraph<br/>[sys] "Authoritative current state:\nPreview: Machine Overview — CW-01\nwidgets: gauge(output), kpi(output)..."<br/>[history] turn1 messages<br/>[usr] "change metric from output to temp"<br/>tools: [builder tools]
+
+  G-->>AP: tool_call: preview_update_widget({<br/>  widget_title: "Speed Gauge",<br/>  metric: "temp"<br/>})
+
+  AP-->>G: tool_result: {updated:true, widgetTitle:"Speed Gauge", changes:{metric:"temp"}}
+
+  G-->>AP: "Updated the gauge widget metric from output to temp."
+  AP-->>FE: newMessages with tool result
+
+  FE->>FE: Find widget "Speed Gauge" in preview<br/>Patch metric → "temp"<br/>Live data re-fetches from TS-01
+  FE-->>U: Preview card updated (no DB write yet)
+    </div>
+  </div>
+
+  <div class="flow-grid">
+    <div class="panel">
+      <div class="panel-head" style="color:#60a5fa">Turn 2 key inputs</div>
+      <div class="panel-body">
+        <div class="ctx-box">
+<span class="ck">body.Context</span> (from frontend):
+  "Preview: Machine Overview — CW-01
+   widgets:
+     gauge    | output | CW-01
+     kpi-card | output | CW-01
+     line-chart | output | CW-01"
+
+<span class="ck">History:</span> turn1 messages
+
+<span class="ck">SelectTools:</span>
+  context != "" <span class="cc">→ builder tools forced ✓</span>
+  <span class="cc">(covers ambiguous language)</span>
+        </div>
+      </div>
+    </div>
+    <div class="steps">
+      <div class="step graph">
+        <div class="step-head">Context tells AI the current state</div>
+        <div class="step-body">
+          <span class="highlight">body.Context</span> is serialized widget list sent by frontend.<br/>
+          AI knows: preview has gauge/kpi/line-chart all showing <code>output</code>.<br/>
+          "change metric" → AI picks the right widget from context.
+        </div>
+      </div>
+      <div class="step call">
+        <div class="step-head">tool_call: preview_update_widget</div>
+        <div class="step-body">
+          <code>preview_update_widget({widget_title:"Speed Gauge", metric:"temp"})</code><br/>
+          <span class="pill g">No DB write</span> — only updates the in-memory preview plan.<br/>
+          Frontend patches the card client-side.
+        </div>
+      </div>
+      <div class="step result">
+        <div class="step-head">Frontend patches preview in place</div>
+        <div class="step-body">
+          Preview card widget "Speed Gauge" now shows <code>temp</code> from TS-01.<br/>
+          User sees live gauge update — can still confirm or discard preview.
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head" style="color:#60a5fa">Frontend Output (Turn 2)</div>
+      <div class="panel-body" style="display:flex;flex-direction:column;gap:.75rem">
+        <div class="out-box preview">
+          <div class="out-label">Preview card — updated in place (no DB write)</div>
+          Machine Overview — CW-01<br/>
+          <span style="color:#fbbf24;font-size:.76rem">gauge → metric changed: output → <strong>temp</strong></span><br/>
+          <span style="font-size:.72rem;color:var(--muted)">kpi-card · line-chart · status-card (unchanged)</span>
+        </div>
+        <div class="out-box text">
+          <div class="out-label">Text bubble</div>
+          "Updated the gauge widget metric to <strong>temp</strong>."
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ CASE 4 -->
+<div class="case-panel" id="c3">
+  <div class="case-title">
+    <div class="case-num" style="background:#2d1b0a;color:#fbbf24">4</div>
+    <div>
+      <h2>User says: "change metric from output to temp" (cold — no prior context)</h2>
+      <p>No conversation history, no dashboard open. AI must decide: which widget? which dashboard?</p>
+      <div class="msgs">
+        <span class="msg-bubble turn1">💬 "change metric from output to temp"</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="diagram">
+    <div class="mermaid">
+sequenceDiagram
+  participant U  as User
+  participant FE as Frontend
+  participant AP as AI Handler
+  participant DB as Postgres
+  participant G  as Groq
+
+  U->>AP: "change metric from output to temp"
+  Note over FE: No dashboard open → body.Context = ""
+  Note over FE: No conversation history
+
+  AP->>DB: BuildFactoryGraph(orgID)
+  DB-->>AP: {machines:[CW-01(output),TS-01(temp)], dashboards:[2 dashboards, 6 widgets]}
+
+  Note over AP: body.Context = "" AND no keyword match<br/>OLD: wantsBuilderTools("change") → true (keyword!)<br/>NEW: SelectTools → machines>0 → builder tools included<br/>(same result, different reason — graph-driven)
+
+  AP->>G: [sys] systemPrompt<br/>[sys] factoryGraph (machines + dashboards + widgets)<br/>[usr] "change metric from output to temp"<br/>tools: [read + builder + write]
+
+  Note over G: AI reads graph:<br/>"output" → CW-01.output<br/>"temp"   → TS-01.temp<br/>2 dashboards, 6 widgets — which one?
+
+  alt If only 1 widget shows "output"
+    G-->>AP: tool_call: add_widget_to_dashboard({...}) or preview_update_widget
+    AP-->>U: Makes the change directly
+  else Multiple widgets show "output"
+    G-->>AP: text: "I see 3 widgets showing output across 2 dashboards.\nWhich one do you want to update?"
+    AP-->>U: Clarification question
+    U->>AP: "the gauge on Production Floor"
+    AP->>G: [history + answer]
+    G-->>AP: tool_call: add_widget_to_dashboard({dashboard:"Production Floor", widget:{metric:"temp",...}})
+    AP->>DB: UPDATE dashboard_widgets SET config = config || '{"field":"temp"}'
+    DB-->>AP: ok
+    AP-->>U: "Updated the gauge on Production Floor to show temp."
+  end
+    </div>
+  </div>
+
+  <div class="flow-grid">
+    <div class="panel">
+      <div class="panel-head" style="color:#fbbf24">Graph resolves ambiguity</div>
+      <div class="panel-body">
+        <div class="ctx-box">
+<span class="ck">Graph shows:</span>
+  output → <span class="cv">CW-01.output (pcs/hr)</span>
+  temp   → <span class="cv">TS-01.temp (°C)</span>
+
+<span class="ck">Dashboards:</span>
+  "Production Floor"
+    gauge    | field:output | CW-01
+    kpi-card | field:output | CW-01
+  "Maintenance"
+    line-chart | field:output | CW-01
+
+<span class="cc">3 widgets show output →</span>
+<span class="cc">AI must ask which one</span>
+
+<span class="ck">body.Context:</span> <span class="cc">""</span>
+<span class="ck">History:</span>      <span class="cc">[]</span>
+        </div>
+      </div>
+    </div>
+    <div class="steps">
+      <div class="step graph">
+        <div class="step-head">Graph resolves field names (not widget)</div>
+        <div class="step-body">
+          AI knows "output" = <code>CW-01.output</code> and "temp" = <code>TS-01.temp</code>.<br/>
+          But graph shows 3 widgets use "output" → <span class="pill y">ambiguous</span><br/>
+          Without body.Context AI cannot know which widget the user sees.
+        </div>
+      </div>
+      <div class="step select">
+        <div class="step-head">SelectTools — builder tools included (graph, not keyword)</div>
+        <div class="step-body">
+          OLD: <code>wantsBuilderTools("change metric")</code> → true because "change" is in keyword list.<br/>
+          NEW: <span class="pill g">graph-driven</span> — <code>len(machines)>0</code> → builder tools included.<br/>
+          Same result, better reason.
+        </div>
+      </div>
+      <div class="step call">
+        <div class="step-head">AI asks or acts based on graph certainty</div>
+        <div class="step-body">
+          <span class="pill g">1 widget</span>: AI calls <code>add_widget_to_dashboard</code> directly.<br/>
+          <span class="pill y">multiple widgets</span>: AI asks "Which dashboard?" — then acts after reply.<br/>
+          No hallucination because graph shows exactly what exists.
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head" style="color:#fbbf24">Frontend Output</div>
+      <div class="panel-body" style="display:flex;flex-direction:column;gap:.75rem">
+        <div class="out-box ask">
+          <div class="out-label">If ambiguous → clarification</div>
+          "I see 3 widgets showing <strong>output</strong> across 2 dashboards. Which one do you want to change?"
+        </div>
+        <div style="font-size:.74rem;color:var(--muted);text-align:center">— OR —</div>
+        <div class="out-box preview">
+          <div class="out-label">If 1 widget → direct change</div>
+          Dashboard widget updated. <code>field: temp</code> written to DB.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════ CASE 5 -->
+<div class="case-panel" id="c4">
+  <div class="case-title">
+    <div class="case-num" style="background:#2d1b4e;color:#c084fc">5</div>
+    <div>
+      <h2>User says: "explain data in widget Trend now"</h2>
+      <p>User is looking at a live dashboard widget and wants an AI explanation + a representative widget</p>
+      <div class="msgs">
+        <span class="msg-bubble turn1" style="background:#1a102e;border-color:#4d2b7e;color:#c084fc">💬 "explain data in widget Trend now"</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="diagram">
+    <div class="mermaid">
+sequenceDiagram
+  participant U  as User
+  participant FE as Frontend
+  participant AP as AI Handler
+  participant DB as Postgres
+  participant G  as Groq
+
+  Note over FE: User is viewing "Production Floor" dashboard<br/>Widget "Trend" = line-chart, CW-01.output, last 30min<br/>Current value: 165 pcs/hr (below threshold 1000)
+
+  U->>AP: "explain data in widget Trend now"
+  FE->>AP: body.Context = "Dashboard: Production Floor\nWidgets:\n  Trend (line-chart) machine:CW-01 field:output unit:pcs/hr liveMode:true value:165"
+
+  AP->>DB: BuildFactoryGraph(orgID)
+  DB-->>AP: {CW-01: output(pcs/hr)[0-1200] thr:1000, ...}
+
+  Note over AP: body.Context != "" → builder tools always included<br/>answer_with_widget always included<br/>System prompt rule 7: "If answer is in context, answer directly — no tool call"
+
+  AP->>G: [sys] systemPrompt<br/>[sys] factoryGraph<br/>[sys] "Authoritative current dashboard state:\n  Trend (line-chart): CW-01.output, value:165 pcs/hr, 30min window"<br/>[usr] "explain data in widget Trend now"<br/>tools: [all tools inc. answer_with_widget]
+
+  Note over G: Rule 7 check: is the answer already in context?<br/>YES — widget type, field, value, unit are in body.Context<br/>→ AI can answer WITHOUT calling get_telemetry_trend
+
+  alt AI answers from context (system prompt rule 7)
+    G-->>AP: tool_call: answer_with_widget({<br/>  text: "The Trend widget shows CW-01 output over the last 30 minutes. Current rate is 165 pcs/hr — within normal range (threshold 1000 pcs/hr). The line appears stable with no sudden drops.",<br/>  widget: {type:"line-chart", machine:"CW-01", metric:"output", time_range:"30m", title:"Output Trend — CW-01"}<br/>})
+  else AI needs more detail (trend shape, stats)
+    G-->>AP: tool_call: get_telemetry_trend({machine_id:"CW-01", metric:"output", time_range:"30m"})
+    AP->>DB: SELECT avg,min,max from telemetry_raw WHERE ...
+    DB-->>AP: {avg:168, min:142, max:195, points:[...]}
+    AP->>G: tool_result: stats
+    G-->>AP: tool_call: answer_with_widget({text:"...", widget:{...}})
+  end
+
+  AP-->>FE: newMessages with answer_with_widget result
+
+  FE->>FE: Render text bubble<br/>Mount new LineChartWidget in canvasCard<br/>(separate from the dashboard widget — AI's own view)
+  FE-->>U: Explanation + inline widget
+    </div>
+  </div>
+
+  <div class="flow-grid">
+    <div class="panel">
+      <div class="panel-head" style="color:#c084fc">Context is the key input</div>
+      <div class="panel-body">
+        <div class="ctx-box">
+<span class="ck">body.Context</span> (sent by frontend):
+  "Dashboard: Production Floor
+   Widgets:
+     Trend (line-chart)
+       machine: CW-01
+       field:   output
+       unit:    pcs/hr
+       liveMode: true
+       value:   165"
+
+<span class="ck">Graph adds:</span>
+  CW-01.output: <span class="cv">pcs/hr [0-1200]</span>
+  threshold: <span class="cv">1000</span>
+  <span class="cc">→ AI knows 165 is well within range</span>
+
+<span class="ck">Rule 7 check:</span>
+  answer in context? <span class="cv">YES</span>
+  <span class="cc">→ skip get_telemetry_trend</span>
+        </div>
+      </div>
+    </div>
+    <div class="steps">
+      <div class="step graph">
+        <div class="step-head">① Graph + Context together = full picture</div>
+        <div class="step-body">
+          body.Context says: widget "Trend" = <code>CW-01.output</code>, value <code>165 pcs/hr</code>.<br/>
+          Graph says: <code>output</code> threshold is <code>1000</code>, unit is <code>pcs/hr</code>, range <code>[0-1200]</code>.<br/>
+          <span class="highlight">AI can explain without any tool call</span> (rule 7).
+        </div>
+      </div>
+      <div class="step select">
+        <div class="step-head">② SelectTools — answer_with_widget always included</div>
+        <div class="step-body">
+          <code>answer_with_widget</code> is not gated by any condition.<br/>
+          AI calls it last to package text + widget spec.
+        </div>
+      </div>
+      <div class="step call">
+        <div class="step-head">③ tool_call: answer_with_widget</div>
+        <div class="step-body">
+          AI skips <code>get_telemetry_trend</code> (rule 7 — data already in context).<br/>
+          Directly calls <code>answer_with_widget</code> with text explanation + widget spec.<br/>
+          <span class="pill g">0 extra DB queries</span> — fastest possible path.
+        </div>
+      </div>
+      <div class="step ans">
+        <div class="step-head">④ Frontend renders explanation + widget</div>
+        <div class="step-body">
+          New <span class="pill p">canvasCard</span> appears in AI panel:<br/>
+          • Text bubble = AI's explanation<br/>
+          • Widget = fresh <code>line-chart</code> for CW-01.output (30m window)<br/>
+          Different from the dashboard widget — AI's own copy for context.
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head" style="color:#c084fc">Frontend Output</div>
+      <div class="panel-body" style="display:flex;flex-direction:column;gap:.75rem">
+        <div class="out-box widget">
+          <div class="out-label">Inline widget (new canvasCard)</div>
+          Output Trend — CW-01<br/>
+          <span style="font-size:.72rem;color:var(--muted)">line-chart · output · 30m · pcs/hr</span>
+        </div>
+        <div class="out-box text">
+          <div class="out-label">Text explanation</div>
+          "The Trend widget shows CW-01 output rate over the last 30 minutes. Current rate is <strong style="color:#34d399">165 pcs/hr</strong> — well within normal range (threshold 1000 pcs/hr). Production appears stable."
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- legend -->
+<div class="legend" style="margin-top:1rem">
+  <div class="legend-item"><span class="pill g">graph</span> graph-driven decision</div>
+  <div class="legend-item"><span class="pill b">builder</span> builder tool included</div>
+  <div class="legend-item"><span class="pill p">new</span> answer_with_widget</div>
+  <div class="legend-item"><span class="pill y">context</span> body.Context from frontend</div>
+  <div class="legend-item"><span class="tb read" style="margin:0">read</span> read-only tool</div>
+  <div class="legend-item"><span class="tb build" style="margin:0">builder</span> preview/build tool (no DB write)</div>
+  <div class="legend-item"><span class="tb new" style="margin:0">new</span> answer_with_widget</div>
+</div>
+
+</main>
+
+<footer>IotVision · AI Flow — 5 Cases · 2026-06-25</footer>
+
+<script>
+mermaid.initialize({
+  startOnLoad:true, theme:'dark',
+  themeVariables:{
+    background:'#0f1118', primaryColor:'#6366f1', primaryTextColor:'#e2e8f0',
+    primaryBorderColor:'#4f52a0', lineColor:'#3a3d5a', secondaryColor:'#161927',
+    tertiaryColor:'#0e1020', actorBkg:'#161927', actorBorder:'#4f52a0',
+    actorTextColor:'#e2e8f0', actorLineColor:'#4f52a0', signalColor:'#a5b4fc',
+    signalTextColor:'#e2e8f0', labelBoxBkgColor:'#0f1118', labelBoxBorderColor:'#4f52a0',
+    labelTextColor:'#e2e8f0', loopTextColor:'#a5b4fc', noteBorderColor:'#4f52a0',
+    noteBkgColor:'#1a1d2a', noteTextColor:'#94a3b8', activationBkgColor:'#1e2040',
+    fontSize:'13px',
+  },
+  sequence:{
+    actorMargin:40, width:140, height:36, boxMargin:6, boxTextMargin:4,
+    noteMargin:8, messageMargin:26, mirrorActors:false, useMaxWidth:true,
+  }
+});
+
+function show(i) {
+  document.querySelectorAll('.case-panel').forEach((p,j)=>{
+    p.classList.toggle('active', i===j);
+  });
+  document.querySelectorAll('.tab').forEach((t,j)=>{
+    t.classList.toggle('active', i===j);
+  });
+}
+</script>
+</body>
+</html>

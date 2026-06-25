@@ -232,21 +232,6 @@ var writeTools = map[string]bool{
 
 func isWriteTool(name string) bool { return writeTools[name] }
 
-// builderTools create or modify dashboards/widgets/alerts. They're only sent to
-// the LLM when the user's message shows build/edit intent (see wantsBuilderTools).
-var builderTools = map[string]bool{
-	"preview_dashboard":       true,
-	"preview_add_widget":      true,
-	"preview_remove_widget":   true,
-	"preview_update_widget":   true,
-	"add_widget_to_dashboard": true,
-	"remove_widget":           true,
-	"create_alert":            true,
-	"manage_alert_event":      true,
-}
-
-func isBuilderTool(name string) bool { return builderTools[name] }
-
 // ── Tool argument structs ─────────────────────────────────────────────────────
 
 type ToolWidget struct {

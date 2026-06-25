@@ -178,10 +178,12 @@ watch(
     if (!grid) return;
 
     const newMap = new Map(newWidgets.map(w => [w.id, w]));
-    const oldMap = new Map(oldWidgets.map(w => [w.id, w]));
 
     // ── Removals ────────────────────────────────────────────────────────────────
-    for (const [id] of oldMap) {
+    // Diff against mountedApps (ground truth of what's rendered) not oldWidgets —
+    // Vue 3's deep watcher passes the same array reference for both args when the
+    // source computed returns a freshly-assigned array, making oldWidgets unusable.
+    for (const [id] of mountedApps) {
       if (!newMap.has(id)) {
         removeWidgetFromGrid(id);
       }

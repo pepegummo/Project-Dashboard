@@ -27,6 +27,21 @@
   <h1>IotVision AI — Sequence Diagram</h1>
   <p class="subtitle">แสดงการสื่อสารระหว่าง User · Backend · Groq · Database · Model: <code>qwen/qwen3-32b</code></p>
 
+  <!-- ── Tool List (shared fact) ── -->
+  <div class="section" style="border-color:#334155;margin-bottom:24px">
+    <h2>Tools ที่ส่งให้ AI ทุกครั้ง (14 tools)</h2>
+    <p class="note" style="color:#94a3b8">
+      <strong>READ (6):</strong> <code>get_machines</code> · <code>get_latest_telemetry</code> · <code>get_telemetry_trend</code> · <code>get_active_alerts</code> · <code>get_daily_count</code> · <code>list_dashboards</code><br>
+      <strong>PREVIEW (4):</strong> <code>preview_dashboard</code> · <code>preview_add_widget</code> · <code>preview_remove_widget</code> · <code>preview_update_widget</code><br>
+      <strong>WRITE (4):</strong> <code>add_widget_to_dashboard</code> · <code>remove_widget</code> · <code>create_alert</code> · <code>manage_alert_event</code><br>
+      <br>
+      ⚠ ไม่มี hint scan หรือ includeBuilder — backend ส่ง tools ครบ 14 ตัวทุก request (admin/editor); viewer เห็นเฉพาะ READ+PREVIEW<br>
+      ⚠ <code>create_custom_dashboard</code> ไม่อยู่ใน tool list เลย — Frontend เรียกตรงผ่าน <code>POST /tools/execute</code> หลัง user กด Confirm<br>
+      ⚠ History ที่ส่ง Groq: last 8 messages เฉพาะ role=user/assistant เท่านั้น (tool messages ถูก strip ออก)<br>
+      ⚠ Loop สูงสุด 5 รอบ (tool_calls → execute → tool_calls → …) ก่อนหยุด
+    </p>
+  </div>
+
   <!-- ── Case 1: Simple Q&A ── -->
   <div class="section blue">
     <h2>Case 1 — Simple Q&A ("hello" / ถามข้อมูลทั่วไป)</h2>
@@ -41,15 +56,15 @@ sequenceDiagram
     U->>FE: พิมพ์ "hello"
     FE->>BE: POST /chat { message, conversationId }
     BE->>DB: INSERT ai_messages (role=user)
-    BE->>DB: SELECT ai_messages (history ≤8 msgs)
-    note over BE: hint scan: ไม่เจอ action verb<br/>includeBuilder = false<br/>ส่ง 6 READ tools
-    BE->>Groq: POST /completions { messages, tools×6 }
+    BE->>DB: SELECT ai_messages (last 8, user+assistant only)
+    note over BE: buildGroqTools(role)<br/>→ 14 tools (admin/editor)<br/>→ read+preview only (viewer)
+    BE->>Groq: POST /completions { messages, tools×14 }
     Groq-->>BE: finish_reason="stop" content="Hello!"
     BE->>DB: INSERT ai_messages (role=assistant)
     BE-->>FE: { messages }
     FE-->>U: แสดงข้อความ "Hello!"
     </div>
-    <p class="note">⚠ 6 READ tools ถูกส่งไปด้วยแต่ model ไม่เรียกใช้ เพราะ system prompt rule 1: "Plain text for greetings — no tool call"</p>
+    <p class="note">⚠ 14 tools ถูกส่งไปด้วยแต่ model ไม่เรียกใช้ เพราะ system prompt rule 1: "Plain text for greetings — no tool call"</p>
   </div>
 
   <!-- ── Case 2: Q&A with Tool ── -->
@@ -66,26 +81,26 @@ sequenceDiagram
     U->>FE: "speed ของ CW-01 เท่าไหร่?"
     FE->>BE: POST /chat { message, conversationId }
     BE->>DB: INSERT ai_messages (role=user)
-    BE->>DB: SELECT ai_messages (history)
-    note over BE: hint scan: ไม่เจอ action verb<br/>includeBuilder = false → 6 READ tools
-    BE->>Groq: POST /completions { messages, tools×6 }
+    BE->>DB: SELECT ai_messages (last 8, user+assistant only)
+    note over BE: buildGroqTools(role) → 14 tools
+    BE->>Groq: POST /completions { messages, tools×14 }
 
     note over Groq: รู้ชื่อ CW-01 ชัดเจน (rule 2)<br/>เลือก get_latest_telemetry
-    Groq-->>BE: finish_reason="tool_calls"<br/>tool: get_latest_telemetry("CW-01")
+    Groq-->>BE: finish_reason="tool_calls"<br/>tool: get_latest_telemetry({machine_id:"CW-01"})
 
     BE->>DB: SELECT telemetry_raw WHERE machine=CW-01
     DB-->>BE: { speed: 1200, timestamp: ... }
     BE->>DB: INSERT ai_messages (role=tool)
 
-    note over BE: callTools = nil (drop tools)
-    BE->>Groq: POST /completions { messages + tool result }
+    note over BE: callTools = nil (drop tools for summary call)
+    BE->>Groq: POST /completions { messages + tool result, no tools }
     Groq-->>BE: finish_reason="stop"<br/>content="ความเร็วของ CW-01 ตอนนี้ 1,200 rpm"
 
     BE->>DB: INSERT ai_messages (role=assistant)
     BE-->>FE: { messages }
     FE-->>U: แสดงคำตอบ
     </div>
-    <p class="note">Groq call 2 ครั้ง — ครั้งแรก model เลือก tool, ครั้งสองสรุปผลเป็นข้อความ</p>
+    <p class="note">Groq call 2 ครั้ง — ครั้งแรก model เลือก tool, ครั้งสองสรุปผลเป็นข้อความ (callTools=nil → no tools sent) · loop cap: 5 รอบ</p>
   </div>
 
   <!-- ── Case 3: Create Dashboard ── -->
@@ -102,8 +117,8 @@ sequenceDiagram
     U->>FE: "create dashboard about CW-01"
     FE->>BE: POST /chat { message, conversationId }
     BE->>DB: INSERT ai_messages (role=user)
-    BE->>DB: SELECT ai_messages (history)
-    note over BE: hint scan: "create" match ✓<br/>includeBuilder = true → 14 tools
+    BE->>DB: SELECT ai_messages (last 8, user+assistant only)
+    note over BE: buildGroqTools(role) → 14 tools<br/>(create_custom_dashboard ไม่อยู่ใน list)
     BE->>Groq: POST /completions { messages, tools×14 }
 
     note over Groq: ชื่อ CW-01 ชัดเจน (rule 2)<br/>เลือก preview_dashboard
@@ -115,12 +130,12 @@ sequenceDiagram
     BE->>DB: INSERT ai_messages (role=tool)
 
     note over BE: callTools = nil (drop tools)
-    BE->>Groq: POST /completions { messages + preview result }
+    BE->>Groq: POST /completions { messages + preview result, no tools }
     Groq-->>BE: finish_reason="stop"<br/>content="นี่คือ preview dashboard ครับ กดยืนยัน..."
 
     BE->>DB: INSERT ai_messages (role=assistant)
     BE-->>FE: { messages, toolResult: {widgets:[...]} }
-    FE->>BE: PUT /preview-draft { data: preview }
+    FE->>BE: PUT /preview-draft { conversationId, data: preview }
     BE->>DB: UPSERT ai_preview_drafts
     FE-->>U: แสดง preview panel + ปุ่ม Confirm
 
@@ -130,13 +145,14 @@ sequenceDiagram
     BE->>DB: INSERT dashboards
     BE->>DB: INSERT dashboard_widgets ×4
     DB-->>BE: { dashboardId }
-    BE-->>FE: { success, dashboardId, url }
+    BE-->>FE: { success, data: { dashboardId } }
     FE->>BE: DELETE /preview-draft
     BE->>DB: DELETE ai_preview_drafts
     FE-->>U: redirect → /dashboards/:id
     </div>
     <p class="note">
-      Groq call 2 ครั้ง — <code>create_custom_dashboard</code> ไม่ได้อยู่ใน tools ที่ส่งให้ AI เลย Frontend เรียกตรงผ่าน <code>/tools/execute</code> หลัง user กด Confirm เท่านั้น
+      <code>create_custom_dashboard</code> ไม่ได้อยู่ใน AllTools() เลย — Frontend เรียกตรงผ่าน <code>POST /tools/execute</code> หลัง user กด Confirm เท่านั้น<br>
+      Groq call 2 ครั้ง — ครั้งแรก model เลือก preview_dashboard, ครั้งสองสรุปผล (callTools=nil)
     </p>
   </div>
 
@@ -156,9 +172,9 @@ sequenceDiagram
     FE->>BE: POST /chat { message, conversationId, context: previewData }
 
     BE->>DB: INSERT ai_messages (role=user)
-    BE->>DB: SELECT ai_messages (history)
-    note over BE: hint scan: "change" match ✓<br/>+ context มีค่า → includeBuilder = true → 14 tools
-    BE->>Groq: POST /completions { messages, context, tools×14 }
+    BE->>DB: SELECT ai_messages (last 8, user+assistant only)
+    note over BE: context != "" → append system msg<br/>"Authoritative current dashboard state…"<br/>buildGroqTools(role) → 14 tools
+    BE->>Groq: POST /completions { messages + context, tools×14 }
 
     note over Groq: มี preview context → เห็น widget ปัจจุบัน<br/>เลือก preview_update_widget
     Groq-->>BE: finish_reason="tool_calls"<br/>tool: preview_update_widget({widget_title:"Trend", metric:"temperature"})
@@ -167,7 +183,8 @@ sequenceDiagram
     BE-->>BE: PreviewUpdateWidget() → {updated:true, changes:{metric:"temperature"}}
     BE->>DB: INSERT ai_messages (role=tool)
 
-    BE->>Groq: POST /completions { messages + changes result }
+    note over BE: callTools = nil
+    BE->>Groq: POST /completions { messages + changes result, no tools }
     Groq-->>BE: finish_reason="stop"<br/>content="อัปเดต metric เป็น temperature แล้วครับ"
 
     BE->>DB: INSERT ai_messages (role=assistant)
@@ -177,7 +194,10 @@ sequenceDiagram
     BE->>DB: UPSERT ai_preview_drafts
     FE-->>U: preview อัปเดตแล้ว
     </div>
-    <p class="note"><code>preview_update_widget</code> ไม่ query DB เลย — แค่ validate แล้ว return changes กลับมา Frontend เป็นคน apply ใน local state เอง</p>
+    <p class="note">
+      <code>preview_update_widget</code> ไม่ query DB เลย — validate แล้ว return changes กลับมา Frontend apply ใน local state เอง<br>
+      context injection: ถ้า FE ส่ง <code>context</code> มา BE จะ append เป็น system message สุดท้ายก่อนส่ง Groq (recency wins)
+    </p>
   </div>
 
 </div>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, watch } from 'vue';
-import { Sparkles, Send, Loader2, Bot, Save, Plus, Trash2 } from 'lucide-vue-next';
+import { Sparkles, Send, Loader2, Bot, Save, Plus, Trash2, LayoutGrid } from 'lucide-vue-next';
 import { api } from '@/services/api.service';
 import { useDashboardStore } from '@/stores/dashboard.store';
 import { useMachineStore } from '@/stores/machine.store';
@@ -23,14 +23,59 @@ const canvasCards = ref<CanvasCard[]>([]);
 const highlightId = ref<string | undefined>(undefined);
 const previewHighlightId = ref<string | undefined>(undefined);
 const selectionResetToken = ref(0);
+const mentionedWidgets = ref<Array<{ id: string; title: string }>>([]);
+const previewCardRef = ref<InstanceType<typeof PreviewCanvasCard> | null>(null);
+const aiSelectedIds = ref<string[]>([]);
+const aiSelectedPreviewIds = ref<string[]>([]);
 // While an AI preview card is on screen, it's the latest dashboard — hide the live grid.
 const hasPreview = computed(() => canvasCards.value.some(c => c.kind === 'preview'));
 const processing = ref(false);
 const input = ref('');
 const canvasRef = ref<HTMLElement | null>(null);
 
-function onMentionWidget({ text, selected }: { text: string; selected: boolean }) {
-  input.value = selected ? input.value + text : input.value.replace(text, '');
+function onMentionWidget({ widget, selected }: { widget: { id: string; title: string }; selected: boolean }) {
+  mentionedWidgets.value = selected
+    ? [...mentionedWidgets.value.filter(w => w.id !== widget.id), widget]
+    : mentionedWidgets.value.filter(w => w.id !== widget.id);
+  aiSelectedPreviewIds.value = aiSelectedPreviewIds.value.filter(x => x !== widget.id);
+}
+
+function onSelectLiveWidget(widget: DashboardWidget) {
+  const inMentioned = mentionedWidgets.value.some(w => w.id === widget.id);
+  const inAi = aiSelectedIds.value.includes(widget.id);
+  if (inMentioned || inAi) {
+    mentionedWidgets.value = mentionedWidgets.value.filter(w => w.id !== widget.id);
+    aiSelectedIds.value = aiSelectedIds.value.filter(x => x !== widget.id);
+  } else {
+    mentionedWidgets.value = [...mentionedWidgets.value, { id: widget.id, title: widget.title ?? widget.widgetType }];
+  }
+}
+
+function setAiHighlight(id: string, title: string, isPreview: boolean) {
+  if (isPreview) {
+    if (!aiSelectedPreviewIds.value.includes(id))
+      aiSelectedPreviewIds.value = [...aiSelectedPreviewIds.value, id];
+    // Sync PreviewCanvasCard.selected so the first click deselects instead of re-adding
+    nextTick(() => {
+      const card = Array.isArray(previewCardRef.value) ? previewCardRef.value[0] : previewCardRef.value;
+      card?.setSelection(id);
+    });
+  } else {
+    if (!aiSelectedIds.value.includes(id))
+      aiSelectedIds.value = [...aiSelectedIds.value, id];
+  }
+  mentionedWidgets.value = [...mentionedWidgets.value.filter(w => w.id !== id), { id, title }];
+}
+
+function removeMention(id: string) {
+  mentionedWidgets.value = mentionedWidgets.value.filter(w => w.id !== id);
+  aiSelectedIds.value = aiSelectedIds.value.filter(x => x !== id);
+  if (id.startsWith('preview-')) {
+    aiSelectedPreviewIds.value = aiSelectedPreviewIds.value.filter(x => x !== id);
+    // ref inside v-for is an array in Vue 3
+    const card = Array.isArray(previewCardRef.value) ? previewCardRef.value[0] : previewCardRef.value;
+    card?.clearSelection(id);
+  }
 }
 
 const conversationId = ref<string | null>(null);
@@ -185,9 +230,16 @@ function buildDashboardContext(): string {
 // ── Chat ────────────────────────────────────────────────────────────────────
 
 async function sendMessage() {
-  const text = input.value.trim();
-  if (!text || processing.value) return;
+  const rawText = input.value.trim();
+  if ((!rawText && !mentionedWidgets.value.length) || processing.value) return;
+  const mentionSnapshot = [...mentionedWidgets.value];
+  const mentionSuffix = mentionSnapshot.map(w => `@${w.title}`).join(' ');
+  const text = mentionSuffix ? `${rawText} ${mentionSuffix}`.trim() : rawText;
+  if (!text) return;
   input.value = '';
+  mentionedWidgets.value = [];
+  aiSelectedIds.value = [];
+  aiSelectedPreviewIds.value = [];
   selectionResetToken.value++;   // clear the widget mention rings once the message is sent
   processing.value = true;
 
@@ -245,6 +297,146 @@ async function sendMessage() {
         }
       }
     }
+
+    // Skip highlight when the AI performed a builder action — those turns are not data queries
+    const builderToolNames = new Set([
+      'preview_dashboard', 'create_custom_dashboard',
+      'preview_add_widget', 'preview_remove_widget', 'preview_update_widget',
+      'add_widget_to_dashboard', 'remove_widget',
+      'create_alert', 'manage_alert_event',
+    ]);
+    const usedBuilderTool = messages.some(m => m.toolName && builderToolNames.has(m.toolName));
+
+    if (!usedBuilderTool) {
+    // Persistent selection ring after AI responds (same style as clicking a widget)
+    const liveMentioned = mentionSnapshot.filter(w => !w.id.startsWith('preview-'));
+    const previewMentioned = mentionSnapshot.filter(w => w.id.startsWith('preview-'));
+    if (liveMentioned.length)    setAiHighlight(liveMentioned[0].id, liveMentioned[0].title, false);
+    if (previewMentioned.length) setAiHighlight(previewMentioned[0].id, previewMentioned[0].title, true);
+
+    // Tool-call path: no chip click → derive from what the AI read
+    if (!liveMentioned.length) {
+      const readTools = new Set(['get_latest_telemetry', 'get_telemetry_trend', 'get_daily_count']);
+      const assistantText = messages.find(m => m.role === 'assistant')?.content?.toLowerCase() ?? '';
+      const previewCard = canvasCards.value.find(c => c.kind === 'preview') as any;
+      for (const msg of messages) {
+        if (!readTools.has(msg.toolName ?? '')) continue;
+        const machineId = ((msg.toolInput as any)?.machine_id as string ?? '').toLowerCase();
+        const metric = (msg.toolInput as any)?.metric as string | undefined;
+
+        // Live canvas
+        const liveCandidates = dashboardStore.widgets.filter(dw =>
+          dw.machineId === machineId || dw.machine?.name?.toLowerCase() === machineId
+        );
+        if (liveCandidates.length) {
+          const w = metric
+            ? (liveCandidates.find(dw => dw.config.field === metric) ?? liveCandidates[0])
+            : (liveCandidates.find(dw => dw.config.field && assistantText.includes(dw.config.field.toLowerCase())) ?? liveCandidates[0]);
+          if (w) {
+            const sameField = w.config.field
+              ? liveCandidates.filter(dw => dw.config.field === w.config.field)
+              : [w];
+            for (const sw of sameField) setAiHighlight(sw.id, sw.title ?? sw.widgetType, false);
+            break;
+          }
+        }
+
+        // Preview canvas (machine stored as name string)
+        if (previewCard?.result?.widgets) {
+          const pws: any[] = previewCard.result.widgets;
+          const previewCandidates = pws
+            .map((w, i) => ({ w, id: `preview-${i}` }))
+            .filter(({ w }) => (w.machine as string)?.toLowerCase() === machineId);
+          if (previewCandidates.length) {
+            const match = metric
+              ? (previewCandidates.find(({ w }) => w.metric === metric) ?? previewCandidates[0])
+              : (previewCandidates.find(({ w }) => w.metric && assistantText.includes((w.metric as string).toLowerCase())) ?? previewCandidates[0]);
+            if (match) {
+              const sameMetric = match.w.metric
+                ? previewCandidates.filter(({ w }) => w.metric === match.w.metric)
+                : [match];
+              for (const m of sameMetric) setAiHighlight(m.id, m.w.title ?? m.w.metric ?? m.id, true);
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    // Text-scan fallback: AI answered from context (no tool call fired) → match by reply text
+    if (!aiSelectedIds.value.length && !aiSelectedPreviewIds.value.length) {
+      const assistantText = messages.find(m => m.role === 'assistant')?.content?.toLowerCase() ?? '';
+      if (assistantText) {
+        // Extract all numbers from the AI reply — works regardless of response language
+        const nums = (assistantText.match(/[\d,]+(?:\.\d+)?/g) ?? [])
+          .map(s => parseFloat(s.replace(/,/g, ''))).filter(n => !isNaN(n));
+
+        // Resolve a preview widget's UUID: prefer machineUuid on the widget,
+        // fall back to looking up the machine name in the machine store.
+        const resolveUuid = (w: any): string | undefined =>
+          (w.machineUuid as string | undefined) ||
+          machineStore.machines.find(m => m.name.toLowerCase() === (w.machine as string ?? '').toLowerCase())?.id;
+
+        const previewCard = canvasCards.value.find(c => c.kind === 'preview') as any;
+        if (previewCard?.result?.widgets) {
+          const candidates = (previewCard.result.widgets as any[]).map((w, i) => ({ w, id: `preview-${i}` }));
+
+          // 1. Metric/title text match (works when AI responds in same language as field names)
+          let match = candidates.find(({ w }) =>
+            (w.metric && assistantText.includes((w.metric as string).toLowerCase())) ||
+            (w.title && assistantText.includes((w.title as string).toLowerCase()))
+          );
+
+          // 2. Value match: AI always states the current reading — language-agnostic
+          if (!match && nums.length) {
+            match = candidates.find(({ w }) => {
+              const uuid = resolveUuid(w);
+              if (!uuid || !w.metric) return false;
+              const val = Number(telemetryStore.getFieldValue(uuid, w.metric));
+              return !isNaN(val) && nums.some(n => Math.abs(n - val) < 1);
+            });
+          }
+
+          // 3. Machine name fallback (least specific — highlights first widget for that machine)
+          if (!match) {
+            match = candidates.find(({ w }) =>
+              w.machine && assistantText.includes((w.machine as string).toLowerCase())
+            );
+          }
+
+          if (match) {
+            const sameMetric = match.w.metric
+              ? candidates.filter(({ w }) => w.metric === match.w.metric)
+              : [match];
+            for (const m of sameMetric) setAiHighlight(m.id, m.w.title ?? m.w.metric ?? m.id, true);
+          }
+        }
+
+        if (!aiSelectedPreviewIds.value.length) {
+          const liveCandidates = dashboardStore.widgets;
+          let liveMatch = liveCandidates.find(dw =>
+            (dw.config.field && assistantText.includes(dw.config.field.toLowerCase())) ||
+            (dw.title && assistantText.includes(dw.title.toLowerCase()))
+          );
+          if (!liveMatch && nums.length) {
+            liveMatch = liveCandidates.find(dw => {
+              const uuid = dw.machineId ?? dw.machine?.id;
+              const field = dw.config.field;
+              if (!uuid || !field) return false;
+              const val = Number(telemetryStore.getFieldValue(uuid, field));
+              return !isNaN(val) && nums.some(n => Math.abs(n - val) < 1);
+            });
+          }
+          if (liveMatch) {
+            const sameField = liveMatch.config.field
+              ? liveCandidates.filter(dw => dw.config.field === liveMatch.config.field)
+              : [liveMatch];
+            for (const sw of sameField) setAiHighlight(sw.id, sw.title ?? sw.widgetType, false);
+          }
+        }
+      }
+    }
+    } // end if (!usedBuilderTool)
   } catch (e: any) {
     showToast(`Error: ${e?.message ?? 'Something went wrong. Please try again.'}`);
   } finally {
@@ -259,6 +451,9 @@ function clearChat() {
   dashboardStore.currentDashboard = null;   // also drop the dashboard selected from main
   input.value = '';
   toastVisible.value = false;
+  mentionedWidgets.value = [];
+  aiSelectedIds.value = [];
+  aiSelectedPreviewIds.value = [];
   api.deletePreviewDraft().catch(() => {});
 }
 
@@ -275,6 +470,9 @@ async function confirmCreate(dashboardName: string) {
       canvasCards.value = [];
       conversationId.value = null;
       dashboardStore.currentDashboard = null;
+      mentionedWidgets.value = [];
+      aiSelectedIds.value = [];
+      aiSelectedPreviewIds.value = [];
       api.deletePreviewDraft().catch(() => {});
       showToast(`Dashboard "${dashboardName}" created! Find it in the Dashboards list.`);
     }
@@ -334,8 +532,10 @@ function handleKeydown(e: KeyboardEvent) {
       <template v-for="card in canvasCards" :key="card.id">
         <PreviewCanvasCard
           v-if="card.kind === 'preview'"
+          ref="previewCardRef"
           :result="(card as any).result"
           :highlight-id="previewHighlightId"
+          :ai-selected-widget-ids="aiSelectedPreviewIds"
           :reset-token="selectionResetToken"
           @confirm="confirmCreate"
           @remove-widget="removePreviewWidget"
@@ -380,8 +580,10 @@ function handleKeydown(e: KeyboardEvent) {
               ref="gridCanvasRef"
               :widgets="dashboardStore.widgets"
               :highlighted-id="highlightId"
+              :selected-ids="[...mentionedWidgets.filter(w => !w.id.startsWith('preview-')).map(w => w.id), ...aiSelectedIds]"
               @edit-widget="onEditWidget"
               @remove-widget="onRemoveWidget"
+              @select-widget="onSelectLiveWidget"
             />
           </div>
         </div>
@@ -416,6 +618,19 @@ function handleKeydown(e: KeyboardEvent) {
         <p v-if="processing" class="text-xs text-gray-600 text-center mb-2">Processing…</p>
       </Transition>
 
+      <!-- Widget mention chips -->
+      <div v-if="mentionedWidgets.length" class="flex flex-wrap gap-1 mb-2">
+        <span
+          v-for="w in mentionedWidgets"
+          :key="w.id"
+          class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-accent-violet/15 border border-accent-violet/30 text-xs text-accent-violet"
+        >
+          <LayoutGrid class="w-3 h-3 shrink-0" />
+          <span class="max-w-[120px] truncate">{{ w.title }}</span>
+          <button class="opacity-60 hover:opacity-100 ml-0.5 leading-none" @click="removeMention(w.id)">✕</button>
+        </span>
+      </div>
+
       <div class="spotlight-bar">
         <Sparkles class="w-4 h-4 text-gray-500 flex-shrink-0" />
         <button
@@ -435,7 +650,7 @@ function handleKeydown(e: KeyboardEvent) {
           @keydown="handleKeydown"
         />
         <button
-          :disabled="!input.trim() || processing"
+          :disabled="(!input.trim() && !mentionedWidgets.length) || processing"
           class="w-8 h-8 rounded-xl bg-primary-500 hover:bg-primary-600 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition-colors flex-shrink-0"
           @click="sendMessage"
         >

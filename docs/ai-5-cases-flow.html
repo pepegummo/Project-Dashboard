@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IotVision AI — 5 AI Flow Scenarios</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { 
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+    background: #080a10; 
+    color: #cbd5e1; 
+    padding: 40px 24px; 
+    line-height: 1.6;
+  }
+  .container {
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  header {
+    margin-bottom: 32px;
+    border-bottom: 1px solid #1e293b;
+    padding-bottom: 20px;
+  }
+  h1 { 
+    font-size: 2rem; 
+    font-weight: 700;
+    color: #38bdf8; 
+    margin-bottom: 8px; 
+    letter-spacing: -0.02em;
+  }
+  .subtitle { 
+    color: #64748b; 
+    font-size: 0.95rem; 
+  }
+  
+  /* Sidebar and Main Layout */
+  .layout {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 32px;
+    margin-top: 24px;
+  }
+  
+  /* Case Selector Menu */
+  .menu {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .menu-btn {
+    background: #0f1322;
+    border: 1px solid #1e293b;
+    color: #94a3b8;
+    padding: 16px;
+    border-radius: 12px;
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.2s ease;
+    font-size: 0.88rem;
+  }
+  .menu-btn:hover {
+    background: #111827;
+    color: #f1f5f9;
+    border-color: #374151;
+  }
+  .menu-btn.active {
+    background: rgba(56, 189, 248, 0.15);
+    color: #38bdf8;
+    border-color: #38bdf8;
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.05);
+  }
+  .menu-btn .case-num {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #64748b;
+    display: block;
+    margin-bottom: 4px;
+  }
+  .menu-btn.active .case-num {
+    color: #38bdf8;
+  }
+  
+  /* Details Panel */
+  .panel {
+    display: none;
+  }
+  .panel.active {
+    display: block;
+  }
+  .card { 
+    background: #0f1322; 
+    border: 1px solid #1e293b; 
+    border-radius: 16px; 
+    padding: 28px; 
+    margin-bottom: 24px;
+  }
+  .card h2 {
+    font-size: 1.25rem;
+    color: #f1f5f9;
+    margin-bottom: 16px;
+    font-weight: 700;
+  }
+  
+  /* Mermaid Block */
+  .mermaid { 
+    background: #090c15; 
+    border: 1px solid #1e293b;
+    border-radius: 12px; 
+    padding: 24px; 
+    overflow-x: auto; 
+    margin-bottom: 24px;
+  }
+  
+  /* Badges */
+  .badge-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 20px;
+  }
+  .badge {
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 6px;
+  }
+  .badge.query { background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); }
+  .badge.entities { background: rgba(168, 85, 247, 0.15); color: #a855f7; border: 1px solid rgba(168, 85, 247, 0.3); }
+  .badge.context { background: rgba(251, 191, 36, 0.15); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.3); }
+  
+  .details-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 20px;
+    margin-top: 20px;
+  }
+  .details-box {
+    background: #111827;
+    border: 1px solid #1f2937;
+    border-radius: 12px;
+    padding: 20px;
+    font-size: 0.88rem;
+  }
+  .details-box h3 {
+    font-size: 0.95rem;
+    color: #e2e8f0;
+    margin-bottom: 8px;
+    font-weight: 600;
+  }
+  .details-box p {
+    color: #94a3b8;
+  }
+  
+  @media (max-width: 900px) {
+    .layout {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <h1>IotVision AI — 5 AI Flow Scenarios</h1>
+    <p class="subtitle">Select a scenario to visualize the token routing, DB queries, LLM tool choices, and final state actions.</p>
+  </header>
+
+  <div class="layout">
+    <!-- Sidebar Selector -->
+    <div class="menu">
+      <button class="menu-btn active" onclick="switchCase('case-1')">
+        <span class="case-num">Case 1</span>
+        Simple Chat Greeting ("hello")
+      </button>
+      <button class="menu-btn" onclick="switchCase('case-2')">
+        <span class="case-num">Case 2</span>
+        Dashboard Preview & Greeting
+      </button>
+      <button class="menu-btn" onclick="switchCase('case-3')">
+        <span class="case-num">Case 3</span>
+        Dynamic Preview Customization
+      </button>
+      <button class="menu-btn" onclick="switchCase('case-4')">
+        <span class="case-num">Case 4</span>
+        Ambiguous Metric Mappings
+      </button>
+      <button class="menu-btn" onclick="switchCase('case-5')">
+        <span class="case-num">Case 5</span>
+        Explain On-Screen Widget Data
+      </button>
+    </div>
+
+    <!-- Main Content Panels -->
+    <div class="content">
+      
+      <!-- CASE 1 -->
+      <div id="case-1" class="panel active">
+        <div class="card">
+          <h2>Case 1: Simple Greeting</h2>
+          <div class="badge-container">
+            <span class="badge query">Query: "hello"</span>
+            <span class="badge context">Preview Context: None</span>
+            <span class="badge entities">Entities: ['general']</span>
+          </div>
+          
+          <div class="mermaid">
+sequenceDiagram
+    autonumber
+    actor User as "Factory Operator (User)"
+    participant BE as "Go Backend Server"
+    participant DB as "PostgreSQL DB"
+    participant Groq as "Groq AI Engine"
+
+    User->>BE: "hello"
+    BE->>DB: Scan synonyms & match keywords (none matched)
+    DB-->>BE: Returns empty list
+    BE->>DB: Query connected tools for entities ['general']
+    DB-->>BE: Returns ['list_dashboards'] (only general tools)
+    BE->>Groq: Call Groq with greeting history + 1 general tool
+    note over Groq: Groq follows Rule 1:<br/>Plain text response for greetings (no tool call)
+    Groq-->>BE: Returns: "Hello! How can I assist you on the factory floor today?"
+    BE-->>User: Display text response
+          </div>
+          
+          <div class="details-grid">
+            <div class="details-box">
+              <h3>Routing Graph Query</h3>
+              <p>Since no machines, alerts, or widgets are specified, PostgreSQL connection edges restrict toolsets to general read tools, minimizing payload sizes.</p>
+            </div>
+            <div class="details-box">
+              <h3>LLM Decision</h3>
+              <p>The model adheres to Rule 1 (plain text answers for greetings) and directly formats a friendly conversation response without triggering functions.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- CASE 2 -->
+      <div id="case-2" class="panel">
+        <div class="card">
+          <h2>Case 2: Dashboard Preview & Greeting</h2>
+          <div class="badge-container">
+            <span class="badge query">Query 1: "create dashboard about cw-01" &rarr; Query 2: "hello"</span>
+            <span class="badge context">Preview Context: Present (Turn 2)</span>
+            <span class="badge entities">Entities: ['dashboard', 'widget', 'general']</span>
+          </div>
+          
+          <div class="mermaid">
+sequenceDiagram
+    autonumber
+    actor User as "Factory Operator (User)"
+    participant BE as "Go Backend Server"
+    participant DB as "PostgreSQL DB"
+    participant Groq as "Groq AI Engine"
+
+    note over User, Groq: Turn 1: Preview dashboard generated on canvas
+    User->>BE: Send: "hello" (while preview dashboard is active)
+    BE->>DB: Detect context entity keys ['dashboard', 'widget'] + 'general'
+    DB-->>BE: Returns connected tools (preview_add_widget, preview_update_widget, etc.)
+    BE->>Groq: Call Groq with active dashboard preview widgets in context
+    note over Groq: Groq sees preview state but query is a greeting.
+    Groq-->>BE: Returns: "Hello! I see the CW-01 preview is active. How should we customize it?"
+    BE-->>User: Display greeting inline; preserves preview dashboard
+          </div>
+          
+          <div class="details-grid">
+            <div class="details-box">
+              <h3>Context Preservation</h3>
+              <p>The frontend transmits the on-screen widgets as the <code>context</code> payload. The backend detects this and retains builder tools in memory in case of a follow-up customization request.</p>
+            </div>
+            <div class="details-box">
+              <h3>Final Canvas State</h3>
+              <p>The preview dashboard card remains pinned on the canvas, unaffected by the conversational greeting.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- CASE 3 -->
+      <div id="case-3" class="panel">
+        <div class="card">
+          <h2>Case 3: Dynamic Preview Customization</h2>
+          <div class="badge-container">
+            <span class="badge query">Query 1: "create dashboard about cw-01" &rarr; Query 2: "change metric from speed to vibration"</span>
+            <span class="badge context">Preview Context: Present (Turn 2)</span>
+            <span class="badge entities">Entities: ['dashboard', 'widget', 'metric']</span>
+          </div>
+          
+          <div class="mermaid">
+sequenceDiagram
+    autonumber
+    actor User as "Factory Operator (User)"
+    participant FE as "Frontend Canvas"
+    participant BE as "Go Backend Server"
+    participant DB as "PostgreSQL DB"
+    participant Groq as "Groq AI Engine"
+
+    note over User, Groq: Turn 1: Preview dashboard shown (contains widget "Speed Gauge" using metric "speed")
+    User->>BE: "change metric from speed to vibration"
+    BE->>DB: Scan terms: Matches 'vibration' (key: 'vibration')
+    DB-->>BE: Entity categories detected: ['metric', 'widget', 'dashboard']
+    BE->>Groq: Call Groq with tool schemas & active widgets in context
+    note over Groq: Groq matches widget "Speed Gauge" on screen.<br/>Calls preview_update_widget.
+    Groq->>BE: Tool Call: preview_update_widget(widget_title:"Speed Gauge", metric:"vibration")
+    BE-->>BE: Validates vibration exists on CW-01
+    BE-->>Groq: Return: { updated: true, changes: { metric: "vibration" } }
+    Groq-->>BE: "I have updated the widget to show vibration."
+    BE-->>FE: Return Message + toolResult changes
+    FE->>FE: Object.assign() applies new metric to local preview
+          </div>
+          
+          <div class="details-grid">
+            <div class="details-box">
+              <h3>Dynamic Target Mapping</h3>
+              <p>The AI compares the requested edit (vibration) against the active widgets in the context payload, automatically discovering that "Speed Gauge" needs the update.</p>
+            </div>
+            <div class="details-box">
+              <h3>Zero Database Writes</h3>
+              <p>All updates take place in local Vue state variables (Preview Draft) until the operator explicitly clicks "Confirm" to save.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- CASE 4 -->
+      <div id="case-4" class="panel">
+        <div class="card">
+          <h2>Case 4: Ambiguous Metric Mappings</h2>
+          <div class="badge-container">
+            <span class="badge query">Query: "change metric from x to y"</span>
+            <span class="badge context">Preview Context: None</span>
+            <span class="badge entities">Entities: ['metric', 'widget']</span>
+          </div>
+          
+          <div class="mermaid">
+sequenceDiagram
+    autonumber
+    actor User as "Factory Operator (User)"
+    participant BE as "Go Backend Server"
+    participant Groq as "Groq AI Engine"
+
+    User->>BE: "change metric from speed to vibration"
+    note over BE: No active preview card on screen (context is empty)
+    BE->>Groq: Call Groq with full builder tools (matched via entities)
+    note over Groq: Groq sees request to change a widget.<br/>But no dashboard context exists to modify.<br/>Cannot target any widget.
+    Groq-->>BE: Returns: "Which widget or dashboard are you looking to customize? Please specify the dashboard name or CW-01 to start a preview plan."
+    BE-->>User: Ask for clarification
+          </div>
+          
+          <div class="details-grid">
+            <div class="details-box">
+              <h3>Context Check</h3>
+              <p>Without on-screen widgets passed in the context payload, the model is unable to resolve widget titles, preventing accidental tool executions on unselected dashboards.</p>
+            </div>
+            <div class="details-box">
+              <h3>Fallback Behavior</h3>
+              <p>The AI gracefully asks the operator to name the dashboard or begin a new template session to create context.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- CASE 5 -->
+      <div id="case-5" class="panel">
+        <div class="card">
+          <h2>Case 5: Explain On-Screen Widget Data</h2>
+          <div class="badge-container">
+            <span class="badge query">Query: "explain data in widget Trend now"</span>
+            <span class="badge context">Dashboard Context: Active widgets on screen</span>
+            <span class="badge entities">Entities: ['widget', 'machine', 'metric']</span>
+          </div>
+          
+          <div class="mermaid">
+sequenceDiagram
+    autonumber
+    actor User as "Factory Operator (User)"
+    participant BE as "Go Backend Server"
+    participant DB as "PostgreSQL DB"
+    participant Groq as "Groq AI Engine"
+
+    User->>BE: "explain data in widget Trend now"
+    note over BE: Context contains widget "Trend" (Machine: CW-01, Metric: speed)
+    BE->>DB: Query tools connected to ['machine', 'metric']
+    DB-->>BE: Returns ['get_latest_telemetry', 'get_telemetry_trend']
+    BE->>Groq: Call Groq with telemetry tools + context
+    note over Groq: Groq resolves "Trend" = CW-01 speed.<br/>Calls get_latest_telemetry.
+    Groq->>BE: Tool Call: get_latest_telemetry(machine_id: "CW-01")
+    BE->>DB: SELECT data->>'speed' FROM telemetry_raw WHERE machine_id=CW-01 LIMIT 1
+    DB-->>BE: Returns: 1200
+    BE-->>Groq: Return: { values: { speed: 1200 } }
+    Groq-->>BE: Returns: "Currently, CW-01's speed is averaging 1200 rpm, which matches normal line throughput."
+    BE-->>User: Display plain text explanation
+          </div>
+          
+          <div class="details-grid">
+            <div class="details-box">
+              <h3>Semantic Association</h3>
+              <p>The AI resolves the informal name "Trend" to the database metric identifier <code>speed</code> and machine identifier <code>CW-01</code> using the active canvas widget definitions.</p>
+            </div>
+            <div class="details-box">
+              <h3>Telemetry Retrieval</h3>
+              <p>The AI calls telemetry read APIs dynamically, presenting raw database records as a natural language summary to the operator.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  function switchCase(caseId) {
+    // Buttons
+    document.querySelectorAll('.menu-btn').forEach(btn => btn.classList.remove('active'));
+    event.currentTarget.classList.add('active');
+    
+    // Panels
+    document.querySelectorAll('.panel').forEach(panel => panel.classList.remove('active'));
+    document.getElementById(caseId).classList.add('active');
+  }
+
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      background: '#090c15',
+      primaryColor: '#0f1322',
+      primaryTextColor: '#cbd5e1',
+      primaryBorderColor: '#1e293b',
+      lineColor: '#334155',
+      actorBkg: '#0f1322',
+      actorBorder: '#1e293b',
+      actorTextColor: '#cbd5e1',
+      noteBkgColor: '#111827',
+      noteTextColor: '#94a3b8',
+      noteBorderColor: '#1e293b',
+      activationBkgColor: '#38bdf8',
+      activationBorderColor: '#0284c7',
+      signalColor: '#38bdf8',
+      signalTextColor: '#e2e8f0',
+    }
+  });
+</script>
+</body>
+</html>

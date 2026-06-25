@@ -21,6 +21,7 @@ const props = defineProps<{
   };
   highlightId?: string;
   resetToken?: number;
+  aiSelectedWidgetIds?: string[];
 }>();
 
 const emit = defineEmits<{
@@ -28,7 +29,7 @@ const emit = defineEmits<{
   'remove-widget': [index: number];
   'add-widget': [widget: PreviewWidget];
   'update-widget': [index: number, data: Partial<PreviewWidget>];
-  'mention-widget': [payload: { text: string; selected: boolean }];
+  'mention-widget': [payload: { widget: { id: string; title: string }; selected: boolean }];
 }>();
 
 const machineStore = useMachineStore();
@@ -39,7 +40,10 @@ const localName = ref(props.result.dashboardName);
 const localLayouts = ref<Record<string, WidgetLayout>>({});
 // preview widget id -> the exact mention token appended to the AI input (so removal is exact)
 const selected = ref<Record<string, string>>({});
-const selectedIds = computed(() => Object.keys(selected.value));
+const selectedIds = computed(() => [
+  ...Object.keys(selected.value),
+  ...(props.aiSelectedWidgetIds ?? []),
+]);
 // Parent bumps resetToken after a message is sent → clear the mention rings.
 watch(() => props.resetToken, () => { selected.value = {}; });
 const showToolbox = ref(false);
@@ -82,17 +86,27 @@ function onLayoutChange(layouts: Array<{ id: string; layout: WidgetLayout }>) {
 }
 
 function onSelectPreviewWidget(widget: DashboardWidget) {
+  const wid = { id: widget.id, title: widget.title ?? widget.widgetType };
   if (selected.value[widget.id]) {
-    const token = selected.value[widget.id];
     const { [widget.id]: _, ...rest } = selected.value;
     selected.value = rest;
-    emit('mention-widget', { text: token, selected: false });
+    emit('mention-widget', { widget: wid, selected: false });
   } else {
-    const token = `@${widget.title} `;
-    selected.value = { ...selected.value, [widget.id]: token };
-    emit('mention-widget', { text: token, selected: true });
+    selected.value = { ...selected.value, [widget.id]: widget.id };
+    emit('mention-widget', { widget: wid, selected: true });
   }
 }
+
+function clearSelection(widgetId: string) {
+  const { [widgetId]: _, ...rest } = selected.value;
+  selected.value = rest;
+}
+
+function setSelection(widgetId: string) {
+  selected.value = { ...selected.value, [widgetId]: widgetId };
+}
+
+defineExpose({ clearSelection, setSelection });
 
 function onEditPreviewWidget(widget: DashboardWidget) {
   const idx = parseInt(widget.id.replace('preview-', ''), 10);
