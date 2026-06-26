@@ -21,7 +21,6 @@ const dashboardStore = useDashboardStore();
 const machineStore = useMachineStore();
 const telemetryStore = useTelemetryStore();
 const canvasCards = ref<CanvasCard[]>([]);
-const highlightId = ref<string | undefined>(undefined);
 const previewHighlightId = ref<string | undefined>(undefined);
 const selectionResetToken = ref(0);
 const mentionedWidgets = ref<Array<{ id: string; title: string }>>([]);
@@ -256,20 +255,31 @@ function deriveFocusWidget(messages: any[], rawText: string): any | null {
   };
 }
 
-async function addFocusToDashboard(pw: any) {
-  await dashboardStore.addWidget({
-    machineId: pw.machineUuid,
-    widgetType: pw.type,
-    title: pw.title,
-    config: {
-      field: pw.metric,
-      unit: pw.unit,
-      ...(pw.min !== undefined ? { min: pw.min } : {}),
-      ...(pw.max !== undefined ? { max: pw.max } : {}),
-    },
-    layout: { x: 0, y: 9999, w: 6, h: 4 },
-  });
-  canvasCards.value = canvasCards.value.filter(c => c.kind !== 'focus');
+async function confirmFocusCreate(card: any, name: string) {
+  const widgets = card.result?.widgets ?? [];
+  if (!widgets.length) return;
+  const dashName = name || (widgets[0]?.machine ?? 'New') + ' Dashboard';
+  try {
+    const dash = await dashboardStore.createDashboard({ name: dashName });
+    // Load the new dashboard so addWidget can target it via currentDashboard
+    await dashboardStore.fetchDashboard(dash.id);
+    for (const pw of widgets) {
+      await dashboardStore.addWidget({
+        machineId: pw.machineUuid,
+        widgetType: pw.type,
+        title: pw.title,
+        config: {
+          field: pw.metric, unit: pw.unit,
+          ...(pw.min !== undefined ? { min: pw.min } : {}),
+          ...(pw.max !== undefined ? { max: pw.max } : {}),
+        },
+        layout: { x: 0, y: 9999, w: 6, h: 4 },
+      });
+    }
+    canvasCards.value = canvasCards.value.filter(c => c !== card);
+  } catch (e) {
+    console.error('Failed to create dashboard from focus card', e);
+  }
 }
 
 function removeFocusCard(id: string) {
@@ -282,28 +292,29 @@ function buildDashboardContext(): string {
   const card = canvasCards.value.find(c => c.kind === 'preview') as any;
   const widgets = card?.result?.widgets ?? [];
   if (widgets.length) {
-    const lines = widgets.map((w: any) => {
-      const val = w.machineUuid && w.metric
-        ? telemetryStore.getFieldValue(w.machineUuid, w.metric)
-        : undefined;
-      const shown = val !== undefined ? ` = ${val}${w.unit ?? ''}` : '';
-      return `- ${w.type} "${w.title}" — machine ${w.machine}, metric ${w.metric}${shown}`;
-    });
+    const lines = widgets.map((w: any) =>
+      `- ${w.type} "${w.title}" — machine ${w.machine}, metric ${w.metric}`
+    );
     return `Current dashboard preview "${card.result.dashboardName}" on screen:\n${lines.join('\n')}`;
   }
 
-  // No AI preview — fall back to the live dashboard loaded in the grid so the AI
-  // can answer about the existing dashboard the user is looking at.
+  // Focus card — ephemeral metric widgets shown when show_metric ran
+  const focusCard = canvasCards.value.find(c => c.kind === 'focus') as any;
+  const focusWidgets = focusCard?.result?.widgets ?? [];
+  if (focusWidgets.length) {
+    const lines = focusWidgets.map((w: any) =>
+      `- ${w.type} "${w.title}" — machine ${w.machine}, metric ${w.metric}`
+    );
+    return `Metric focus card on screen (call show_metric to highlight/refresh):\n${lines.join('\n')}`;
+  }
+
+  // No AI preview — send only machine name so the AI knows what's active without
+  // getting enough widget detail to answer metric queries without calling show_metric.
   const live = dashboardStore.widgets;
   if (live.length) {
-    const lines = live.map((w) => {
-      const metric = w.config?.field;
-      const uuid = w.machineId ?? w.machine?.id;
-      const val = uuid && metric ? telemetryStore.getFieldValue(uuid, metric) : undefined;
-      const shown = val !== undefined ? ` = ${val}${w.config?.unit ?? ''}` : '';
-      return `- ${w.widgetType} "${w.title ?? ''}" — machine ${w.machine?.name ?? ''}, metric ${metric ?? ''}${shown}`;
-    });
-    return `Current dashboard "${dashboardStore.currentDashboard?.name ?? ''}" on screen (existing/saved):\n${lines.join('\n')}`;
+    const machines = [...new Set(live.map(w => w.machine?.name).filter(Boolean))];
+    const machineStr = machines.length ? machines.join(', ') : 'unknown';
+    return `Dashboard "${dashboardStore.currentDashboard?.name ?? ''}" is active. Machine: ${machineStr}. Call show_metric to display any live metric.`;
   }
 
   return '';
@@ -333,25 +344,46 @@ async function sendMessage() {
 
     const messages = await api.chat(conversationId.value!, text, buildDashboardContext());
 
-    // Focus cards are ephemeral and replaced each data question — clear last turn's.
-    canvasCards.value = canvasCards.value.filter(c => c.kind !== 'focus');
-
     for (const msg of messages) {
       if (msg.role === 'assistant' && msg.content?.trim()) {
         showToast(msg.content);
       }
       if (msg.toolName === 'show_metric') {
-        const w = (msg.toolResult as any)?.widget;
-        if (w?.machineUuid && w.metric) {
-          // Highlight an existing live widget for this machine+metric, else show a focus card.
+        const result = msg.toolResult as any;
+        // Handles both single widget (happy path) and widgets array (fallback when metric not found).
+        const widgetsToShow: any[] = result?.widgets ?? (result?.widget ? [result.widget] : []);
+        for (const w of widgetsToShow) {
+          if (!w?.machineUuid || !w.metric) continue;
           const existing = dashboardStore.widgets.find(dw =>
             (dw.machineId === w.machineUuid || dw.machine?.id === w.machineUuid) && dw.config.field === w.metric
           );
+          const focusCard = canvasCards.value.find(c => c.kind === 'focus') as any;
+          const focusIdx = focusCard?.result.widgets.findIndex(
+            (fw: any) => fw.machineUuid === w.machineUuid && fw.metric === w.metric && fw.type === w.type
+          ) ?? -1;
           if (existing) {
             setAiHighlight(existing.id, existing.title ?? existing.widgetType, false);
-          } else if (!hasPreview.value) {
-            canvasCards.value = canvasCards.value.filter(c => c.kind !== 'focus');
-            canvasCards.value.push({ kind: 'focus', id: uid(), result: { dashboardName: '', widgets: [w], summary: '' } });
+          } else if (focusIdx >= 0) {
+            aiSelectedPreviewIds.value = [...new Set([...aiSelectedPreviewIds.value, `preview-${focusIdx}`])];
+          } else if (hasPreview.value) {
+            // A preview dashboard is on screen — highlight its widget(s) for this metric.
+            // Preview stores machine as the short name (e.g. "CW-01"); show_metric returns
+            // the full name ("Checkweigher CW-01") + machineUuid, so match by substring/uuid.
+            const previewCard = canvasCards.value.find(c => c.kind === 'preview') as any;
+            const pws: any[] = previewCard?.result?.widgets ?? [];
+            pws.forEach((pw: any, i: number) => {
+              const machineOk = (pw.machineUuid && pw.machineUuid === w.machineUuid)
+                || (!!pw.machine && !!w.machine && w.machine.toLowerCase().includes((pw.machine as string).toLowerCase()));
+              if (pw.metric === w.metric && machineOk) {
+                setAiHighlight(`preview-${i}`, pw.title ?? pw.metric ?? `preview-${i}`, true);
+              }
+            });
+          } else {
+            if (focusCard) {
+              focusCard.result.widgets.push(w);
+            } else {
+              canvasCards.value.push({ kind: 'focus', id: uid(), result: { dashboardName: '', widgets: [w], summary: '' } });
+            }
           }
         }
       }
@@ -396,6 +428,11 @@ async function sendMessage() {
           }
         }
       }
+    }
+
+    // Focus cards are ephemeral: keep them if this turn used show_metric, clear otherwise.
+    if (!messages.some(m => m.toolName === 'show_metric')) {
+      canvasCards.value = canvasCards.value.filter(c => c.kind !== 'focus');
     }
 
     // Skip highlight when the AI performed a builder action — those turns are not data queries
@@ -547,16 +584,20 @@ async function sendMessage() {
       if (previewMentioned.length) setAiHighlight(previewMentioned[0].id, previewMentioned[0].title, true);
     }
 
+    } // end if (!usedBuilderTool)
+
     // Focus preview: a data question whose metric has no live widget to highlight →
     // show an ephemeral, live single-metric card (not persisted, user adds it manually).
-    // Text-driven (not gated on a tool firing) — the model often answers a data
-    // question straight from the injected context/history without calling a read tool.
-    if (!aiSelectedIds.value.length && !hasPreview.value) {
+    // Runs even when show_metric (a builder tool) fired but produced no highlight — e.g.
+    // it errored, matched nothing, or was refused because a preview was open. Text-driven,
+    // so it needs no tool to have fired. Guarded against duplicating a card show_metric
+    // already created (no existing focus card, nothing highlighted, no preview open).
+    if (!aiSelectedIds.value.length && !aiSelectedPreviewIds.value.length && !hasPreview.value
+        && !canvasCards.value.some(c => c.kind === 'focus')) {
       if (!machineStore.machines.length) await machineStore.fetchMachines();
       const pw = deriveFocusWidget(messages, rawText);
       if (pw) canvasCards.value.push({ kind: 'focus', id: uid(), result: { dashboardName: '', widgets: [pw], summary: '' } });
     }
-    } // end if (!usedBuilderTool)
   } catch (e: any) {
     showToast(`Error: ${e?.message ?? 'Something went wrong. Please try again.'}`);
   } finally {
@@ -667,8 +708,10 @@ function handleKeydown(e: KeyboardEvent) {
           v-else-if="card.kind === 'focus'"
           variant="focus"
           :result="(card as any).result"
-          @add-to-dashboard="addFocusToDashboard"
+          :ai-selected-widget-ids="aiSelectedPreviewIds"
+          @confirm="(name: string) => confirmFocusCreate(card, name)"
           @remove-widget="() => removeFocusCard(card.id)"
+          @mention-widget="onMentionWidget"
         />
         <CreatedCanvasCard
           v-else-if="card.kind === 'created'"
@@ -706,7 +749,6 @@ function handleKeydown(e: KeyboardEvent) {
             <GridStackCanvas
               ref="gridCanvasRef"
               :widgets="dashboardStore.widgets"
-              :highlighted-id="highlightId"
               :selected-ids="[...mentionedWidgets.filter(w => !w.id.startsWith('preview-')).map(w => w.id), ...aiSelectedIds]"
               @edit-widget="onEditWidget"
               @remove-widget="onRemoveWidget"
@@ -716,12 +758,6 @@ function handleKeydown(e: KeyboardEvent) {
         </div>
       </div>
 
-      <!-- Spotlight overlay -->
-      <div
-        v-if="highlightId"
-        class="canvas-spotlight-overlay"
-        @click="highlightId = undefined"
-      />
     </div>
 
     <!-- ── COMMAND BAR ── -->

@@ -40,9 +40,9 @@ type bakeCase struct {
 var bakeCases = []bakeCase{
 	{label: "greeting", message: "สวัสดีครับ", expect: "no tool, Thai reply"},
 	{label: "greeting-informal", message: "หวัดดี", expect: "no tool, Thai reply"},
-	{label: "read-speed", message: "speed ของ CW-01 เท่าไหร่", expect: "get_latest_telemetry"},
-	{label: "read-speed-thai", message: "CW-01 ตอนนี้เร็วเท่าไหร่", expect: "get_latest_telemetry"},
-	{label: "read-temp-informal", message: "ดูอุณหภูมิ CW-01 หน่อย", expect: "get_latest_telemetry / trend"},
+	{label: "read-speed", message: "speed ของ CW-01 เท่าไหร่", expect: "show_metric"},
+	{label: "read-speed-thai", message: "CW-01 ตอนนี้เร็วเท่าไหร่", expect: "show_metric"},
+	{label: "read-temp-informal", message: "ดูอุณหภูมิ CW-01 หน่อย", expect: "show_metric (value or trend)"},
 	{label: "create", message: "สร้าง dashboard ของ CW-01 ให้หน่อย", expect: "preview_dashboard (NOT create)"},
 	{
 		label:   "preview-edit",
@@ -57,7 +57,7 @@ var bakeCases = []bakeCase{
 	{label: "trap-action-but-read", message: "สร้าง dashboard สิ แล้วตอนนี้มีเครื่องอะไรบ้าง", expect: "get_machines (read) — NOT preview/create"},
 	{label: "ambiguous-fix", message: "แก้ให้หน่อย", expect: "clarifying question in Thai, no tool"},
 	{label: "ambiguous-change", message: "เปลี่ยนหน่อย", expect: "clarifying question in Thai, no tool"},
-	{label: "english-read", message: "what's the speed of CW-01", expect: "get_latest_telemetry, English reply"},
+	{label: "english-read", message: "what's the speed of CW-01", expect: "show_metric, English reply"},
 	// Slot-filling: a read needs a machine but none is named → ask which machine, don't guess.
 	{label: "read-no-machine", message: "speed เท่าไหร่", expect: "ask which machine in Thai — NO tool, NO guessed machine_id"},
 	{label: "read-no-machine-en", message: "show me the temperature", expect: "ask which machine in English — NO tool, NO guessed machine_id"},
@@ -89,7 +89,7 @@ func TestBakeOff(t *testing.T) {
 			fmt.Printf("\n[%s] %q\n  expect: %s\n", tc.label, tc.message, tc.expect)
 
 			time.Sleep(3 * time.Second) // dodge free-tier rate limits
-			resp, err := callGroqModel(model, msgs, tools)
+			resp, err := callGroqModel(model, msgs, tools, "")
 			if err != nil {
 				fmt.Printf("  ERROR: %v\n", err)
 				continue

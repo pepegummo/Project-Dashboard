@@ -20,7 +20,7 @@ import (
 // gpt-oss-20b: chosen via the Phase 1 bake-off (see eval_test.go) — best Thai
 // intent understanding (11/11, beat 120b and qwen), no language leaks, cheapest, and
 // Groq prompt-caches it (the stable system+tools prefix is discounted and off the rate limit).
-const groqModel = "openai/gpt-oss-20b"
+const groqModel = "openai/gpt-oss-120b"
 const groqBaseURL = "https://api.groq.com/openai/v1/chat/completions"
 const systemPrompt = `You are IotVision AI for an industrial IoT platform. Use tools to read data and make changes.
 
@@ -28,14 +28,14 @@ Rules:
 1. Plain text for greetings/general questions — no tool call.
 2. Use exact machine names and dashboard names. If the user mentions a name directly (e.g. "CW-01"), use it as-is — only call get_machines or list_dashboards when the name is ambiguous or unknown.
 3. Do only what was asked; no extra chained actions.
-4. After any change confirm briefly in plain text.
+4. After any change confirm briefly in plain text. After show_metric returns, reply with one short natural-language sentence (e.g. "นี่คือ speed ของ CW-01 ครับ") — NEVER output the raw JSON or the tool result object as your reply. NEVER output phrases like "Here is X", "นี่คือ X", "The X of CW-01 is Y" unless show_metric was actually called in this same turn — calling the tool is mandatory, not optional.
 5. preview_add_widget, preview_remove_widget and preview_update_widget are ONLY for a new dashboard being composed this turn (after preview_dashboard was called and not yet confirmed). To edit a widget already in the preview (e.g. change its title or metric), use preview_update_widget with the widget's current title. For an existing dashboard the user NAMES use add_widget_to_dashboard / remove_widget directly; if no dashboard is named, prefer show_metric (rule 11) instead of asking which dashboard.
 6. preview_dashboard: pick machine_overview for general/status, machine_production for output/count, machine_maintenance for health/alerts. If the user just says "create a dashboard" without a type, default to machine_overview and show the preview — the preview IS the confirmation step, so do NOT ask which template. The user confirms via button — do not ask them to type confirm.
-7. If the answer is already in the provided dashboard context (widgets/values on screen), answer from it directly — do not call a tool.
+7. If the answer is already in the provided dashboard context AND the user is asking a structural question (widget count, dashboard name, which widgets exist, layout), answer from it directly. For metric value questions ("what is X", "show me X", "speed of CW-01"), ALWAYS call show_metric — context values are never a substitute for a live widget.
 8. Line/trend chart widgets support an absolute date range. To change it, call preview_update_widget with start_date/end_date as YYYY-MM-DD (convert any DD/MM/YYYY the user gives). Never claim only preset ranges (5m, 1h, 7d, …) are supported.
 9. Reply entirely in the same language as the user's latest message. Never mix languages within a reply.
 10. Ask a clarifying question only when you cannot act: no clear action (e.g. "fix it", "change it"), or a read/alert needs a machine and none is identifiable. When a machine is missing, ask which machine in ONE short question — never guess a name, and do not call get_machines just to list them back. When a sensible default exists (e.g. a dashboard preview per rule 6), use it instead of asking; never ask which dashboard template to use.
-11. When the user asks to see, show, or ADD a widget for a specific metric (e.g. "add weight widget", "ขอ widget weight CW-01", "ความเร็ว CW-01 เท่าไหร่", "what is the speed of CW-01"), ALWAYS call show_metric with the machine and the English field key (speed, weight, temp, …) — even if you already know the value; do not answer from memory. show_metric displays the widget in a preview card the user can add themselves, so NEVER ask which dashboard. Map the user's word in any language to the field key. Use viz:"trend" for history/trend questions, viz:"gauge" or "value" for a current reading. Use add_widget_to_dashboard instead ONLY when the user names a specific existing dashboard to add to (e.g. "add a weight widget to CW-01 Overview"); use preview_add_widget only while composing a preview dashboard this turn (rule 5).`
+11. When the user asks to see, show, or ADD a widget for a specific metric (e.g. "add weight widget", "ขอ widget weight CW-01", "ความเร็ว CW-01 เท่าไหร่", "what is the speed of CW-01"), you MUST call show_metric — you have NO access to live sensor values without this tool, so you literally cannot answer without calling it. Do not output "Here is X" or "นี่คือ X" without a preceding show_metric call this turn. show_metric displays the widget in a preview card the user can add themselves, so NEVER ask which dashboard. Map the user's word in any language to the field key. Use viz:"trend" for history/trend questions, viz:"gauge" or "value" for a current reading. Use add_widget_to_dashboard instead ONLY when the user names a specific existing dashboard to add to (e.g. "add a weight widget to CW-01 Overview"); use preview_add_widget only while composing a preview dashboard this turn (rule 5). When the user asks to see ALL metrics of a machine ("ดูทั้งหมด", "show all", "all metrics", "ข้อมูลทั้งหมด", "ขอดูทั้งหมด"), first call get_machines to list the fields, then call show_metric once for EACH field in a single response — never just list them as plain text.`
 
 // ── Groq / OpenAI-compatible API types ───────────────────────────────────────
 
@@ -94,8 +94,6 @@ func (ctrl *Controller) dispatch(c *fiber.Ctx, toolName string, rawArgs json.Raw
 	switch toolName {
 	case "get_machines":
 		return getMachinesForOrg(ctx, user.OrgId)
-	case "get_latest_telemetry":
-		return ctrl.tk.GetLatestTelemetry(ctx, user.OrgId, rawArgs)
 	case "show_metric":
 		return ctrl.tk.ShowMetric(ctx, user.OrgId, rawArgs)
 	case "get_telemetry_trend":
@@ -329,14 +327,25 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 
 	tools := buildGroqTools(middleware.GetUser(c).Role)
 
+	// When the user has a dashboard/metric card visible, force a tool call on the first
+	// iteration so the model cannot skip show_metric and answer from text alone.
+	firstToolChoice := ""
+	if body.Context != "" {
+		firstToolChoice = "required"
+	}
+
 	callTools := tools
 	for i := 0; i < 5; i++ {
-		resp, err := callGroq(msgs, callTools)
+		tc := ""
+		if i == 0 {
+			tc = firstToolChoice
+		}
+		resp, err := callGroq(msgs, callTools, tc)
 		if err != nil {
 			// qwen3 reasoning models try to chain tools even on no-tool summary calls.
 			// Groq surfaces this as "Tool choice is none" — retry with the full toolset.
 			if strings.Contains(err.Error(), "Tool choice is none") {
-				resp, err = callGroq(msgs, tools)
+				resp, err = callGroq(msgs, tools, "")
 			}
 		}
 		if err != nil {
@@ -388,7 +397,10 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 			})
 		}
 
-		callTools = nil // continuation call: summarize the result, no tool array
+		// Allow one chained tool round (e.g. get_machines → show_metric × N), then force summary.
+		if i >= 1 {
+			callTools = nil
+		}
 	}
 
 	return c.JSON(fiber.Map{"success": true, "data": newMessages})
@@ -423,14 +435,14 @@ func buildGroqTools(role string) []map[string]any {
 }
 
 // callGroq sends messages to Groq with the default model. Pass nil tools for a
-// plain (no-function-call) request.
-func callGroq(messages []groqMessage, tools []map[string]any) (*groqResponse, error) {
-	return callGroqModel(groqModel, messages, tools)
+// plain (no-function-call) request. toolChoice: "" = auto, "required" = force a tool call.
+func callGroq(messages []groqMessage, tools []map[string]any, toolChoice string) (*groqResponse, error) {
+	return callGroqModel(groqModel, messages, tools, toolChoice)
 }
 
 // callGroqModel is callGroq with an explicit model — used by the bake-off harness
 // to compare candidates.
-func callGroqModel(model string, messages []groqMessage, tools []map[string]any) (*groqResponse, error) {
+func callGroqModel(model string, messages []groqMessage, tools []map[string]any, toolChoice string) (*groqResponse, error) {
 	reqBody := map[string]any{
 		"model":            model,
 		"messages":         messages,
@@ -438,6 +450,9 @@ func callGroqModel(model string, messages []groqMessage, tools []map[string]any)
 	}
 	if len(tools) > 0 {
 		reqBody["tools"] = tools
+		if toolChoice != "" {
+			reqBody["tool_choice"] = toolChoice
+		}
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)
@@ -480,7 +495,7 @@ func callGroqModel(model string, messages []groqMessage, tools []map[string]any)
 			// Groq's function-call parser failed (malformed generation). Retry once
 			// without tools so the user gets a plain-text reply instead of an error.
 			if strings.Contains(result.Error.Message, "Failed to call a function") && len(tools) > 0 {
-				return callGroqModel(model, messages, nil)
+				return callGroqModel(model, messages, nil, "")
 			}
 			return nil, fmt.Errorf("Groq API: %s", result.Error.Message)
 		}

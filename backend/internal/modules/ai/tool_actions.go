@@ -32,27 +32,10 @@ func NewToolKit() *ToolKit {
 
 // ── Category A: read telemetry & alerts ──────────────────────────────────────
 
-// GetLatestTelemetry returns the current readings for one machine.
-func (tk *ToolKit) GetLatestTelemetry(ctx context.Context, orgID string, raw json.RawMessage) (any, error) {
-	var args MachineArg
-	_ = json.Unmarshal(raw, &args)
-	id, ok := resolveMachineID(ctx, orgID, strings.TrimSpace(args.MachineID))
-	if !ok {
-		return nil, fmt.Errorf("machine %q not found", args.MachineID)
-	}
-	snap, err := tk.tel.GetLatest(ctx, id, &orgID)
-	if err != nil {
-		return nil, fmt.Errorf("no telemetry recorded for %q yet", args.MachineID)
-	}
-	return map[string]any{
-		"machine":   args.MachineID,
-		"timestamp": snap.Timestamp,
-		"values":    snap.Data,
-	}, nil
-}
-
 // ShowMetric resolves a machine + field to a concrete widget spec the UI renders
-// directly (no frontend guessing). Returns {"error": …} if the field doesn't exist.
+// directly (no frontend guessing). When the field doesn't exist, returns fallback
+// widgets for all available fields: non-status fields as gauge/kpi, status fields
+// as exactly 1 kpi-card.
 func (tk *ToolKit) ShowMetric(ctx context.Context, orgID string, raw json.RawMessage) (any, error) {
 	var args ShowMetricArgs
 	_ = json.Unmarshal(raw, &args)
@@ -65,17 +48,76 @@ func (tk *ToolKit) ShowMetric(ctx context.Context, orgID string, raw json.RawMes
 		return nil, fmt.Errorf("metric is required")
 	}
 
-	var name, label string
+	// Fetch machine name first — needed by both happy path and fallback.
+	var machineName string
+	_ = database.Pool.QueryRow(ctx, `SELECT name FROM machines WHERE id = $1`, id).Scan(&machineName)
+	if machineName == "" {
+		machineName = args.Machine
+	}
+
+	var label string
 	var unit *string
-	var min, max *float64
+	var wmin, wmax *float64
 	err := database.Pool.QueryRow(ctx, `
-		SELECT m.name, mf.label, mf.unit, mf.min, mf.max
-		FROM machines m
-		JOIN machine_fields mf ON mf.machine_id = m.id
-		WHERE m.id = $1 AND mf.key = $2
-	`, id, metric).Scan(&name, &label, &unit, &min, &max)
+		SELECT mf.label, mf.unit, mf.min, mf.max
+		FROM machine_fields mf
+		WHERE mf.machine_id = $1 AND mf.key = $2
+	`, id, metric).Scan(&label, &unit, &wmin, &wmax)
 	if err != nil {
-		return map[string]any{"error": fmt.Sprintf("machine %q has no metric %q", args.Machine, metric)}, nil
+		// Metric not found — return all available fields as fallback widgets.
+		// Non-status: gauge if has min+max, else kpi-card. Status: exactly 1 kpi-card.
+		rows, _ := database.Pool.Query(ctx, `
+			SELECT key, label, unit, min, max, key ILIKE '%status%' AS is_status
+			FROM machine_fields
+			WHERE machine_id = $1 AND data_type = 'number'
+			ORDER BY is_key DESC, key
+		`, id)
+		defer rows.Close()
+		var fallbackWidgets []map[string]any
+		statusAdded := false
+		for rows.Next() {
+			var key, lbl string
+			var u *string
+			var fmin, fmax *float64
+			var isStatus bool
+			if err2 := rows.Scan(&key, &lbl, &u, &fmin, &fmax, &isStatus); err2 != nil {
+				continue
+			}
+			if isStatus {
+				if statusAdded {
+					continue
+				}
+				statusAdded = true
+				fallbackWidgets = append(fallbackWidgets, map[string]any{
+					"type": "kpi-card", "title": fmt.Sprintf("%s — %s", machineName, lbl),
+					"machine": machineName, "machineUuid": id,
+					"metric": key, "unit": deref(u),
+				})
+				continue
+			}
+			wtype := "kpi-card"
+			if fmin != nil && fmax != nil {
+				wtype = "gauge"
+			}
+			w := map[string]any{
+				"type": wtype, "title": fmt.Sprintf("%s — %s", machineName, lbl),
+				"machine": machineName, "machineUuid": id,
+				"metric": key, "unit": deref(u),
+			}
+			if fmin != nil {
+				w["min"] = *fmin
+			}
+			if fmax != nil {
+				w["max"] = *fmax
+			}
+			fallbackWidgets = append(fallbackWidgets, w)
+		}
+		return map[string]any{
+			"fallback":         true,
+			"requested_metric": metric,
+			"message":          fmt.Sprintf("Machine %q has no metric %q. Showing available metrics.", machineName, metric),
+			"widgets":          fallbackWidgets,
+		}, nil
 	}
 
 	wtype := "kpi-card"
@@ -87,26 +129,34 @@ func (tk *ToolKit) ShowMetric(ctx context.Context, orgID string, raw json.RawMes
 	case "value":
 		wtype = "kpi-card"
 	default:
-		if min != nil && max != nil {
+		if wmin != nil && wmax != nil {
 			wtype = "gauge"
 		}
 	}
 
 	widget := map[string]any{
 		"type":        wtype,
-		"title":       fmt.Sprintf("%s — %s", name, label),
-		"machine":     name,
+		"title":       fmt.Sprintf("%s — %s", machineName, label),
+		"machine":     machineName,
 		"machineUuid": id,
 		"metric":      metric,
 		"unit":        deref(unit),
 	}
-	if min != nil {
-		widget["min"] = *min
+	if wmin != nil {
+		widget["min"] = *wmin
 	}
-	if max != nil {
-		widget["max"] = *max
+	if wmax != nil {
+		widget["max"] = *wmax
 	}
-	return map[string]any{"widget": widget}, nil
+	trendWidget := map[string]any{
+		"type":        "line-chart",
+		"title":       fmt.Sprintf("%s — %s (trend)", machineName, label),
+		"machine":     machineName,
+		"machineUuid": id,
+		"metric":      metric,
+		"unit":        deref(unit),
+	}
+	return map[string]any{"widgets": []map[string]any{widget, trendWidget}}, nil
 }
 
 func deref(s *string) string {

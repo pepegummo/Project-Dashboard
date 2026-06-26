@@ -31,7 +31,6 @@ const emit = defineEmits<{
   'add-widget': [widget: PreviewWidget];
   'update-widget': [index: number, data: Partial<PreviewWidget>];
   'mention-widget': [payload: { widget: { id: string; title: string }; selected: boolean }];
-  'add-to-dashboard': [widget: PreviewWidget];
 }>();
 
 const machineStore = useMachineStore();
@@ -180,7 +179,9 @@ function onSaveWidget(data: { machineId?: string; widgetType: WidgetType; title?
           class="bg-transparent border-b border-violet-500/40 focus:border-violet-400 outline-none text-violet-300 font-semibold text-sm min-w-0 w-48"
           placeholder="Dashboard name"
         />
-        <span v-else class="text-violet-300">{{ result.widgets[0]?.title || 'Focus' }}</span>
+        <span v-else class="text-violet-300">
+          {{ result.widgets.length > 1 ? `${result.widgets.length} metrics` : (result.widgets[0]?.title || 'Focus') }}
+        </span>
       </div>
       <span class="text-[10px] text-violet-400/60 bg-violet-500/10 px-2 py-0.5 rounded-full border border-violet-500/20">
         {{ variant === 'focus' ? 'Live' : 'Preview' }}
@@ -211,8 +212,8 @@ function onSaveWidget(data: { machineId?: string; widgetType: WidgetType; title?
       </div>
     </div>
 
-    <!-- Widget chip list with delete buttons -->
-    <div v-if="variant === 'build'" class="flex flex-wrap gap-1.5 mb-3">
+    <!-- Widget chip list -->
+    <div class="flex flex-wrap gap-1.5 mb-3">
       <span
         v-for="(w, i) in result.widgets"
         :key="i"
@@ -224,7 +225,6 @@ function onSaveWidget(data: { machineId?: string; widgetType: WidgetType; title?
 
     <div class="flex items-center gap-2">
       <button
-        v-if="variant === 'build'"
         class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 transition-colors"
         @click="showToolbox = !showToolbox"
       >
@@ -233,22 +233,11 @@ function onSaveWidget(data: { machineId?: string; widgetType: WidgetType; title?
       </button>
 
       <button
-        v-if="variant === 'build'"
         class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-violet-600 hover:bg-violet-500 text-white transition-colors"
-        @click="emit('confirm', localName)"
+        @click="emit('confirm', variant === 'build' ? localName : (result.widgets[0]?.machine ?? 'New Dashboard'))"
       >
         <CheckCircle2 class="w-3.5 h-3.5" />
         Create Dashboard
-      </button>
-
-      <button
-        v-else
-        class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-violet-600 hover:bg-violet-500 text-white transition-colors"
-        :disabled="!result.widgets.length"
-        @click="result.widgets[0] && emit('add-to-dashboard', result.widgets[0])"
-      >
-        <Plus class="w-3.5 h-3.5" />
-        Add to dashboard
       </button>
     </div>
 
