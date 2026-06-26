@@ -4,6 +4,13 @@ var allowedWidgetTypes = []string{
 	"line-chart", "gauge", "kpi-card", "status-card", "table", "alarm-panel", "daily-count",
 }
 
+// machineIDProp is the shared schema for a required machine_id slot. Read-only and
+// reused across read/alert tools — nudges the model to ask rather than guess a name.
+var machineIDProp = map[string]any{
+	"type":        "string",
+	"description": "Exact machine name (e.g. CW-01). If the user named no machine, ask which one — never guess.",
+}
+
 // widgetItemSchema is used by add_widget_to_dashboard only.
 var widgetItemSchema = map[string]any{
 	"type":     "object",
@@ -42,7 +49,24 @@ var GetLatestTelemetryTool = map[string]any{
 		"type":     "object",
 		"required": []string{"machine_id"},
 		"properties": map[string]any{
-			"machine_id": map[string]any{"type": "string"},
+			"machine_id": machineIDProp,
+			// ponytail: metric is a frontend hint (which field the user asked about) so it
+			// can show that widget; the executor ignores it and returns all readings.
+			"metric": map[string]any{"type": "string", "description": "The specific field key the user asked about (e.g. speed, weight), if any."},
+		},
+	},
+}
+
+var ShowMetricTool = map[string]any{
+	"name":        "show_metric",
+	"description":  "Show one metric as a live widget for the user — call this whenever they ask the current value of, or to see, a metric. Returns a widget the UI renders.",
+	"input_schema": map[string]any{
+		"type":     "object",
+		"required": []string{"machine", "metric"},
+		"properties": map[string]any{
+			"machine": machineIDProp,
+			"metric":  map[string]any{"type": "string", "description": "The English field key (e.g. speed, weight, temp). Map the user's word in any language to it."},
+			"viz":     map[string]any{"type": "string", "enum": []string{"value", "gauge", "trend"}, "description": "value = current number, gauge = dial, trend = line chart over time."},
 		},
 	},
 }
@@ -54,7 +78,7 @@ var GetTelemetryTrendTool = map[string]any{
 		"type":     "object",
 		"required": []string{"machine_id", "metric"},
 		"properties": map[string]any{
-			"machine_id": map[string]any{"type": "string"},
+			"machine_id": machineIDProp,
 			"metric":     map[string]any{"type": "string"},
 			"time_range": map[string]any{"type": "string", "enum": []string{"5m", "15m", "30m", "1h", "6h", "24h", "7d", "15d", "30d"}},
 		},
@@ -74,7 +98,7 @@ var GetDailyCountTool = map[string]any{
 		"type":     "object",
 		"required": []string{"machine_id"},
 		"properties": map[string]any{
-			"machine_id": map[string]any{"type": "string"},
+			"machine_id": machineIDProp,
 			"days":       map[string]any{"type": "integer"},
 		},
 	},
@@ -176,7 +200,7 @@ var CreateAlertTool = map[string]any{
 		"type":     "object",
 		"required": []string{"machine_id", "metric", "condition", "threshold"},
 		"properties": map[string]any{
-			"machine_id":   map[string]any{"type": "string"},
+			"machine_id":   machineIDProp,
 			"metric":       map[string]any{"type": "string"},
 			"condition":    map[string]any{"type": "string", "enum": []string{"gt", "lt", "gte", "lte", "eq", "neq", "between", "outside"}},
 			"threshold":    map[string]any{"type": "number"},
@@ -206,6 +230,7 @@ func AllTools() []map[string]any {
 	return []map[string]any{
 		GetMachinesTool,
 		GetLatestTelemetryTool,
+		ShowMetricTool,
 		GetTelemetryTrendTool,
 		GetActiveAlertsTool,
 		GetDailyCountTool,
@@ -254,6 +279,12 @@ type TemplateDashboardArgs struct {
 
 type MachineArg struct {
 	MachineID string `json:"machine_id"`
+}
+
+type ShowMetricArgs struct {
+	Machine string `json:"machine"`
+	Metric  string `json:"metric"`
+	Viz     string `json:"viz"`
 }
 
 type TrendArgs struct {

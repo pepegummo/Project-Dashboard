@@ -17,8 +17,10 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-const groqModel = "qwen/qwen3-32b"
-// const groqModel = "openai/gpt-oss-120b"
+// gpt-oss-20b: chosen via the Phase 1 bake-off (see eval_test.go) — best Thai
+// intent understanding (11/11, beat 120b and qwen), no language leaks, cheapest, and
+// Groq prompt-caches it (the stable system+tools prefix is discounted and off the rate limit).
+const groqModel = "openai/gpt-oss-20b"
 const groqBaseURL = "https://api.groq.com/openai/v1/chat/completions"
 const systemPrompt = `You are IotVision AI for an industrial IoT platform. Use tools to read data and make changes.
 
@@ -27,12 +29,13 @@ Rules:
 2. Use exact machine names and dashboard names. If the user mentions a name directly (e.g. "CW-01"), use it as-is — only call get_machines or list_dashboards when the name is ambiguous or unknown.
 3. Do only what was asked; no extra chained actions.
 4. After any change confirm briefly in plain text.
-5. preview_add_widget, preview_remove_widget and preview_update_widget are ONLY for a new dashboard being composed this turn (after preview_dashboard was called and not yet confirmed). To edit a widget already in the preview (e.g. change its title or metric), use preview_update_widget with the widget's current title. For any existing dashboard use add_widget_to_dashboard / remove_widget directly.
-6. preview_dashboard: pick machine_overview for general/status, machine_production for output/count, machine_maintenance for health/alerts. The user confirms via button — do not ask them to type confirm.
+5. preview_add_widget, preview_remove_widget and preview_update_widget are ONLY for a new dashboard being composed this turn (after preview_dashboard was called and not yet confirmed). To edit a widget already in the preview (e.g. change its title or metric), use preview_update_widget with the widget's current title. For an existing dashboard the user NAMES use add_widget_to_dashboard / remove_widget directly; if no dashboard is named, prefer show_metric (rule 11) instead of asking which dashboard.
+6. preview_dashboard: pick machine_overview for general/status, machine_production for output/count, machine_maintenance for health/alerts. If the user just says "create a dashboard" without a type, default to machine_overview and show the preview — the preview IS the confirmation step, so do NOT ask which template. The user confirms via button — do not ask them to type confirm.
 7. If the answer is already in the provided dashboard context (widgets/values on screen), answer from it directly — do not call a tool.
 8. Line/trend chart widgets support an absolute date range. To change it, call preview_update_widget with start_date/end_date as YYYY-MM-DD (convert any DD/MM/YYYY the user gives). Never claim only preset ranges (5m, 1h, 7d, …) are supported.
 9. Reply entirely in the same language as the user's latest message. Never mix languages within a reply.
-/no_think`
+10. Ask a clarifying question only when you cannot act: no clear action (e.g. "fix it", "change it"), or a read/alert needs a machine and none is identifiable. When a machine is missing, ask which machine in ONE short question — never guess a name, and do not call get_machines just to list them back. When a sensible default exists (e.g. a dashboard preview per rule 6), use it instead of asking; never ask which dashboard template to use.
+11. When the user asks to see, show, or ADD a widget for a specific metric (e.g. "add weight widget", "ขอ widget weight CW-01", "ความเร็ว CW-01 เท่าไหร่", "what is the speed of CW-01"), ALWAYS call show_metric with the machine and the English field key (speed, weight, temp, …) — even if you already know the value; do not answer from memory. show_metric displays the widget in a preview card the user can add themselves, so NEVER ask which dashboard. Map the user's word in any language to the field key. Use viz:"trend" for history/trend questions, viz:"gauge" or "value" for a current reading. Use add_widget_to_dashboard instead ONLY when the user names a specific existing dashboard to add to (e.g. "add a weight widget to CW-01 Overview"); use preview_add_widget only while composing a preview dashboard this turn (rule 5).`
 
 // ── Groq / OpenAI-compatible API types ───────────────────────────────────────
 
@@ -93,6 +96,8 @@ func (ctrl *Controller) dispatch(c *fiber.Ctx, toolName string, rawArgs json.Raw
 		return getMachinesForOrg(ctx, user.OrgId)
 	case "get_latest_telemetry":
 		return ctrl.tk.GetLatestTelemetry(ctx, user.OrgId, rawArgs)
+	case "show_metric":
+		return ctrl.tk.ShowMetric(ctx, user.OrgId, rawArgs)
 	case "get_telemetry_trend":
 		return ctrl.tk.GetTelemetryTrend(ctx, user.OrgId, rawArgs)
 	case "get_active_alerts":
@@ -417,10 +422,17 @@ func buildGroqTools(role string) []map[string]any {
 	return out
 }
 
-// callGroq sends messages to Groq. Pass nil tools for a plain (no-function-call) request.
+// callGroq sends messages to Groq with the default model. Pass nil tools for a
+// plain (no-function-call) request.
 func callGroq(messages []groqMessage, tools []map[string]any) (*groqResponse, error) {
+	return callGroqModel(groqModel, messages, tools)
+}
+
+// callGroqModel is callGroq with an explicit model — used by the bake-off harness
+// to compare candidates.
+func callGroqModel(model string, messages []groqMessage, tools []map[string]any) (*groqResponse, error) {
 	reqBody := map[string]any{
-		"model":            groqModel,
+		"model":            model,
 		"messages":         messages,
 		"reasoning_format": "hidden",
 	}
@@ -468,7 +480,7 @@ func callGroq(messages []groqMessage, tools []map[string]any) (*groqResponse, er
 			// Groq's function-call parser failed (malformed generation). Retry once
 			// without tools so the user gets a plain-text reply instead of an error.
 			if strings.Contains(result.Error.Message, "Failed to call a function") && len(tools) > 0 {
-				return callGroq(messages, nil)
+				return callGroqModel(model, messages, nil)
 			}
 			return nil, fmt.Errorf("Groq API: %s", result.Error.Message)
 		}

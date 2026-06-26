@@ -1,7 +1,6 @@
 // Package broadcaster polls the database for the latest telemetry per machine
-// and broadcasts it to WebSocket clients every pollInterval seconds.
-// This replaces the simulator when SIMULATOR_ENABLED=false, ensuring the
-// frontend always receives real DB data instead of synthetic values.
+// and broadcasts it to WebSocket clients every pollInterval seconds, so the
+// frontend always receives real DB data (backfill + live ingest).
 package broadcaster
 
 import (

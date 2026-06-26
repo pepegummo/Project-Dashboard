@@ -74,7 +74,7 @@ type TriggeredAlert struct {
 	Message   string  `json:"message"`
 }
 
-// EvaluateTelemetry checks alert rules — called by the simulator.
+// EvaluateTelemetry checks alert rules — called on telemetry ingest.
 func (s *Service) EvaluateTelemetry(ctx context.Context, machineID string, data map[string]interface{}) ([]TriggeredAlert, error) {
 	alertRules, err := s.repo.GetAlertsForMachines(ctx, []string{machineID})
 	if err != nil {

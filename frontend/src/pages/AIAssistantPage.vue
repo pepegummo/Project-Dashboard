@@ -15,6 +15,7 @@ import type { DashboardWidget, WidgetType, WidgetLayout, WidgetConfig } from '@/
 type CanvasCard =
   | { kind: 'preview'; id: string; result: any; args: Record<string, unknown> }
   | { kind: 'created'; id: string; summary: string; dashboardId: string }
+  | { kind: 'focus'; id: string; result: any }
 
 const dashboardStore = useDashboardStore();
 const machineStore = useMachineStore();
@@ -194,6 +195,87 @@ function updatePreviewWidget(index: number, data: any) {
   if (card) Object.assign(card.result.widgets[index], data);
 }
 
+// ── Focus preview (ephemeral single-metric answer card) ─────────────────────
+const readToolNames = new Set(['get_latest_telemetry', 'get_telemetry_trend', 'get_daily_count']);
+
+// Match a machine against a tool's machine_id token the same way the backend does:
+// id equals, or the machine NAME contains the token (e.g. "CW-01" ⊂ "Checkweigher CW-01").
+// Mirrors resolveMachineID in backend dashboard_action.go (LOWER(name) LIKE %token%).
+function machineMatches(m: { id: string; name: string }, token: string): boolean {
+  const t = token.toLowerCase();
+  return !!t && (m.id.toLowerCase() === t || m.name.toLowerCase().includes(t));
+}
+
+// Build a live PreviewWidget for the metric the user asked about, or null.
+// Text-driven: resolves machine + field from the question and the AI reply, with a
+// read tool's input only as a first preference (the model frequently answers a data
+// question without calling a tool, so we can't depend on tool metadata being present).
+function deriveFocusWidget(messages: any[], rawText: string): any | null {
+  const assistantText = (messages.find((m: any) => m.role === 'assistant')?.content ?? '').toLowerCase();
+  const hay = `${rawText} ${assistantText}`.toLowerCase();
+
+  // Machine: prefer a read tool's machine_id (substring match like the backend), else
+  // a machine whose code-like name token (e.g. "CW-01") appears in the text.
+  let machine: typeof machineStore.machines[number] | undefined;
+  for (const msg of messages) {
+    if (!readToolNames.has(msg.toolName ?? '')) continue;
+    const key = (msg.toolInput?.machine_id as string) ?? '';
+    const m = machineStore.machines.find(mm => machineMatches(mm, key));
+    if (m) { machine = m; break; }
+  }
+  if (!machine) {
+    machine = machineStore.machines.find(m =>
+      m.name && m.name.toLowerCase().split(/\s+/).some(t => /\d/.test(t) && hay.includes(t))
+    );
+  }
+  if (!machine) return null;
+
+  // Metric: prefer an explicit tool metric, else a field whose key/label appears in the text.
+  const explicit = messages
+    .find((m: any) => readToolNames.has(m.toolName ?? '') && m.toolInput?.metric)?.toolInput?.metric as string | undefined;
+  const field = explicit
+    ? machine.fields.find(f => f.key === explicit)
+    : machine.fields.find(f => hay.includes(f.key.toLowerCase()) || hay.includes(f.label.toLowerCase()));
+  if (!field) return null;
+
+  const trend = messages.some((m: any) => m.toolName === 'get_telemetry_trend') || /trend|history|กราฟ|ย้อนหลัง|เทรนด์/.test(hay);
+  const daily = messages.some((m: any) => m.toolName === 'get_daily_count') || /daily|รายวัน|ต่อวัน/.test(hay);
+  const type = trend ? 'line-chart'
+    : daily ? 'daily-count'
+    : (field.min !== undefined && field.max !== undefined) ? 'gauge' : 'kpi-card';
+
+  return {
+    type,
+    title: `${machine.name} — ${field.label}`,
+    machine: machine.name,
+    machineUuid: machine.id,
+    metric: field.key,
+    unit: field.unit ?? '',
+    ...(field.min !== undefined ? { min: field.min } : {}),
+    ...(field.max !== undefined ? { max: field.max } : {}),
+  };
+}
+
+async function addFocusToDashboard(pw: any) {
+  await dashboardStore.addWidget({
+    machineId: pw.machineUuid,
+    widgetType: pw.type,
+    title: pw.title,
+    config: {
+      field: pw.metric,
+      unit: pw.unit,
+      ...(pw.min !== undefined ? { min: pw.min } : {}),
+      ...(pw.max !== undefined ? { max: pw.max } : {}),
+    },
+    layout: { x: 0, y: 9999, w: 6, h: 4 },
+  });
+  canvasCards.value = canvasCards.value.filter(c => c.kind !== 'focus');
+}
+
+function removeFocusCard(id: string) {
+  canvasCards.value = canvasCards.value.filter(c => c.id !== id);
+}
+
 // Summarize the on-screen preview (widgets + live values) so the AI can answer
 // questions about what the user is looking at.
 function buildDashboardContext(): string {
@@ -251,9 +333,27 @@ async function sendMessage() {
 
     const messages = await api.chat(conversationId.value!, text, buildDashboardContext());
 
+    // Focus cards are ephemeral and replaced each data question — clear last turn's.
+    canvasCards.value = canvasCards.value.filter(c => c.kind !== 'focus');
+
     for (const msg of messages) {
       if (msg.role === 'assistant' && msg.content?.trim()) {
         showToast(msg.content);
+      }
+      if (msg.toolName === 'show_metric') {
+        const w = (msg.toolResult as any)?.widget;
+        if (w?.machineUuid && w.metric) {
+          // Highlight an existing live widget for this machine+metric, else show a focus card.
+          const existing = dashboardStore.widgets.find(dw =>
+            (dw.machineId === w.machineUuid || dw.machine?.id === w.machineUuid) && dw.config.field === w.metric
+          );
+          if (existing) {
+            setAiHighlight(existing.id, existing.title ?? existing.widgetType, false);
+          } else if (!hasPreview.value) {
+            canvasCards.value = canvasCards.value.filter(c => c.kind !== 'focus');
+            canvasCards.value.push({ kind: 'focus', id: uid(), result: { dashboardName: '', widgets: [w], summary: '' } });
+          }
+        }
       }
       if (msg.toolName === 'preview_dashboard') {
         const r = msg.toolResult as any;
@@ -304,34 +404,37 @@ async function sendMessage() {
       'preview_add_widget', 'preview_remove_widget', 'preview_update_widget',
       'add_widget_to_dashboard', 'remove_widget',
       'create_alert', 'manage_alert_event',
+      'show_metric', // its own loop handler owns the highlight/focus decision
     ]);
     const usedBuilderTool = messages.some(m => m.toolName && builderToolNames.has(m.toolName));
 
     if (!usedBuilderTool) {
-    // Persistent selection ring after AI responds (same style as clicking a widget)
     const liveMentioned = mentionSnapshot.filter(w => !w.id.startsWith('preview-'));
     const previewMentioned = mentionSnapshot.filter(w => w.id.startsWith('preview-'));
-    if (liveMentioned.length)    setAiHighlight(liveMentioned[0].id, liveMentioned[0].title, false);
-    if (previewMentioned.length) setAiHighlight(previewMentioned[0].id, previewMentioned[0].title, true);
 
-    // Tool-call path: no chip click → derive from what the AI read
-    if (!liveMentioned.length) {
-      const readTools = new Set(['get_latest_telemetry', 'get_telemetry_trend', 'get_daily_count']);
+    // Highlight follows what the AI actually answered about, not just the focused widget:
+    // derive from the read tools first so "tell me about reject" while Weight is focused
+    // moves the ring to reject. The focused widget is only a fallback (end of block).
+    {
       const assistantText = messages.find(m => m.role === 'assistant')?.content?.toLowerCase() ?? '';
       const previewCard = canvasCards.value.find(c => c.kind === 'preview') as any;
       for (const msg of messages) {
-        if (!readTools.has(msg.toolName ?? '')) continue;
+        if (!readToolNames.has(msg.toolName ?? '')) continue;
         const machineId = ((msg.toolInput as any)?.machine_id as string ?? '').toLowerCase();
         const metric = (msg.toolInput as any)?.metric as string | undefined;
 
-        // Live canvas
+        // Live canvas — match the machine the same substring way the backend resolves it
+        // (tool machine_id "CW-01" ⊂ name "Checkweigher CW-01"), not exact equality.
         const liveCandidates = dashboardStore.widgets.filter(dw =>
-          dw.machineId === machineId || dw.machine?.name?.toLowerCase() === machineId
+          dw.machineId === machineId || (!!dw.machine?.name && dw.machine.name.toLowerCase().includes(machineId))
         );
         if (liveCandidates.length) {
+          // No arbitrary fallback: only highlight a widget whose field the AI actually
+          // read/answered about. Otherwise leave it to the value-based text-scan below —
+          // highlighting the machine's first widget (e.g. Speed) for a status query is wrong.
           const w = metric
-            ? (liveCandidates.find(dw => dw.config.field === metric) ?? liveCandidates[0])
-            : (liveCandidates.find(dw => dw.config.field && assistantText.includes(dw.config.field.toLowerCase())) ?? liveCandidates[0]);
+            ? liveCandidates.find(dw => dw.config.field === metric)
+            : liveCandidates.find(dw => dw.config.field && assistantText.includes(dw.config.field.toLowerCase()));
           if (w) {
             const sameField = w.config.field
               ? liveCandidates.filter(dw => dw.config.field === w.config.field)
@@ -349,8 +452,8 @@ async function sendMessage() {
             .filter(({ w }) => (w.machine as string)?.toLowerCase() === machineId);
           if (previewCandidates.length) {
             const match = metric
-              ? (previewCandidates.find(({ w }) => w.metric === metric) ?? previewCandidates[0])
-              : (previewCandidates.find(({ w }) => w.metric && assistantText.includes((w.metric as string).toLowerCase())) ?? previewCandidates[0]);
+              ? previewCandidates.find(({ w }) => w.metric === metric)
+              : previewCandidates.find(({ w }) => w.metric && assistantText.includes((w.metric as string).toLowerCase()));
             if (match) {
               const sameMetric = match.w.metric
                 ? previewCandidates.filter(({ w }) => w.metric === match.w.metric)
@@ -435,6 +538,23 @@ async function sendMessage() {
           }
         }
       }
+    }
+
+    // Focused-widget fallback: user mentioned a widget but the answer gave no subject
+    // to derive (e.g. "what is this?") → honor the focused widget.
+    if (!aiSelectedIds.value.length && !aiSelectedPreviewIds.value.length) {
+      if (liveMentioned.length)    setAiHighlight(liveMentioned[0].id, liveMentioned[0].title, false);
+      if (previewMentioned.length) setAiHighlight(previewMentioned[0].id, previewMentioned[0].title, true);
+    }
+
+    // Focus preview: a data question whose metric has no live widget to highlight →
+    // show an ephemeral, live single-metric card (not persisted, user adds it manually).
+    // Text-driven (not gated on a tool firing) — the model often answers a data
+    // question straight from the injected context/history without calling a read tool.
+    if (!aiSelectedIds.value.length && !hasPreview.value) {
+      if (!machineStore.machines.length) await machineStore.fetchMachines();
+      const pw = deriveFocusWidget(messages, rawText);
+      if (pw) canvasCards.value.push({ kind: 'focus', id: uid(), result: { dashboardName: '', widgets: [pw], summary: '' } });
     }
     } // end if (!usedBuilderTool)
   } catch (e: any) {
@@ -542,6 +662,13 @@ function handleKeydown(e: KeyboardEvent) {
           @add-widget="addPreviewWidget"
           @update-widget="updatePreviewWidget"
           @mention-widget="onMentionWidget"
+        />
+        <PreviewCanvasCard
+          v-else-if="card.kind === 'focus'"
+          variant="focus"
+          :result="(card as any).result"
+          @add-to-dashboard="addFocusToDashboard"
+          @remove-widget="() => removeFocusCard(card.id)"
         />
         <CreatedCanvasCard
           v-else-if="card.kind === 'created'"

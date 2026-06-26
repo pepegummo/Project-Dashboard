@@ -51,6 +51,71 @@ func (tk *ToolKit) GetLatestTelemetry(ctx context.Context, orgID string, raw jso
 	}, nil
 }
 
+// ShowMetric resolves a machine + field to a concrete widget spec the UI renders
+// directly (no frontend guessing). Returns {"error": …} if the field doesn't exist.
+func (tk *ToolKit) ShowMetric(ctx context.Context, orgID string, raw json.RawMessage) (any, error) {
+	var args ShowMetricArgs
+	_ = json.Unmarshal(raw, &args)
+	id, ok := resolveMachineID(ctx, orgID, strings.TrimSpace(args.Machine))
+	if !ok {
+		return nil, fmt.Errorf("machine %q not found", args.Machine)
+	}
+	metric := strings.TrimSpace(args.Metric)
+	if metric == "" {
+		return nil, fmt.Errorf("metric is required")
+	}
+
+	var name, label string
+	var unit *string
+	var min, max *float64
+	err := database.Pool.QueryRow(ctx, `
+		SELECT m.name, mf.label, mf.unit, mf.min, mf.max
+		FROM machines m
+		JOIN machine_fields mf ON mf.machine_id = m.id
+		WHERE m.id = $1 AND mf.key = $2
+	`, id, metric).Scan(&name, &label, &unit, &min, &max)
+	if err != nil {
+		return map[string]any{"error": fmt.Sprintf("machine %q has no metric %q", args.Machine, metric)}, nil
+	}
+
+	wtype := "kpi-card"
+	switch args.Viz {
+	case "trend":
+		wtype = "line-chart"
+	case "gauge":
+		wtype = "gauge"
+	case "value":
+		wtype = "kpi-card"
+	default:
+		if min != nil && max != nil {
+			wtype = "gauge"
+		}
+	}
+
+	widget := map[string]any{
+		"type":        wtype,
+		"title":       fmt.Sprintf("%s — %s", name, label),
+		"machine":     name,
+		"machineUuid": id,
+		"metric":      metric,
+		"unit":        deref(unit),
+	}
+	if min != nil {
+		widget["min"] = *min
+	}
+	if max != nil {
+		widget["max"] = *max
+	}
+	return map[string]any{"widget": widget}, nil
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 // GetTelemetryTrend returns avg/min/max of a metric over a time range.
 func (tk *ToolKit) GetTelemetryTrend(ctx context.Context, orgID string, raw json.RawMessage) (any, error) {
 	var args TrendArgs
@@ -137,6 +202,11 @@ func (tk *ToolKit) AddWidget(ctx context.Context, orgID string, raw json.RawMess
 	var args AddWidgetArgs
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, fmt.Errorf("malformed arguments")
+	}
+	// Gate: this tool only writes into a dashboard the user explicitly named. If none was
+	// given, steer the model to show_metric (preview card) instead of asking which dashboard.
+	if strings.TrimSpace(args.DashboardName) == "" {
+		return map[string]any{"error": "No dashboard named. To just show a metric widget to the user, call show_metric instead. Use add_widget_to_dashboard only when the user names an existing dashboard."}, nil
 	}
 	dashID, ok := resolveDashboardID(ctx, orgID, strings.TrimSpace(args.DashboardName))
 	if !ok {
