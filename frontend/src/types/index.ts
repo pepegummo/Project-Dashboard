@@ -138,6 +138,9 @@ export interface TelemetryAggregateResult {
 export interface WidgetConfig {
   field?: string;
   timeRange?: string;
+  bucket?: string;                        // count widget: bucket size, e.g. '30m' | '1h' | '1d'
+  sku?: string;                           // count widget: filter to one SKU ('' = all SKUs)
+  status?: 'all' | 'good' | 'reject';     // count widget: piece status filter
   aggregationPeriod?: AggregationPeriod;  // 'live' = real-time; anything else = periodic avg
   color?: string;
   min?: number;

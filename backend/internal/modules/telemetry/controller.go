@@ -100,6 +100,26 @@ func (ctrl *Controller) GetTotalCount(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "data": result})
 }
 
+func (ctrl *Controller) GetCount(c *fiber.Ctx) error {
+	sku := c.Query("sku")
+	status := c.Query("status", "all")
+	bucket := c.Query("bucket", "1h")
+	points, _ := strconv.Atoi(c.Query("points", "48"))
+	result, err := ctrl.svc.GetBucketCount(c.Context(), c.Params("machineId"), sku, status, bucket, points, nil)
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"success": true, "data": result})
+}
+
+func (ctrl *Controller) GetSkus(c *fiber.Ctx) error {
+	result, err := ctrl.svc.GetMachineSkus(c.Context(), c.Params("machineId"), nil)
+	if err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"success": true, "data": result})
+}
+
 func (ctrl *Controller) Ingest(c *fiber.Ctx) error {
 	user := middleware.GetUser(c)
 	var body map[string]interface{}

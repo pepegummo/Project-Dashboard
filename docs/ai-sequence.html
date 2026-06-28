@@ -25,26 +25,27 @@
 
 <div style="max-width:1100px;margin:0 auto">
   <h1>IotVision AI — Sequence Diagram</h1>
-  <p class="subtitle">แสดงการสื่อสารระหว่าง User · Backend · Groq · Database · Model: <code>openai/gpt-oss-20b</code> (Groq prompt-cached)</p>
+  <p class="subtitle">แสดงการสื่อสารระหว่าง User · Backend · Groq · Database · Model: <code>openai/gpt-oss-120b</code> (Groq prompt-cached, <code>reasoning_format: hidden</code>)</p>
 
   <!-- ── Tool List (shared fact) ── -->
   <div class="section" style="border-color:#334155;margin-bottom:24px">
-    <h2>Tools ที่ส่งให้ AI ทุกครั้ง (15 tools)</h2>
+    <h2>Tools ที่ส่งให้ AI ทุกครั้ง (14 tools)</h2>
     <p class="note" style="color:#94a3b8">
-      <strong>READ (7):</strong> <code>get_machines</code> · <code>get_latest_telemetry</code> · <code>show_metric</code> · <code>get_telemetry_trend</code> · <code>get_active_alerts</code> · <code>get_daily_count</code> · <code>list_dashboards</code><br>
+      <strong>READ (6):</strong> <code>get_machines</code> · <code>show_metric</code> · <code>get_telemetry_trend</code> · <code>get_active_alerts</code> · <code>get_daily_count</code> · <code>list_dashboards</code><br>
       <strong>PREVIEW (4):</strong> <code>preview_dashboard</code> · <code>preview_add_widget</code> · <code>preview_remove_widget</code> · <code>preview_update_widget</code><br>
       <strong>WRITE (4):</strong> <code>add_widget_to_dashboard</code> · <code>remove_widget</code> · <code>create_alert</code> · <code>manage_alert_event</code><br>
       <br>
-      ✅ <strong>Prompt caching:</strong> backend ส่ง tools ครบ 15 ตัวทุก request แต่ prefix (system prompt + tool schemas) คงที่ → Groq cache ให้อัตโนมัติ: <strong>ลดค่า token 50% และไม่นับ rate limit</strong> (ไม่ต้องมี router/keyword)<br>
-      ⭐ <code>show_metric</code> (rule 11): ถาม/ขอ/เพิ่ม widget ของ metric ใด → AI map คำ (ภาษาใดก็ได้) → field key อังกฤษ; backend resolve machine+field → ส่ง widget spec; Frontend แสดง <strong>focus card</strong> (live, ยังไม่บันทึก — กด "Add to dashboard" เอง) หรือ highlight ถ้ามี widget นั้นอยู่แล้ว · ไม่ถามว่า "dashboard ไหน"<br>
-      ⚠ Tools filtered ตาม role เท่านั้น — admin/editor เห็นครบ 15; viewer เห็นเฉพาะ READ+PREVIEW<br>
+      ✅ <strong>Prompt caching:</strong> backend ส่ง tools ครบ 14 ตัวทุก request แต่ prefix (system prompt + tool schemas) คงที่ → Groq cache ให้อัตโนมัติ: <strong>ลดค่า token 50% และไม่นับ rate limit</strong> (ไม่ต้องมี router/keyword)<br>
+      ⭐ <code>show_metric</code> (rule 11): ถาม/ขอ/เพิ่ม widget ของ metric ใด → AI map คำ (ภาษาใดก็ได้) → field key อังกฤษ; backend resolve machine+field → ส่ง widget spec; Frontend แสดง <strong>focus card</strong> ("Live") — แก้ config/เพิ่ม widget ได้ และ persist ข้าม refresh ผ่าน <code>preview-draft</code> (เก็บ <code>kind</code> ไว้ด้วย); กด "Create Dashboard" เพื่อบันทึกจริง · หรือ highlight ถ้ามี widget นั้นอยู่แล้ว · ไม่ถามว่า "dashboard ไหน"<br>
+      ⚠ Tools filtered ตาม role เท่านั้น — admin/editor เห็นครบ 14; viewer เห็นเฉพาะ READ+PREVIEW (10 tools, ตัด WRITE 4 ตัวออก)<br>
       ⚠ <code>create_custom_dashboard</code> ไม่อยู่ใน tool list เลย — Frontend เรียกตรงผ่าน <code>POST /tools/execute</code> หลัง user กด Confirm (AI สร้าง dashboard เองไม่ได้)<br>
       ⚠ <code>add_widget_to_dashboard</code> ถ้าไม่ระบุชื่อ dashboard → backend gate ตอบกลับให้ใช้ <code>show_metric</code> แทน (กันไม่ให้ถาม "dashboard ไหน")<br>
       ⚠ Machine resolve แบบ substring: ชื่อจริง "Checkweigher CW-01" แต่ user พิมพ์ "CW-01" (ไม่ใช่ exact match)<br>
       ⚠ System prompt มี 11 rules — rule 10: ถ้ากำกวมจริง ๆ ("แก้ให้หน่อย") ถามกลับ 1 คำถาม · rule 11: เห็น/ขอ/เพิ่ม metric → <code>show_metric</code><br>
       ⚠ History ที่ส่ง Groq: last 8 messages เฉพาะ role=user/assistant เท่านั้น (tool messages ถูก strip ออก)<br>
       ⚠ Context (preview บนจอ) ถูก append ท้ายสุด หลัง history → ไม่ทำลาย cached prefix<br>
-      ⚠ Loop สูงสุด 5 รอบ (tool_calls → execute → tool_calls → …) ก่อนหยุด
+      ⚠ Loop สูงสุด 5 รอบ (tool_calls → execute → tool_calls → …) ก่อนหยุด<br>
+      ⚠ <strong>tool_choice:</strong> ถ้า FE ส่ง <code>context</code> (มี dashboard/preview บนจอ) → turn 0 บังคับ <code>tool_choice:"required"</code> กันไม่ให้ model ตอบ text ลอย ๆ; ถ้า model ตอบ text จริง Groq จะ error "Tool choice is required" → backend retry ด้วย auto (กัน 502)
     </p>
   </div>
 
@@ -63,14 +64,14 @@ sequenceDiagram
     FE->>BE: POST /chat { message, conversationId }
     BE->>DB: INSERT ai_messages (role=user)
     BE->>DB: SELECT ai_messages (last 8, user+assistant only)
-    note over BE: buildGroqTools(role)<br/>→ 15 tools (admin/editor)<br/>→ read+preview only (viewer)<br/>prefix คงที่ → Groq cache hit
-    BE->>Groq: POST /completions { messages, tools×15 }
+    note over BE: buildGroqTools(role)<br/>→ 14 tools (admin/editor)<br/>→ read+preview only (viewer, 10)<br/>prefix คงที่ → Groq cache hit
+    BE->>Groq: POST /completions { messages, tools×14 }
     Groq-->>BE: finish_reason="stop" content="Hello!"
     BE->>DB: INSERT ai_messages (role=assistant)
     BE-->>FE: { messages }
     FE-->>U: แสดงข้อความ "Hello!"
     </div>
-    <p class="note">⚠ 15 tools ถูกส่งไปด้วยแต่ model ไม่เรียกใช้ เพราะ system prompt rule 1: "Plain text for greetings — no tool call" · prefix ถูก cache ไว้แล้ว ค่า token จึงถูก (50% off)</p>
+    <p class="note">⚠ 14 tools ถูกส่งไปด้วยแต่ model ไม่เรียกใช้ เพราะ system prompt rule 1: "Plain text for greetings — no tool call" · prefix ถูก cache ไว้แล้ว ค่า token จึงถูก (50% off)</p>
   </div>
 
   <!-- ── Case 2: show_metric → focus card ── -->
@@ -88,8 +89,8 @@ sequenceDiagram
     FE->>BE: POST /chat { message, conversationId }
     BE->>DB: INSERT ai_messages (role=user)
     BE->>DB: SELECT ai_messages (last 8, user+assistant only)
-    note over BE: buildGroqTools(role) → 15 tools
-    BE->>Groq: POST /completions { messages, tools×15 }
+    note over BE: buildGroqTools(role) → 14 tools
+    BE->>Groq: POST /completions { messages, tools×14 }
 
     note over Groq: rule 11 — เห็น/ขอ metric<br/>map "speed"→field key, เลือก show_metric
     Groq-->>BE: finish_reason="tool_calls"<br/>tool: show_metric({machine:"CW-01", metric:"speed"})
@@ -110,7 +111,7 @@ sequenceDiagram
     </div>
     <p class="note">
       Groq call 2 ครั้ง — ครั้งแรกเลือก <code>show_metric</code>, ครั้งสองสรุปสั้น ๆ (callTools=nil) · loop cap: 5 รอบ<br>
-      Frontend อ่าน <code>toolResult.widget</code> ตรง ๆ — ไม่ต้องเดา machine/metric จากข้อความ · focus card เป็น ephemeral (ไม่บันทึกจนกว่าจะกด Add)<br>
+      Frontend อ่าน <code>toolResult.widget</code> ตรง ๆ — ไม่ต้องเดา machine/metric จากข้อความ · focus card ("Live") แก้/เพิ่ม widget ได้ และ persist ข้าม refresh (เก็บใน <code>preview-draft</code>) — ยังไม่เขียน DB จนกว่าจะกด "Create Dashboard"<br>
       "add weight widget" (ไม่ระบุ dashboard) เข้า flow เดียวกัน — ไม่ใช่ <code>add_widget_to_dashboard</code>
     </p>
   </div>
@@ -130,8 +131,8 @@ sequenceDiagram
     FE->>BE: POST /chat { message, conversationId }
     BE->>DB: INSERT ai_messages (role=user)
     BE->>DB: SELECT ai_messages (last 8, user+assistant only)
-    note over BE: buildGroqTools(role) → 15 tools<br/>(create_custom_dashboard ไม่อยู่ใน list)
-    BE->>Groq: POST /completions { messages, tools×15 }
+    note over BE: buildGroqTools(role) → 14 tools<br/>(create_custom_dashboard ไม่อยู่ใน list)
+    BE->>Groq: POST /completions { messages, tools×14 }
 
     note over Groq: ชื่อ CW-01 ชัดเจน (rule 2)<br/>เลือก preview_dashboard
     Groq-->>BE: finish_reason="tool_calls"<br/>tool: preview_dashboard({machine:"CW-01", template:"machine_overview"})
@@ -185,8 +186,8 @@ sequenceDiagram
 
     BE->>DB: INSERT ai_messages (role=user)
     BE->>DB: SELECT ai_messages (last 8, user+assistant only)
-    note over BE: context != "" → append system msg<br/>"Authoritative current dashboard state…"<br/>buildGroqTools(role) → 15 tools
-    BE->>Groq: POST /completions { messages + context, tools×15 }
+    note over BE: context != "" → append system msg<br/>"Authoritative current dashboard state…"<br/>buildGroqTools(role) → 14 tools<br/>turn 0: tool_choice="required" (retry→auto ถ้า model ตอบ text)
+    BE->>Groq: POST /completions { messages + context, tools×14 }
 
     note over Groq: มี preview context → เห็น widget ปัจจุบัน<br/>เลือก preview_update_widget
     Groq-->>BE: finish_reason="tool_calls"<br/>tool: preview_update_widget({widget_title:"Trend", metric:"temperature"})
@@ -227,8 +228,8 @@ sequenceDiagram
     FE->>BE: POST /chat { message, conversationId }
     BE->>DB: INSERT ai_messages (role=user)
     BE->>DB: SELECT ai_messages (last 8, user+assistant only)
-    note over BE: buildGroqTools(role) → 15 tools<br/>(cached prefix)
-    BE->>Groq: POST /completions { messages, tools×15 }
+    note over BE: buildGroqTools(role) → 14 tools<br/>(cached prefix)
+    BE->>Groq: POST /completions { messages, tools×14 }
 
     note over Groq: rule 10 — กำกวมจริง<br/>ไม่มีเครื่อง/การกระทำชัดเจน<br/>→ ไม่เรียก tool
     Groq-->>BE: finish_reason="stop"<br/>content="ต้องการแก้ไขอะไร บนเครื่อง/แดชบอร์ดใดครับ?"

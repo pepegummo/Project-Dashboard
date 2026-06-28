@@ -99,14 +99,16 @@ onMounted(async () => {
   machineStore.fetchMachines();
   try {
     const draft = await api.getPreviewDraft();
-    if (draft?.dashboardId) {
-      // ponytail: deleted dashboard 404s here → caught → AI page just shows empty.
-      dashboardStore.fetchDashboard(draft.dashboardId);
-    } else if (draft?.data?.result) {
+    if (draft?.data?.result) {
+      // A pending preview/focus card wins over auto-loading a dashboard.
       restoring.value = true;
       conversationId.value = draft.conversationId || null;
-      canvasCards.value = [{ kind: 'preview', id: uid(), result: draft.data.result, args: draft.data.args ?? {} }];
+      const kind = draft.data.kind ?? 'preview';
+      canvasCards.value = [{ kind, id: uid(), result: draft.data.result, args: draft.data.args ?? {} }];
       nextTick(() => { restoring.value = false; });
+    } else if (draft?.dashboardId) {
+      // ponytail: deleted dashboard 404s here → caught → AI page just shows empty.
+      dashboardStore.fetchDashboard(draft.dashboardId);
     }
   } catch { /* no draft / offline — start empty */ }
 });
@@ -116,9 +118,9 @@ onMounted(async () => {
 // ponytail: no debounce — add one if widget edits ever fire this in a tight stream.
 watch(canvasCards, () => {
   if (restoring.value) return;
-  const card = canvasCards.value.find(c => c.kind === 'preview') as any;
+  const card = canvasCards.value.find(c => c.kind === 'preview' || c.kind === 'focus') as any;
   if (card) {
-    api.putPreviewDraft({ conversationId: conversationId.value, data: { result: card.result, args: card.args } }).catch(() => {});
+    api.putPreviewDraft({ conversationId: conversationId.value, data: { kind: card.kind, result: card.result, args: card.args } }).catch(() => {});
   }
 }, { deep: true });
 
@@ -148,18 +150,24 @@ function onAddWidget(type: WidgetType) {
 
 async function onSaveWidget(data: { machineId?: string; widgetType: WidgetType; title?: string; config: WidgetConfig; layout: WidgetLayout }) {
   if (!editingWidget.value) return;
-  if (editingWidget.value.id) {
-    await dashboardStore.updateWidget(editingWidget.value.id, {
-      widgetType: data.widgetType,
-      machineId: data.machineId,
-      title: data.title,
-      config: data.config,
-    });
-  } else {
-    await dashboardStore.addWidget(data);
+  try {
+    if (editingWidget.value.id) {
+      await dashboardStore.updateWidget(editingWidget.value.id, {
+        widgetType: data.widgetType,
+        machineId: data.machineId,
+        title: data.title,
+        config: data.config,
+      });
+    } else {
+      await dashboardStore.addWidget(data);
+    }
+  } catch (e: any) {
+    showToast(`Error: ${e?.message ?? 'Could not save widget.'}`);
+    return;
+  } finally {
+    showConfigModal.value = false;
+    editingWidget.value = null;
   }
-  showConfigModal.value = false;
-  editingWidget.value = null;
 }
 
 function onEditWidget(widget: DashboardWidget) {
@@ -185,12 +193,12 @@ async function onSaveLayout() {
 // ── Preview card widget handlers ────────────────────────────────────────────
 
 function addPreviewWidget(widget: any) {
-  const card = canvasCards.value.find(c => c.kind === 'preview') as any;
+  const card = canvasCards.value.find(c => c.kind === 'preview' || c.kind === 'focus') as any;
   if (card) card.result.widgets.push(widget);
 }
 
 function updatePreviewWidget(index: number, data: any) {
-  const card = canvasCards.value.find(c => c.kind === 'preview') as any;
+  const card = canvasCards.value.find(c => c.kind === 'preview' || c.kind === 'focus') as any;
   if (card) Object.assign(card.result.widgets[index], data);
 }
 
@@ -711,6 +719,8 @@ function handleKeydown(e: KeyboardEvent) {
           :ai-selected-widget-ids="aiSelectedPreviewIds"
           @confirm="(name: string) => confirmFocusCreate(card, name)"
           @remove-widget="() => removeFocusCard(card.id)"
+          @add-widget="addPreviewWidget"
+          @update-widget="updatePreviewWidget"
           @mention-widget="onMentionWidget"
         />
         <CreatedCanvasCard

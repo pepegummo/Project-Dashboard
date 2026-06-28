@@ -347,6 +347,13 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 			if strings.Contains(err.Error(), "Tool choice is none") {
 				resp, err = callGroq(msgs, tools, "")
 			}
+			// We forced tool_choice:"required" on turn 0 (dashboard context present),
+			// but the model chose to answer in plain text. That's a valid answer —
+			// retry with auto so it can.
+			// ponytail: required is an optimization, not a hard constraint.
+			if err != nil && strings.Contains(err.Error(), "Tool choice is required") {
+				resp, err = callGroq(msgs, callTools, "")
+			}
 		}
 		if err != nil {
 			return middleware.NewAppError(502, "AI_ERROR", fmt.Sprintf("Groq API error: %v", err))

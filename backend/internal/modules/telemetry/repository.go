@@ -237,6 +237,89 @@ func (r *Repository) GetHourlyCount(ctx context.Context, machineID string, hours
 	return result, nil
 }
 
+type BucketCount struct {
+	Bucket time.Time `json:"bucket"`
+	Count  float64   `json:"count"`
+}
+
+// GetSkuCount sums per-minute piece counts (good/reject) per time bucket, optionally filtered by sku.
+// `interval` is pre-validated by the service (string-interpolated). The good/reject field names are
+// constant and `sku` is passed as a bind param ($4) — both injection-safe.
+func (r *Repository) GetSkuCount(ctx context.Context, machineID, sku, status, interval string, from, to time.Time) ([]BucketCount, error) {
+	var expr string
+	switch status {
+	case "good":
+		expr = "(data->>'good')::float"
+	case "reject":
+		expr = "(data->>'reject')::float"
+	default: // "all"
+		expr = "COALESCE((data->>'good')::float, 0) + COALESCE((data->>'reject')::float, 0)"
+	}
+
+	args := []interface{}{machineID, from, to}
+	skuFilter := ""
+	if sku != "" {
+		args = append(args, sku)
+		skuFilter = "  AND data->>'sku' = $4"
+	}
+
+	query := fmt.Sprintf(`
+		SELECT
+			time_bucket('%s'::interval, timestamp) AS bucket,
+			COALESCE(SUM(%s), 0)                    AS count
+		FROM telemetry_raw
+		WHERE machine_id = $1
+		  AND timestamp >= $2
+		  AND timestamp <= $3
+		  AND data ? 'good'
+		%s
+		GROUP BY bucket
+		ORDER BY bucket ASC
+	`, interval, expr, skuFilter)
+
+	rows, err := database.Pool.Query(ctx, query, args...)
+	if err != nil {
+		return []BucketCount{}, nil
+	}
+	defer rows.Close()
+
+	var result []BucketCount
+	for rows.Next() {
+		var b BucketCount
+		if err := rows.Scan(&b.Bucket, &b.Count); err != nil {
+			continue
+		}
+		result = append(result, b)
+	}
+	return result, nil
+}
+
+// GetMachineSkus returns the distinct sku values seen for a machine since `from`.
+func (r *Repository) GetMachineSkus(ctx context.Context, machineID string, from time.Time) ([]string, error) {
+	rows, err := database.Pool.Query(ctx, `
+		SELECT DISTINCT data->>'sku' AS sku
+		FROM telemetry_raw
+		WHERE machine_id = $1 AND timestamp >= $2 AND data ? 'sku'
+		ORDER BY sku
+	`, machineID, from)
+	if err != nil {
+		return []string{}, nil
+	}
+	defer rows.Close()
+
+	skus := []string{}
+	for rows.Next() {
+		var s *string
+		if err := rows.Scan(&s); err != nil {
+			continue
+		}
+		if s != nil && *s != "" {
+			skus = append(skus, *s)
+		}
+	}
+	return skus, nil
+}
+
 func (r *Repository) GetTotalCount(ctx context.Context, machineID string) (*TotalCount, error) {
 	row := database.Pool.QueryRow(ctx, `
 		SELECT COUNT(*) AS total, MIN(timestamp) AS since

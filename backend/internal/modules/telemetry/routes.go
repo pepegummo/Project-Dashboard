@@ -16,6 +16,8 @@ func RegisterRoutes(router fiber.Router, broadcaster Broadcaster, alertEval Aler
 	router.Get("/:machineId/daily-count", ctrl.GetDailyCount)
 	router.Get("/:machineId/hourly-count", ctrl.GetHourlyCount)
 	router.Get("/:machineId/total-count", ctrl.GetTotalCount)
+	router.Get("/:machineId/count", ctrl.GetCount)
+	router.Get("/:machineId/skus", ctrl.GetSkus)
 
 	// Protected endpoints
 	router.Get("/:machineId/aggregate", middleware.Authenticate, ctrl.GetAggregate)

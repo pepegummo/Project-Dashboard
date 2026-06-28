@@ -108,20 +108,26 @@ async function onAddWidget(type: WidgetType) {
 
 async function onSaveWidget(widget: { machineId?: string; widgetType: WidgetType; title?: string; config: WidgetConfig; layout: WidgetLayout }) {
   if (!editingWidget.value) return;
-  if (editingWidget.value.id) {
-    // Update existing
-    await dashboardStore.updateWidget(editingWidget.value.id, {
-      widgetType: widget.widgetType,
-      machineId: widget.machineId,
-      title: widget.title,
-      config: widget.config,
-    });
-  } else {
-    // Add new
-    await dashboardStore.addWidget(widget);
+  try {
+    if (editingWidget.value.id) {
+      // Update existing
+      await dashboardStore.updateWidget(editingWidget.value.id, {
+        widgetType: widget.widgetType,
+        machineId: widget.machineId,
+        title: widget.title,
+        config: widget.config,
+      });
+    } else {
+      // Add new
+      await dashboardStore.addWidget(widget);
+    }
+  } catch (e: any) {
+    toast.show(e?.message ?? 'Could not save widget', 'error');
+    return;
+  } finally {
+    showConfigModal.value = false;
+    editingWidget.value = null;
   }
-  showConfigModal.value = false;
-  editingWidget.value = null;
 }
 
 function onEditWidget(widget: DashboardWidget) {

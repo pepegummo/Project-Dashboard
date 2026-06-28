@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
 import { X, Save } from 'lucide-vue-next';
+import { api } from '@/services/api.service';
 import type { DashboardWidget, Machine, WidgetType, WidgetLayout, WidgetConfig } from '@/types';
 
 const props = defineProps<{
@@ -20,7 +21,7 @@ const ALL_WIDGET_TYPES: { value: WidgetType; label: string }[] = [
   { value: 'status-card', label: 'Status Card' },
   { value: 'table',       label: 'Data Table' },
   { value: 'alarm-panel', label: 'Alarm Panel' },
-  { value: 'daily-count', label: 'Daily Count' },
+  { value: 'daily-count', label: 'Count' },
 ];
 
 const title = ref(props.widget.title ?? '');
@@ -31,15 +32,36 @@ const color = ref((props.widget.config?.color as string) ?? '#3b82f6');
 const min = ref<number>((props.widget.config?.min as number) ?? 0);
 const max = ref<number>((props.widget.config?.max as number) ?? 100);
 
+// Count widget: bucket is stored as '<n><m|h|d>' (e.g. '30m'); split into value + unit for the form.
+const _bucketMatch = /^(\d+)(m|h|d)$/.exec((props.widget.config?.bucket as string) ?? '');
+const bucketValue = ref<number>(_bucketMatch ? Number(_bucketMatch[1]) : 1);
+const bucketUnit  = ref<'m' | 'h' | 'd'>(_bucketMatch ? (_bucketMatch[2] as 'm' | 'h' | 'd') : 'h');
+
+// Count widget: SKU + status filters. SKU options are fetched from the machine's recent data.
+const sku = ref<string>((props.widget.config?.sku as string) ?? '');
+const status = ref<'all' | 'good' | 'reject'>((props.widget.config?.status as 'all' | 'good' | 'reject') ?? 'all');
+const skuOptions = ref<string[]>([]);
+const statusOptions: Array<'all' | 'good' | 'reject'> = ['all', 'good', 'reject'];
+
 const selectedMachine = computed(() => props.machines.find(m => m.id === selectedMachineId.value));
 const availableFields = computed(() => selectedMachine.value?.fields ?? []);
 
-watch(() => selectedMachineId.value, () => { selectedField.value = ''; });
+watch(() => selectedMachineId.value, () => { selectedField.value = ''; sku.value = ''; });
 watch(selectedWidgetType, () => { selectedField.value = ''; });
 
 const needsMachine = (type: WidgetType) => ['line-chart', 'gauge', 'kpi-card', 'status-card', 'table', 'daily-count', 'alarm-panel'].includes(type);
 const needsField   = (type: WidgetType) => ['line-chart', 'gauge', 'kpi-card'].includes(type);
 const needsMinMax  = (type: WidgetType) => type === 'gauge';
+const needsBucket  = (type: WidgetType) => type === 'daily-count';
+const needsSku     = (type: WidgetType) => type === 'daily-count';
+
+// Load the machine's distinct SKUs for the Count widget's dropdown.
+async function loadSkus() {
+  skuOptions.value = [];
+  if (!needsSku(selectedWidgetType.value) || !selectedMachineId.value) return;
+  try { skuOptions.value = await api.getMachineSkus(selectedMachineId.value); } catch { /* ignore */ }
+}
+watch([selectedMachineId, selectedWidgetType], loadSkus, { immediate: true });
 
 function save() {
   const config: WidgetConfig = {};
@@ -50,6 +72,13 @@ function save() {
     config.max = max.value;
     const field = availableFields.value.find(f => f.key === selectedField.value);
     if (field?.unit) config.unit = field.unit;
+  }
+  if (needsBucket(selectedWidgetType.value)) {
+    config.bucket = `${Math.max(1, Math.floor(bucketValue.value || 1))}${bucketUnit.value}`;
+  }
+  if (needsSku(selectedWidgetType.value)) {
+    if (sku.value) config.sku = sku.value;
+    config.status = status.value;
   }
 
   emit('save', {
@@ -113,6 +142,48 @@ function save() {
                 {{ f.label }} ({{ f.unit ?? 'no unit' }})
               </option>
             </select>
+          </div>
+
+          <!-- SKU + status (Count widget) -->
+          <div v-if="needsSku(selectedWidgetType) && selectedMachineId" class="space-y-3">
+            <div>
+              <label class="label">SKU</label>
+              <select v-model="sku" class="input">
+                <option value="">All SKUs</option>
+                <option v-for="s in skuOptions" :key="s" :value="s">{{ s }}</option>
+              </select>
+            </div>
+            <div>
+              <label class="label">Count</label>
+              <div class="flex gap-2">
+                <button
+                  v-for="opt in statusOptions"
+                  :key="opt"
+                  type="button"
+                  class="flex-1 px-2 py-1.5 rounded text-xs font-medium border capitalize transition-colors"
+                  :class="status === opt
+                    ? 'bg-blue-600 text-white border-blue-500'
+                    : 'bg-surface-300 text-gray-400 border-gray-700 hover:text-gray-200'"
+                  @click="status = opt"
+                >{{ opt }}</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Count bucket (Count widget) -->
+          <div v-if="needsBucket(selectedWidgetType)">
+            <label class="label">Count Bucket</label>
+            <div class="flex gap-2">
+              <input v-model.number="bucketValue" type="number" min="1" max="1000" class="input w-24" />
+              <select v-model="bucketUnit" class="input flex-1">
+                <option value="m">minutes</option>
+                <option value="h">hours</option>
+                <option value="d">days</option>
+              </select>
+            </div>
+            <p class="text-[11px] text-gray-500 mt-1">
+              Counts pieces per bucket (e.g. pcs per 30 minutes) for the selected SKU and status.
+            </p>
           </div>
 
           <!-- Min / Max (gauge) -->

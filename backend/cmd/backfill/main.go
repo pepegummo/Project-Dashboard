@@ -421,6 +421,26 @@ func main() {
 	}, rowsPerMachine)
 	var vcInspected, vcPassed, vcFailed int
 
+	// ── SKU + per-minute good/reject piece counts ─────────────────────────────
+	const skuRunMins = 360 // switch the active SKU roughly every 6 hours
+	cwSkus := []string{"CW-1001", "CW-1002", "CW-1003"}
+	tsSkus := []string{"TS-2001", "TS-2002"}
+	cbSkus := []string{"CB-3001", "CB-3002", "CB-3003"}
+	vcSkus := []string{"VC-4001", "VC-4002"}
+	pickSku := func(skus []string, tick int) string { return skus[(tick/skuRunMins)%len(skus)] }
+	// pieceCount splits a minute's output (~0.5x–1.5x of base pcs/min) into good + reject (~1.5–4.5%).
+	pieceCount := func(base float64) (int, int) {
+		total := int(math.Round(base*0.5 + rand.Float64()*base))
+		if total < 0 {
+			total = 0
+		}
+		reject := int(math.Round(float64(total) * 0.03 * (0.5 + rand.Float64())))
+		if reject > total {
+			reject = total
+		}
+		return total - reject, reject
+	}
+
 	// ── Machine definitions ───────────────────────────────────────────────────
 	type machineDef struct {
 		id       string
@@ -438,12 +458,17 @@ func main() {
 				if rejects > 0 {
 					statusCode = 1
 				}
+				throughput := cwThroughput.next(tick)
+				good, reject := pieceCount(throughput)
 				return map[string]interface{}{
 					"weight":      cwWeight.next(tick),
 					"speed":       cwSpeed.next(tick),
-					"throughput":  cwThroughput.next(tick),
+					"throughput":  throughput,
 					"rejects":     rejects,
 					"status_code": statusCode,
+					"sku":         pickSku(cwSkus, tick),
+					"good":        good,
+					"reject":      reject,
 				}
 			},
 		},
@@ -451,10 +476,14 @@ func main() {
 			id:   "00000000-0000-0000-0000-000000000006",
 			name: "Temp Sensor TS-01",
 			generate: func(tick int) map[string]interface{} {
+				good, reject := pieceCount(12)
 				return map[string]interface{}{
 					"temp":      tsTemp.next(tick),
 					"humidity":  tsHumidity.next(tick),
 					"dew_point": tsDewPoint.next(tick),
+					"sku":       pickSku(tsSkus, tick),
+					"good":      good,
+					"reject":    reject,
 				}
 			},
 		},
@@ -462,11 +491,15 @@ func main() {
 			id:   "00000000-0000-0000-0000-000000000007",
 			name: "Conveyor Belt CB-01",
 			generate: func(tick int) map[string]interface{} {
+				good, reject := pieceCount(20)
 				return map[string]interface{}{
 					"speed":     cbSpeed.next(tick),
 					"load":      cbLoad.next(tick),
 					"rpm":       cbRPM.next(tick),
 					"vibration": cbVibration.next(tick),
+					"sku":       pickSku(cbSkus, tick),
+					"good":      good,
+					"reject":    reject,
 				}
 			},
 		},
@@ -490,6 +523,9 @@ func main() {
 					"inspected":   vcInspected,
 					"passed":      vcPassed,
 					"failed":      vcFailed,
+					"sku":         pickSku(vcSkus, tick),
+					"good":        newInspected - newFailed,
+					"reject":      newFailed,
 				}
 			},
 		},

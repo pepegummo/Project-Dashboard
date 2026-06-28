@@ -178,6 +178,17 @@ func (a *DashboardAction) Handle(ctx context.Context, orgID, userID string, rawA
 					cfg["liveMode"] = true
 				}
 			}
+			if pw.Type == "daily-count" {
+				if pw.Bucket != "" {
+					cfg["bucket"] = pw.Bucket
+				}
+				if pw.Sku != "" {
+					cfg["sku"] = pw.Sku
+				}
+				if pw.Status != "" {
+					cfg["status"] = pw.Status
+				}
+			}
 			cfgJSON, _ := json.Marshal(cfg)
 			mid := pw.MachineUUID
 			widget := dashboards.Widget{

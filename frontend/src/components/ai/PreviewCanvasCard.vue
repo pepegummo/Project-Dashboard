@@ -11,6 +11,7 @@ interface PreviewWidget {
   type: string; title: string; machine: string; machineUuid?: string;
   metric: string; unit: string; min?: number; max?: number;
   startDateTime?: string; endDateTime?: string;
+  bucket?: string; sku?: string; status?: 'all' | 'good' | 'reject';
 }
 
 const props = withDefaults(defineProps<{
@@ -74,6 +75,9 @@ const previewWidgets = computed<DashboardWidget[]>(() =>
         ...(w.max !== undefined ? { max: w.max } : {}),
         ...(w.startDateTime ? { startDateTime: w.startDateTime } : {}),
         ...(w.endDateTime ? { endDateTime: w.endDateTime } : {}),
+        ...(w.bucket ? { bucket: w.bucket } : {}),
+        ...(w.sku ? { sku: w.sku } : {}),
+        ...(w.status ? { status: w.status } : {}),
       },
       machineId: w.machineUuid || undefined,
       machine: w.machine ? { id: w.machineUuid || '', name: w.machine, type: 'sensor' as any, fields: [] } : undefined,
@@ -156,6 +160,14 @@ function onSaveWidget(data: { machineId?: string; widgetType: WidgetType; title?
     ...(data.config.startDateTime ? { startDateTime: data.config.startDateTime as string } : {}),
     ...(data.config.endDateTime ? { endDateTime: data.config.endDateTime as string } : {}),
   };
+
+  // Count widget: set sku/status/bucket explicitly so Object.assign overwrites prior values
+  // (e.g. switching a SKU back to "All SKUs" must clear it).
+  if (data.widgetType === 'daily-count') {
+    pw.bucket = (data.config.bucket as string) ?? '';
+    pw.sku = (data.config.sku as string) ?? '';
+    pw.status = (data.config.status as 'all' | 'good' | 'reject') ?? 'all';
+  }
 
   if (editingPreviewIdx.value === -1) {
     emit('add-widget', pw);

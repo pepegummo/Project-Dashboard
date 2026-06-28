@@ -64,7 +64,7 @@ export const useDashboardStore = defineStore('dashboards', () => {
     layout: WidgetLayout;
     config: WidgetConfig;
   }) {
-    if (!currentDashboard.value) return;
+    if (!currentDashboard.value) throw new Error('No dashboard loaded');
     const widget = await api.addWidget(currentDashboard.value.id, payload);
     if (!currentDashboard.value.widgets) currentDashboard.value.widgets = [];
     currentDashboard.value.widgets.push(widget);

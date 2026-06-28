@@ -180,6 +180,31 @@ class ApiService {
     return data.data;
   }
 
+  // Count pieces per time bucket, optionally filtered by SKU and good/reject status. bucket = '<n><m|h|d>'.
+  async getTelemetryCount(
+    machineId: string,
+    bucket: string,
+    opts: { sku?: string; status?: 'all' | 'good' | 'reject'; points?: number } = {},
+  ) {
+    const params: Record<string, string | number> = { bucket, points: opts.points ?? 48 };
+    if (opts.sku) params.sku = opts.sku;
+    if (opts.status) params.status = opts.status;
+    const { data } = await this.client.get<ApiResponse<{
+      machineId: string;
+      sku: string;
+      status: string;
+      bucket: string;
+      data: Array<{ bucket: string; count: number }>;
+    }>>(`/telemetry/${machineId}/count`, { params });
+    return data.data;
+  }
+
+  // Distinct SKU values seen for a machine (last 30 days) — populates the Count widget's SKU dropdown.
+  async getMachineSkus(machineId: string) {
+    const { data } = await this.client.get<ApiResponse<string[]>>(`/telemetry/${machineId}/skus`);
+    return data.data;
+  }
+
   async getMultiLatestTelemetry(machineIds: string[]) {
     const { data } = await this.client.get<ApiResponse<Record<string, TelemetrySnapshot>>>('/telemetry/latest', {
       params: { ids: machineIds.join(',') },

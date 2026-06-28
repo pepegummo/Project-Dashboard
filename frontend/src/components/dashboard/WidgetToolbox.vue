@@ -50,8 +50,8 @@ const widgetTypes: Array<{ type: WidgetType; label: string; description: string;
   },
   {
     type: 'daily-count',
-    label: 'Daily Count',
-    description: 'Readings per day — 7 / 14 / 30 day view',
+    label: 'Count',
+    description: 'Sum a field per time bucket — minute / hour / day',
     icon: BarChart2,
     color: 'from-sky-500/20 to-sky-600/10 border-sky-500/30',
   },

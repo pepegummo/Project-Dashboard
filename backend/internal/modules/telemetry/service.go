@@ -2,8 +2,11 @@ package telemetry
 
 import (
 	"context"
+	"fmt"
 	"iot-dashboard/internal/middleware"
 	"iot-dashboard/internal/modules/machines"
+	"regexp"
+	"strconv"
 	"time"
 )
 
@@ -181,6 +184,89 @@ func (s *Service) GetHourlyCount(ctx context.Context, machineID string, hours in
 		return nil, err
 	}
 	return map[string]interface{}{"machineId": machineID, "hours": hours, "data": data}, nil
+}
+
+// bucketRe keeps the client-supplied bucket string out of the SQL unless it matches a strict shape —
+// the count query interpolates the interval literal rather than binding it.
+var bucketRe = regexp.MustCompile(`^(\d{1,4})(m|h|d)$`)
+
+// normalizeStatus validates the count status filter ("" defaults to "all").
+func normalizeStatus(s string) (string, error) {
+	switch s {
+	case "", "all":
+		return "all", nil
+	case "good", "reject":
+		return s, nil
+	default:
+		return "", middleware.NewAppError(400, "VALIDATION_ERROR", "Invalid status — use all, good, or reject")
+	}
+}
+
+// parseBucket converts "30m" / "2h" / "1d" into a safe Postgres interval string and its duration.
+// Injection-safe: the number is a validated int and the unit is from a fixed whitelist, so the
+// result never carries arbitrary client text.
+func parseBucket(s string) (interval string, every time.Duration, err error) {
+	m := bucketRe.FindStringSubmatch(s)
+	if m == nil {
+		return "", 0, middleware.NewAppError(400, "VALIDATION_ERROR", "Invalid bucket — use <number><m|h|d>, e.g. 30m, 2h, 1d")
+	}
+	n, _ := strconv.Atoi(m[1])
+	if n < 1 {
+		return "", 0, middleware.NewAppError(400, "VALIDATION_ERROR", "Bucket number must be >= 1")
+	}
+	switch m[2] {
+	case "m":
+		return fmt.Sprintf("%d minutes", n), time.Duration(n) * time.Minute, nil
+	case "h":
+		return fmt.Sprintf("%d hours", n), time.Duration(n) * time.Hour, nil
+	default: // "d"
+		return fmt.Sprintf("%d days", n), time.Duration(n) * 24 * time.Hour, nil
+	}
+}
+
+func (s *Service) GetBucketCount(ctx context.Context, machineID, sku, status, bucket string, points int, orgID *string) (map[string]interface{}, error) {
+	if orgID != nil {
+		if err := s.requireMachineInOrg(ctx, machineID, *orgID); err != nil {
+			return nil, err
+		}
+	}
+	status, err := normalizeStatus(status)
+	if err != nil {
+		return nil, err
+	}
+	if len(sku) > 64 {
+		return nil, middleware.NewAppError(400, "VALIDATION_ERROR", "sku too long")
+	}
+	interval, every, err := parseBucket(bucket)
+	if err != nil {
+		return nil, err
+	}
+	if points < 1 {
+		points = 48
+	}
+	if points > 500 {
+		points = 500
+	}
+	to := time.Now()
+	from := to.Add(-every * time.Duration(points))
+	data, err := s.repo.GetSkuCount(ctx, machineID, sku, status, interval, from, to)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"machineId": machineID, "sku": sku, "status": status, "bucket": bucket,
+		"from": from, "to": to, "data": data,
+	}, nil
+}
+
+func (s *Service) GetMachineSkus(ctx context.Context, machineID string, orgID *string) ([]string, error) {
+	if orgID != nil {
+		if err := s.requireMachineInOrg(ctx, machineID, *orgID); err != nil {
+			return nil, err
+		}
+	}
+	from := time.Now().AddDate(0, 0, -30)
+	return s.repo.GetMachineSkus(ctx, machineID, from)
 }
 
 func (s *Service) GetTotalCount(ctx context.Context, machineID string, orgID *string) (*TotalCount, error) {

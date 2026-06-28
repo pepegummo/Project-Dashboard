@@ -31,44 +31,45 @@ const props = defineProps<{
 const machineId = computed(() => props.widget.machineId ?? "");
 const machineName = computed(() => props.widget.machine?.name ?? "");
 
-// User-selectable day range (from config default or 7)
-const DAY_OPTIONS = [7, 14, 30] as const;
-type DayOption = (typeof DAY_OPTIONS)[number];
+// SKU + status filter for piece counting (empty sku = all SKUs).
+const skuFilter = computed(() => (props.widget.config?.sku as string) || "");
+const statusFilter = computed(
+  () => (props.widget.config?.status as "all" | "good" | "reject") || "all",
+);
 
-const selectedDays = ref<DayOption>(
-  (props.widget.config?.days as DayOption) ?? 7,
+// User-selectable bucket size. Presets act as quick toggles; a custom config value (e.g. '7m')
+// is shown as an extra chip alongside the presets.
+const BUCKET_PRESETS = ["1m", "5m", "15m", "30m", "1h", "1d"];
+const POINTS = 48; // number of recent buckets to fetch
+const configBucket = (props.widget.config?.bucket as string) || "";
+const selectedBucket = ref<string>(configBucket || "1h");
+const bucketChips = computed(() =>
+  configBucket && !BUCKET_PRESETS.includes(configBucket)
+    ? [configBucket, ...BUCKET_PRESETS]
+    : BUCKET_PRESETS,
 );
 
 // ── Data fetching ─────────────────────────────────────────────────────────────
-interface DayPoint {
-  date: string;
+interface BucketPoint {
+  bucket: string;
   count: number;
 }
-const rows = ref<DayPoint[]>([]);
+const rows = ref<BucketPoint[]>([]);
 const loading = ref(false);
 const error = ref<string | null>(null);
-const allTimeTotal = ref<number | null>(null);
-const allTimeSince = ref<string | null>(null);
 
 async function load() {
   if (!machineId.value) return;
-  loading.value = true;
+  // Spinner only on the first load — the 60s refetch should be silent.
+  if (!rows.value.length) loading.value = true;
   error.value = null;
   try {
-    const [rangeResult, totalResult, latestSnap] = await Promise.all([
-      api.getTelemetryDailyCount(machineId.value, selectedDays.value),
-      api.getTotalCount(machineId.value),
-      api.getLatestTelemetry(machineId.value),
-    ]);
-    rows.value = (rangeResult?.data ?? []).map((r) => ({
-      date: r.date,
-      count: r.count,
-    }));
-    allTimeTotal.value = totalResult.total;
-    allTimeSince.value = totalResult.since;
-    // Seed the timestamp guard so the first WS broadcast doesn't double-count
-    // the latest row already included in the daily-count REST response.
-    if ((latestSnap as any)?.timestamp) lastDailyTs.value = (latestSnap as any).timestamp;
+    const res = await api.getTelemetryCount(machineId.value, selectedBucket.value, {
+      sku: skuFilter.value,
+      status: statusFilter.value,
+      points: POINTS,
+    });
+    rows.value = (res?.data ?? []).map((r) => ({ bucket: r.bucket, count: r.count }));
   } catch (e) {
     error.value = (e as Error).message;
   } finally {
@@ -76,35 +77,18 @@ async function load() {
   }
 }
 
-let offDailyTelemetry: (() => void) | null = null;
-const lastDailyTs = ref('');
+// Refresh the buckets periodically. A WS per-row increment is dropped here — for bucket sums a
+// quiet 60s refetch is simpler and correct, and the live view below still gives a real-time feel.
+let refetchTimer: ReturnType<typeof setInterval> | null = null;
 
 onMounted(async () => {
-  // In LED mode LedView owns all data fetching and WS subscriptions.
+  // In LED mode LedView owns all data fetching.
   if (props.ledMode) return;
   await load();
-  if (machineId.value) {
-    wsService.subscribe([machineId.value]);
-    offDailyTelemetry = wsService.onTelemetry(machineId.value, (payload) => {
-      // Only increment when a genuinely new DB row arrives (1-min resolution).
-      // The broadcaster re-sends the same row every 30s, so guard by timestamp.
-      if (payload.timestamp <= lastDailyTs.value) return;
-      lastDailyTs.value = payload.timestamp;
-      // Use the data's own timestamp for the day bucket — same source as DB time_bucket.
-      const dayIso = payload.timestamp.slice(0, 10);
-      const dayRow = rows.value.find(r => r.date.slice(0, 10) === dayIso);
-      if (dayRow) {
-        dayRow.count++;
-      } else {
-        rows.value.push({ date: payload.timestamp, count: 1 });
-        if (rows.value.length > selectedDays.value) rows.value.shift();
-      }
-      if (allTimeTotal.value !== null) allTimeTotal.value++;
-    });
-  }
+  refetchTimer = setInterval(load, 60_000);
 });
 
-watch(selectedDays, load);
+watch([selectedBucket, skuFilter, statusFilter], load);
 
 // ── Live mode — 30-minute rolling window ─────────────────────────────────────
 const liveMode = ref(false);
@@ -189,22 +173,20 @@ watch(liveMode, (isLive) => {
   else exitLive();
 });
 onUnmounted(() => {
-  offDailyTelemetry?.();
-  if (machineId.value && !liveMode.value) wsService.unsubscribe([machineId.value]);
+  if (refetchTimer) clearInterval(refetchTimer);
   exitLive();
   resizeObserver?.disconnect();
 });
 
-// ── Sample data (Adjusted to match 8.9k total, 1.3k avg, 1.8k peak) ───────────
+// ── Sample data — shown only when a configured widget has no rows yet ─────────
 const SAMPLE_COUNTS = [1200, 1300, 1400, 1800, 1100, 1200, 900];
 
-const mockRows = computed<DayPoint[]>(() => {
-  const today = new Date("2026-05-29T00:00:00Z"); // Fixed to match the design context
-  return SAMPLE_COUNTS.map((count, i) => {
-    const d = new Date(today);
-    d.setDate(today.getDate() - (SAMPLE_COUNTS.length - 1 - i));
-    return { date: d.toISOString(), count };
-  });
+const mockRows = computed<BucketPoint[]>(() => {
+  const now = Date.now();
+  return SAMPLE_COUNTS.map((count, i) => ({
+    bucket: new Date(now - (SAMPLE_COUNTS.length - 1 - i) * 3_600_000).toISOString(),
+    count,
+  }));
 });
 
 const isMockData = computed(() => !loading.value && rows.value.length === 0);
@@ -212,48 +194,28 @@ const displayRows = computed(() =>
   isMockData.value ? mockRows.value : rows.value,
 );
 
-// ── Cumulative Calculation ────────────────────────────────────────────────────
-const cumulativeRows = computed(() => {
-  let runningTotal = 0;
-  return displayRows.value.map((r) => {
-    runningTotal += r.count;
-    return {
-      date: r.date,
-      dailyCount: r.count,
-      cumulative: runningTotal,
-    };
-  });
-});
-
-// ── Derived stats ─────────────────────────────────────────────────────────────
+// ── Derived stats (per bucket) ────────────────────────────────────────────────
 const totalCount = computed(() =>
-  cumulativeRows.value.length
-    ? cumulativeRows.value[cumulativeRows.value.length - 1].cumulative
-    : 0,
+  displayRows.value.reduce((s, r) => s + r.count, 0),
 );
-const avgPerDay = computed(() =>
+const avgPerBucket = computed(() =>
   displayRows.value.length
     ? Math.round(totalCount.value / displayRows.value.length)
     : 0,
 );
-const peakDay = computed(() => {
+const peakBucket = computed(() => {
   if (!displayRows.value.length) return null;
   return displayRows.value.reduce((a, b) => (a.count >= b.count ? a : b));
 });
 
 // ── Format helpers ────────────────────────────────────────────────────────────
-function fmtDate(iso: string) {
+// Day buckets read as a date; sub-day buckets read as a clock time.
+function fmtBucketLabel(iso: string) {
   const d = new Date(iso);
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
-
-function fmtSince(iso: string | null) {
-  if (!iso) return "";
-  return new Date(iso).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
+  if (selectedBucket.value.endsWith("d")) {
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  }
+  return d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 function fmtCount(n: number) {
@@ -261,7 +223,7 @@ function fmtCount(n: number) {
     ? `${(n / 1_000_000).toFixed(1)}M`
     : n >= 1_000
       ? `${(n / 1_000).toFixed(1)}k`
-      : String(n);
+      : String(Math.round(n * 10) / 10);
 }
 
 // ── LED mode — 8-hour display ─────────────────────────────────────────────────
@@ -323,15 +285,14 @@ function hourBarPct(count: number): number {
   return Math.max(0.05, count / maxHourly.value);
 }
 
-// ── ECharts option (Cumulative Area Chart) ────────────────────────────────────
+// ── ECharts option (per-bucket bar chart) ─────────────────────────────────────
 const option = computed<EChartsOption>(() => {
-  const labels = cumulativeRows.value.map((r) => fmtDate(r.date));
-  const cumulativeData = cumulativeRows.value.map((r) => r.cumulative);
-  const finalValue = cumulativeData[cumulativeData.length - 1] || 0;
+  const labels = displayRows.value.map((r) => fmtBucketLabel(r.bucket));
+  const data = displayRows.value.map((r) => r.count);
 
   return {
     backgroundColor: "transparent",
-    grid: { left: 60, right: 40, top: 24, bottom: 28, containLabel: false },
+    grid: { left: 50, right: 20, top: 22, bottom: 28, containLabel: false },
 
     xAxis: {
       type: "category",
@@ -340,20 +301,17 @@ const option = computed<EChartsOption>(() => {
         color: "#6b7280",
         fontSize: 9,
         interval: "auto",
-        rotate: labels.length > 14 ? 30 : 0,
+        rotate: labels.length > 16 ? 30 : 0,
       },
       axisLine: { lineStyle: { color: "#374151" } },
       splitLine: { show: false },
     },
 
     yAxis: {
-      name: "Cumulative Production (Units)",
+      name: `Units per ${selectedBucket.value}`,
       nameLocation: "middle",
-      nameGap: 40,
-      nameTextStyle: {
-        color: "#9ca3af",
-        fontSize: 10,
-      },
+      nameGap: 38,
+      nameTextStyle: { color: "#9ca3af", fontSize: 10 },
       type: "value",
       axisLabel: {
         color: "#6b7280",
@@ -371,42 +329,20 @@ const option = computed<EChartsOption>(() => {
       textStyle: { color: "#e5e7eb", fontSize: 12 },
       formatter: (params: any) => {
         const p = Array.isArray(params) ? params[0] : params;
-        const dataIndex = p.dataIndex;
-        const dailyVal = cumulativeRows.value[dataIndex].dailyCount;
         return `<div style="font-family:monospace;line-height:1.6">
           ${p.name}<br/>
-          Cumulative: <b style="color:#60a5fa">${fmtCount(p.value as number)}</b><br/>
-          Daily Output: <b>${dailyVal.toLocaleString()}</b>
+          <b style="color:#60a5fa">${(p.value as number).toLocaleString()}</b> units
         </div>`;
       },
     },
 
     series: [
       {
-        type: "line",
-        data: cumulativeData,
-        smooth: true,
-        symbol: "circle",
-        symbolSize: 5,
-        showSymbol: false,
-        lineStyle: {
-          color: "#3b82f6",
-          width: 2,
-        },
+        type: "bar",
+        data,
+        barMaxWidth: 28,
         itemStyle: {
-          color: "#3b82f6",
-          borderColor: "#1e40af",
-          borderWidth: 2,
-        },
-        emphasis: {
-          showSymbol: true,
-          itemStyle: {
-            color: "#60a5fa",
-            borderColor: "#93c5fd",
-            borderWidth: 2,
-          },
-        },
-        areaStyle: {
+          borderRadius: [3, 3, 0, 0],
           color: {
             type: "linear",
             x: 0,
@@ -414,51 +350,32 @@ const option = computed<EChartsOption>(() => {
             x2: 0,
             y2: 1,
             colorStops: [
-              { offset: 0, color: "rgba(59,130,246,0.6)" },
-              { offset: 1, color: "rgba(59,130,246,0.05)" },
+              { offset: 0, color: "rgba(96,165,250,0.95)" },
+              { offset: 1, color: "rgba(59,130,246,0.35)" },
             ],
           },
         },
-        markPoint: {
-          data: [
-            {
-              name: "Total",
-              coord: [labels.length - 1, finalValue],
-              value: `Total\n${fmtCount(finalValue)}`,
-              symbol: "circle",
-              symbolSize: 1,
-              label: {
-                show: true,
-                position: "right",
-                color: "#60a5fa",
-                fontSize: 10,
-                lineHeight: 12,
-                distance: 5,
-              },
-            },
-          ],
-        },
-        markLine: {
-          silent: true,
-          symbol: "none",
-          animation: false,
-          data:
-            avgPerDay.value > 0
-              ? [
+        markLine:
+          avgPerBucket.value > 0
+            ? {
+                silent: true,
+                symbol: "none",
+                animation: false,
+                data: [
                   {
-                    yAxis: avgPerDay.value,
+                    yAxis: avgPerBucket.value,
                     lineStyle: { color: "#6b7280", type: "dashed", width: 1 },
                     label: {
-                      formatter: `avg`,
+                      formatter: "avg",
                       color: "#9ca3af",
                       fontSize: 9,
                       position: "end",
                     },
                   },
-                ]
-              : [],
-        },
-      },
+                ],
+              }
+            : undefined,
+      } as any,
     ],
   };
 });
@@ -753,22 +670,19 @@ const liveOption = computed<EChartsOption>(() => {
           </template>
           <!-- Historical stats -->
           <template v-else>
-            <span>
-              <span class="text-blue-400 font-mono">{{
-                fmtCount(totalCount)
-              }}</span>
-              <span class="ml-1">{{ selectedDays }}d</span>
+            <span class="px-1.5 py-0.5 rounded bg-surface-300 text-gray-300 font-mono">
+              {{ skuFilter || 'All SKUs' }}<span v-if="statusFilter !== 'all'" class="text-gray-500"> · {{ statusFilter }}</span>
             </span>
             <span>
-              <span class="text-indigo-400 font-mono">{{
-                fmtCount(avgPerDay)
-              }}</span>
-              <span class="ml-1">avg/day</span>
+              <span class="text-blue-400 font-mono">{{ fmtCount(totalCount) }}</span>
+              <span class="ml-1">total</span>
             </span>
-            <span v-if="peakDay">
-              <span class="text-violet-400 font-mono">{{
-                fmtCount(peakDay.count)
-              }}</span>
+            <span>
+              <span class="text-indigo-400 font-mono">{{ fmtCount(avgPerBucket) }}</span>
+              <span class="ml-1">avg/{{ selectedBucket }}</span>
+            </span>
+            <span v-if="peakBucket">
+              <span class="text-violet-400 font-mono">{{ fmtCount(peakBucket.count) }}</span>
               <span class="ml-1">peak</span>
             </span>
           </template>
@@ -776,17 +690,17 @@ const liveOption = computed<EChartsOption>(() => {
 
         <div class="flex gap-0.5 items-center">
           <button
-            v-for="d in DAY_OPTIONS"
-            :key="d"
+            v-for="b in bucketChips"
+            :key="b"
             class="px-1.5 py-0.5 rounded text-[9px] font-medium transition-colors"
             :class="
-              selectedDays === d
+              selectedBucket === b
                 ? 'bg-blue-600 text-white'
                 : 'bg-surface-300 text-gray-400 hover:text-gray-200'
             "
-            @click="selectedDays = d"
+            @click="selectedBucket = b"
           >
-            {{ d }}d
+            {{ b }}
           </button>
           <button
             class="ml-1 px-1.5 py-0.5 rounded font-medium border transition-colors text-[9px]"

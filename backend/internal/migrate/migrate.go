@@ -326,6 +326,7 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool) error {
 		`CREATE INDEX IF NOT EXISTS idx_tr_machine_ts      ON telemetry_raw (machine_id, timestamp DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_tr_machine_ts_good ON telemetry_raw (machine_id, timestamp DESC) WHERE quality = 'good'`,
 		`CREATE INDEX IF NOT EXISTS idx_tr_data_gin        ON telemetry_raw USING GIN (data)`,
+		`CREATE INDEX IF NOT EXISTS idx_tr_sku             ON telemetry_raw (machine_id, (data->>'sku'))`,
 		// telemetry_aggregates
 		`CREATE INDEX IF NOT EXISTS idx_ta_lookup ON telemetry_aggregates (machine_id, field, period, timestamp DESC)`,
 		// machines
@@ -511,6 +512,20 @@ func EnsureSeed(ctx context.Context, pool *pgxpool.Pool) error {
 		{"00000000-0000-0000-0000-000000000008", "passed",      "Items Passed",    "pcs", f(0), f(999999), nil,   nil,     nil,     2, false},
 		{"00000000-0000-0000-0000-000000000008", "failed",      "Items Failed",    "pcs", f(0), f(999999), nil,   nil,     nil,     2, false},
 		{"00000000-0000-0000-0000-000000000008", "confidence",  "AI Confidence",   "%",   f(0), f(100),    f(97), f(99.9), f(87.3), 2, false},
+	}
+
+	// SKU dimension lives in the JSONB data (no column); per-minute good/reject piece counts are
+	// declared here so other widgets/AI can see them. (sku itself is a string dimension fetched via /skus.)
+	for _, mid := range []string{
+		"00000000-0000-0000-0000-000000000005",
+		"00000000-0000-0000-0000-000000000006",
+		"00000000-0000-0000-0000-000000000007",
+		"00000000-0000-0000-0000-000000000008",
+	} {
+		fields = append(fields,
+			mf{mid, "good", "Good (pcs)", "pcs", f(0), f(9999), nil, nil, nil, 0, false},
+			mf{mid, "reject", "Reject (pcs)", "pcs", f(0), f(9999), nil, nil, nil, 0, false},
+		)
 	}
 
 	for _, field := range fields {
