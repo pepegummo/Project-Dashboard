@@ -278,11 +278,15 @@ func (r *Repository) AddWidget(ctx context.Context, dashboardID string, w Widget
 	if w.Config == nil {
 		w.Config = json.RawMessage("{}")
 	}
+	var machineID *string
+	if w.MachineID != nil && *w.MachineID != "" {
+		machineID = w.MachineID
+	}
 	row := database.Pool.QueryRow(ctx, `
 		INSERT INTO dashboard_widgets (id, dashboard_id, machine_id, widget_type, title, layout, config, created_at, updated_at)
 		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, NOW(), NOW())
 		RETURNING id, dashboard_id, machine_id, widget_type, title, layout, config, created_at
-	`, dashboardID, w.MachineID, w.WidgetType, w.Title, w.Layout, w.Config)
+	`, dashboardID, machineID, w.WidgetType, w.Title, w.Layout, w.Config)
 
 	var out Widget
 	err := row.Scan(&out.ID, &out.DashboardID, &out.MachineID, &out.WidgetType, &out.Title, &out.Layout, &out.Config, &out.CreatedAt)

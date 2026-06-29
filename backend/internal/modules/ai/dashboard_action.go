@@ -190,7 +190,10 @@ func (a *DashboardAction) Handle(ctx context.Context, orgID, userID string, rawA
 				}
 			}
 			cfgJSON, _ := json.Marshal(cfg)
-			mid := pw.MachineUUID
+			var mid *string
+			if pw.MachineUUID != "" {
+				mid = &pw.MachineUUID
+			}
 			wLayout := flowLayout(created)
 			if len(pw.Layout) > 0 {
 				if b, err := json.Marshal(pw.Layout); err == nil {
@@ -200,7 +203,7 @@ func (a *DashboardAction) Handle(ctx context.Context, orgID, userID string, rawA
 			widget := dashboards.Widget{
 				WidgetType: pw.Type,
 				Layout:     wLayout,
-				MachineID:  &mid,
+				MachineID:  mid,
 				Config:     cfgJSON,
 			}
 			if t := strings.TrimSpace(pw.Title); t != "" {
@@ -273,6 +276,9 @@ func (a *DashboardAction) PreviewAddWidget(ctx context.Context, orgID string, ra
 		MachineUUID: machineID,
 		Metric:      strings.TrimSpace(args.Widget.Metric),
 		Unit:        args.Widget.Unit,
+		Bucket:      args.Widget.Bucket,
+		Sku:         args.Widget.Sku,
+		Status:      args.Widget.Status,
 	}
 	if args.Widget.Min != nil {
 		pw.Min = *args.Widget.Min
@@ -428,6 +434,17 @@ func buildConfig(w ToolWidget) json.RawMessage {
 	}
 	if w.Type == "line-chart" {
 		cfg["liveMode"] = true
+	}
+	if w.Type == "daily-count" {
+		if w.Bucket != "" {
+			cfg["bucket"] = w.Bucket
+		}
+		if w.Sku != "" {
+			cfg["sku"] = w.Sku
+		}
+		if w.Status != "" {
+			cfg["status"] = w.Status
+		}
 	}
 	b, _ := json.Marshal(cfg)
 	return b

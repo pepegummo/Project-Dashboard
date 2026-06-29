@@ -7,7 +7,7 @@ import { useAuthStore } from '@/stores/auth.store';
 import { useWidgetViewStateStore } from '@/stores/widget-view-state.store';
 import { useLedExport } from '@/composables/useLedExport';
 import { useToast } from '@/composables/useToast';
-import { Save, Plus, ArrowLeft, Loader2, LayoutGrid, Monitor, ExternalLink, Upload } from 'lucide-vue-next';
+import { Save, Plus, ArrowLeft, Loader2, LayoutGrid, Monitor, ExternalLink, Upload, Trash2, Edit2 } from 'lucide-vue-next';
 import GridStackCanvas from '@/components/dashboard/GridStackCanvas.vue';
 import WidgetToolbox from '@/components/dashboard/WidgetToolbox.vue';
 import WidgetConfigModal from '@/components/dashboard/WidgetConfigModal.vue';
@@ -38,6 +38,34 @@ onMounted(async () => {
     machineStore.fetchMachines(),
   ]);
 });
+
+async function onRename() {
+  const currentName = dashboardStore.currentDashboard?.name || '';
+  const newName = prompt('Rename dashboard:', currentName);
+  if (newName === null) return;
+  const trimmed = newName.trim();
+  if (!trimmed) {
+    toast.show('Dashboard name cannot be empty', 'error');
+    return;
+  }
+  try {
+    await dashboardStore.updateDashboard(dashboardId.value, { name: trimmed });
+    toast.show('Dashboard renamed');
+  } catch (e: any) {
+    toast.show(e?.message || 'Failed to rename dashboard', 'error');
+  }
+}
+
+async function onDelete() {
+  if (!confirm('Are you sure you want to delete this dashboard? This cannot be undone.')) return;
+  try {
+    await dashboardStore.deleteDashboard(dashboardId.value);
+    toast.show('Dashboard deleted');
+    router.push('/dashboards');
+  } catch (e: any) {
+    toast.show(e?.message || 'Failed to delete dashboard', 'error');
+  }
+}
 
 async function onSave() {
   saving.value = true;
@@ -150,10 +178,26 @@ async function onRemoveWidget(widgetId: string) {
           <ArrowLeft class="w-4 h-4" />
         </button>
         <div>
-          <h1 class="text-lg font-bold text-white">
-            {{ dashboardStore.currentDashboard?.name ?? 'Dashboard' }}
-          </h1>
-          <p class="text-xs text-gray-500">
+          <div class="flex items-center gap-2">
+            <h1 class="text-lg font-bold text-white leading-none">
+              {{ dashboardStore.currentDashboard?.name ?? 'Dashboard' }}
+            </h1>
+            <button
+              class="p-1 rounded hover:bg-surface-300 text-gray-400 hover:text-white transition-colors"
+              title="Rename dashboard"
+              @click="onRename"
+            >
+              <Edit2 class="w-3.5 h-3.5" />
+            </button>
+            <button
+              class="p-1 rounded hover:bg-red-500/20 text-gray-400 hover:text-red-400 transition-colors"
+              title="Delete dashboard"
+              @click="onDelete"
+            >
+              <Trash2 class="w-3.5 h-3.5" />
+            </button>
+          </div>
+          <p class="text-xs text-gray-500 mt-1">
             {{ dashboardStore.widgets.length }} widgets
           </p>
         </div>

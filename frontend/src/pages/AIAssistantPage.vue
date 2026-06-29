@@ -351,20 +351,43 @@ function deriveFocusWidget(messages: any[], rawText: string): any | null {
   if (!field) return null;
 
   const trend = messages.some((m: any) => m.toolName === 'get_telemetry_trend') || /trend|history|กราฟ|ย้อนหลัง|เทรนด์/.test(hay);
-  const daily = messages.some((m: any) => m.toolName === 'get_daily_count') || /daily|รายวัน|ต่อวัน/.test(hay);
+  const daily = messages.some((m: any) => m.toolName === 'get_daily_count') || /daily|count|รายวัน|ต่อวัน|จำนวน/.test(hay);
   const type = trend ? 'line-chart'
     : daily ? 'daily-count'
     : (field.min !== undefined && field.max !== undefined) ? 'gauge' : 'kpi-card';
 
+  // Extract bucket size for daily-count (default 1h)
+  let bucket = '1h';
+  const bucketMatch = /(\d+)\s*(minute|min|hour|hr|day|วัน|นาที|ชั่วโมง)s?/i.exec(hay);
+  if (bucketMatch) {
+    const val = bucketMatch[1];
+    const unit = bucketMatch[2].toLowerCase();
+    const unitChar = /minute|min|นาที/.test(unit) ? 'm' : /hour|hr|ชั่วโมง/.test(unit) ? 'h' : 'd';
+    bucket = `${val}${unitChar}`;
+  }
+
+  // Extract piece status filter (default all)
+  let status = 'all';
+  if (/good|ดี|ปกติ/.test(hay)) status = 'good';
+  else if (/reject|เสีย|ไม่ผ่าน/.test(hay)) status = 'reject';
+
+  // Extract SKU filter
+  let sku = '';
+  const skuMatch = /sku\s*([\w-]+)/i.exec(hay);
+  if (skuMatch && !/all|every|ทุก/.test(skuMatch[1])) {
+    sku = skuMatch[1];
+  }
+
   return {
     type,
-    title: `${machine.name} — ${field.label}`,
+    title: type === 'daily-count' ? `${machine.name} — Count` : `${machine.name} — ${field.label}`,
     machine: machine.name,
     machineUuid: machine.id,
     metric: field.key,
     unit: field.unit ?? '',
     ...(field.min !== undefined ? { min: field.min } : {}),
     ...(field.max !== undefined ? { max: field.max } : {}),
+    ...(type === 'daily-count' ? { bucket, sku, status } : {}),
   };
 }
 
@@ -386,11 +409,15 @@ async function confirmFocusCreate(card: any, name: string, layouts: Record<strin
           field: pw.metric, unit: pw.unit,
           ...(pw.min !== undefined ? { min: pw.min } : {}),
           ...(pw.max !== undefined ? { max: pw.max } : {}),
+          ...(pw.bucket !== undefined ? { bucket: pw.bucket } : {}),
+          ...(pw.sku !== undefined ? { sku: pw.sku } : {}),
+          ...(pw.status !== undefined ? { status: pw.status } : {}),
         },
         layout: layouts[`preview-${i}`] ?? { x: 0, y: 9999, w: 6, h: 4 },
       });
     }
     canvasCards.value = canvasCards.value.filter(c => c !== card);
+    router.push(`/dashboards/${dash.id}`);
   } catch (e) {
     console.error('Failed to create dashboard from focus card', e);
   }
@@ -764,6 +791,7 @@ async function confirmCreate(dashboardName: string, layouts: Record<string, Widg
       aiSelectedPreviewIds.value = [];
       api.deletePreviewDraft().catch(() => {});
       showToast(`Dashboard "${dashboardName}" created! Find it in the Dashboards list.`);
+      router.push(`/dashboards/${r.dashboardId}`);
     }
   } catch (e: any) {
     showToast(`Error: ${e?.message ?? 'Failed to create dashboard'}`);

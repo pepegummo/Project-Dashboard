@@ -16,13 +16,16 @@ var widgetItemSchema = map[string]any{
 	"type":     "object",
 	"required": []string{"type"},
 	"properties": map[string]any{
-		"type":       map[string]any{"type": "string"},
+		"type":       map[string]any{"type": "string", "description": "Widget type. Use 'daily-count' for production/piece counts, 'kpi-card' for single numeric metric, 'line-chart' for trend, 'gauge' for dials."},
 		"title":      map[string]any{"type": "string"},
 		"machine_id": map[string]any{"type": "string"},
 		"metric":     map[string]any{"type": "string"},
 		"min":        map[string]any{"type": "number"},
 		"max":        map[string]any{"type": "number"},
 		"unit":       map[string]any{"type": "string"},
+		"bucket":     map[string]any{"type": "string", "description": "Time bucket size for daily-count widgets, e.g. '30m', '1h', '1d'."},
+		"sku":        map[string]any{"type": "string", "description": "SKU filter for daily-count widgets (empty = all SKUs)."},
+		"status":     map[string]any{"type": "string", "enum": []string{"all", "good", "reject"}, "description": "Piece status filter for daily-count widgets."},
 	},
 }
 
@@ -254,6 +257,9 @@ type ToolWidget struct {
 	Min       *float64 `json:"min"`
 	Max       *float64 `json:"max"`
 	Unit      string   `json:"unit"`
+	Bucket    string   `json:"bucket,omitempty"`
+	Sku       string   `json:"sku,omitempty"`
+	Status    string   `json:"status,omitempty"`
 }
 
 // TemplateDashboardArgs is the minimal payload for preview/create via template.
