@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
-import { ClipboardList, CheckCircle2, Plus } from 'lucide-vue-next';
+import { ClipboardList, CheckCircle2, Plus, Loader2 } from 'lucide-vue-next';
 import type { DashboardWidget, WidgetLayout, WidgetType, WidgetConfig } from '@/types';
 import GridStackCanvas from '@/components/dashboard/GridStackCanvas.vue';
 import WidgetConfigModal from '@/components/dashboard/WidgetConfigModal.vue';
@@ -12,6 +12,7 @@ interface PreviewWidget {
   metric: string; unit: string; min?: number; max?: number;
   startDateTime?: string; endDateTime?: string;
   bucket?: string; sku?: string; status?: 'all' | 'good' | 'reject';
+  widgetId?: string;
 }
 
 const props = withDefaults(defineProps<{
@@ -23,7 +24,8 @@ const props = withDefaults(defineProps<{
   highlightId?: string;
   resetToken?: number;
   aiSelectedWidgetIds?: string[];
-  variant?: 'build' | 'focus';
+  variant?: 'build' | 'focus' | 'dashboard';
+  saving?: boolean;
 }>(), { variant: 'build' });
 
 const emit = defineEmits<{
@@ -32,6 +34,7 @@ const emit = defineEmits<{
   'add-widget': [widget: PreviewWidget];
   'update-widget': [index: number, data: Partial<PreviewWidget>];
   'mention-widget': [payload: { widget: { id: string; title: string }; selected: boolean }];
+  save: [];
 }>();
 
 const machineStore = useMachineStore();
@@ -192,11 +195,11 @@ function onSaveWidget(data: { machineId?: string; widgetType: WidgetType; title?
           placeholder="Dashboard name"
         />
         <span v-else class="text-violet-300">
-          {{ result.widgets.length > 1 ? `${result.widgets.length} metrics` : (result.widgets[0]?.title || 'Focus') }}
+          {{ variant === 'dashboard' ? result.dashboardName : (result.widgets.length > 1 ? `${result.widgets.length} metrics` : (result.widgets[0]?.title || 'Focus')) }}
         </span>
       </div>
       <span class="text-[10px] text-violet-400/60 bg-violet-500/10 px-2 py-0.5 rounded-full border border-violet-500/20">
-        {{ variant === 'focus' ? 'Live' : 'Preview' }}
+        {{ variant === 'focus' ? 'Live' : variant === 'dashboard' ? 'Dashboard' : 'Preview' }}
       </span>
     </div>
 
@@ -244,7 +247,28 @@ function onSaveWidget(data: { machineId?: string; widgetType: WidgetType; title?
         Add Widget
       </button>
 
+      <!-- Dashboard variant: two buttons — Open Editor + Save -->
+      <template v-if="variant === 'dashboard'">
+        <button
+          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 transition-colors"
+          @click="emit('confirm', '')"
+        >
+          Open Editor
+        </button>
+        <button
+          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-violet-600 hover:bg-violet-500 text-white transition-colors disabled:opacity-50"
+          :disabled="saving"
+          @click="emit('save')"
+        >
+          <Loader2 v-if="saving" class="w-3.5 h-3.5 animate-spin" />
+          <CheckCircle2 v-else class="w-3.5 h-3.5" />
+          {{ saving ? 'Saving…' : 'Save' }}
+        </button>
+      </template>
+
+      <!-- Build / focus: single Create Dashboard button -->
       <button
+        v-else
         class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-violet-600 hover:bg-violet-500 text-white transition-colors"
         @click="emit('confirm', variant === 'build' ? localName : (result.widgets[0]?.machine ?? 'New Dashboard'))"
       >
