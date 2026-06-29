@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, nextTick } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { ClipboardList, CheckCircle2, Plus, Loader2 } from 'lucide-vue-next';
 import type { DashboardWidget, WidgetLayout, WidgetType, WidgetConfig } from '@/types';
 import GridStackCanvas from '@/components/dashboard/GridStackCanvas.vue';
@@ -58,16 +58,7 @@ const editingPreviewIdx = ref(-1);
 const editingWidget = ref<DashboardWidget | null>(null);
 const gridRef = ref<InstanceType<typeof GridStackCanvas> | null>(null);
 
-const localHighlightId = ref<string | undefined>(undefined);
-const activeHighlightId = computed(() => localHighlightId.value || props.highlightId);
 
-function handleChipClick(index: number) {
-  const id = `preview-${index}`;
-  localHighlightId.value = undefined;
-  nextTick(() => {
-    localHighlightId.value = id;
-  });
-}
 
 function flowLayout(index: number): WidgetLayout {
   const w = 6, h = 4, perRow = 2;
@@ -243,7 +234,7 @@ function onSaveWidget(data: { machineId?: string; widgetType: WidgetType; title?
           :key="result.widgets.length"
           :widgets="previewWidgets"
           :selected-ids="selectedIds"
-          :highlighted-id="activeHighlightId"
+          :highlighted-id="props.highlightId"
           @edit-widget="onEditPreviewWidget"
           @remove-widget="onRemovePreviewWidget"
           @select-widget="onSelectPreviewWidget"
@@ -257,15 +248,7 @@ function onSaveWidget(data: { machineId?: string; widgetType: WidgetType; title?
       <span
         v-for="(w, i) in result.widgets"
         :key="i"
-        class="inline-flex items-center px-2 py-1 rounded-md text-xs border select-none transition-all duration-200"
-        :class="[
-          variant === 'dashboard'
-            ? 'bg-white/5 border-white/10 text-white/70'
-            : (selectedIds.includes(`preview-${i}`) || activeHighlightId === `preview-${i}`
-              ? 'bg-violet-500/25 border-violet-500/40 text-violet-300 cursor-pointer'
-              : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white cursor-pointer')
-        ]"
-        @click="variant !== 'dashboard' ? handleChipClick(i) : undefined"
+        class="inline-flex items-center px-2 py-1 rounded-md text-xs bg-white/5 border border-white/10 text-white/70"
       >
         {{ w.title || w.type }}
       </span>

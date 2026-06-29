@@ -54,6 +54,13 @@ function onSelectLiveWidget(widget: DashboardWidget) {
   }
 }
 
+function highlightWidgetById(id: string) {
+  previewHighlightId.value = undefined;
+  nextTick(() => {
+    previewHighlightId.value = id;
+  });
+}
+
 function setAiHighlight(id: string, title: string, isPreview: boolean) {
   if (isPreview) {
     if (!aiSelectedPreviewIds.value.includes(id))
@@ -68,6 +75,7 @@ function setAiHighlight(id: string, title: string, isPreview: boolean) {
       aiSelectedIds.value = [...aiSelectedIds.value, id];
   }
   mentionedWidgets.value = [...mentionedWidgets.value.filter(w => w.id !== id), { id, title }];
+  highlightWidgetById(id);
 }
 
 function removeMention(id: string) {
@@ -478,7 +486,7 @@ async function sendMessage() {
             // A preview dashboard is on screen — highlight its widget(s) for this metric.
             // Preview stores machine as the short name (e.g. "CW-01"); show_metric returns
             // the full name ("Checkweigher CW-01") + machineUuid, so match by substring/uuid.
-            const previewCard = canvasCards.value.find(c => c.kind === 'preview') as any;
+            const previewCard = canvasCards.value.find(c => c.kind === 'preview' || c.kind === 'dashboard') as any;
             const pws: any[] = previewCard?.result?.widgets ?? [];
             pws.forEach((pw: any, i: number) => {
               const machineOk = (pw.machineUuid && pw.machineUuid === w.machineUuid)
@@ -570,7 +578,7 @@ async function sendMessage() {
     // moves the ring to reject. The focused widget is only a fallback (end of block).
     {
       const assistantText = messages.find(m => m.role === 'assistant')?.content?.toLowerCase() ?? '';
-      const previewCard = canvasCards.value.find(c => c.kind === 'preview') as any;
+      const previewCard = canvasCards.value.find(c => c.kind === 'preview' || c.kind === 'dashboard') as any;
       for (const msg of messages) {
         if (!readToolNames.has(msg.toolName ?? '')) continue;
         const machineId = ((msg.toolInput as any)?.machine_id as string ?? '').toLowerCase();
@@ -633,7 +641,7 @@ async function sendMessage() {
           (w.machineUuid as string | undefined) ||
           machineStore.machines.find(m => m.name.toLowerCase() === (w.machine as string ?? '').toLowerCase())?.id;
 
-        const previewCard = canvasCards.value.find(c => c.kind === 'preview') as any;
+        const previewCard = canvasCards.value.find(c => c.kind === 'preview' || c.kind === 'dashboard') as any;
         if (previewCard?.result?.widgets) {
           const candidates = (previewCard.result.widgets as any[]).map((w, i) => ({ w, id: `preview-${i}` }));
 
@@ -827,6 +835,7 @@ function handleKeydown(e: KeyboardEvent) {
         <PreviewCanvasCard
           v-else-if="card.kind === 'focus'"
           variant="focus"
+          ref="previewCardRef"
           :result="(card as any).result"
           :highlight-id="previewHighlightId"
           :ai-selected-widget-ids="aiSelectedPreviewIds"
@@ -839,6 +848,7 @@ function handleKeydown(e: KeyboardEvent) {
         <PreviewCanvasCard
           v-else-if="card.kind === 'dashboard'"
           variant="dashboard"
+          ref="previewCardRef"
           :result="(card as any).result"
           :saving="dashboardSaving"
           :highlight-id="previewHighlightId"
@@ -888,6 +898,7 @@ function handleKeydown(e: KeyboardEvent) {
               ref="gridCanvasRef"
               :widgets="dashboardStore.widgets"
               :selected-ids="[...mentionedWidgets.filter(w => !w.id.startsWith('preview-')).map(w => w.id), ...aiSelectedIds]"
+              :highlighted-id="previewHighlightId"
               @edit-widget="onEditWidget"
               @remove-widget="onRemoveWidget"
               @select-widget="onSelectLiveWidget"
@@ -924,11 +935,12 @@ function handleKeydown(e: KeyboardEvent) {
         <span
           v-for="w in mentionedWidgets"
           :key="w.id"
-          class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-accent-violet/15 border border-accent-violet/30 text-xs text-accent-violet"
+          class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-accent-violet/15 border border-accent-violet/30 text-xs text-accent-violet cursor-pointer hover:bg-accent-violet/25 select-none transition-colors"
+          @click="highlightWidgetById(w.id)"
         >
           <LayoutGrid class="w-3 h-3 shrink-0" />
           <span class="max-w-[120px] truncate">{{ w.title }}</span>
-          <button class="opacity-60 hover:opacity-100 ml-0.5 leading-none" @click="removeMention(w.id)">✕</button>
+          <button class="opacity-60 hover:opacity-100 ml-0.5 leading-none" @click.stop="removeMention(w.id)">✕</button>
         </span>
       </div>
 
