@@ -191,9 +191,15 @@ func (a *DashboardAction) Handle(ctx context.Context, orgID, userID string, rawA
 			}
 			cfgJSON, _ := json.Marshal(cfg)
 			mid := pw.MachineUUID
+			wLayout := flowLayout(created)
+			if len(pw.Layout) > 0 {
+				if b, err := json.Marshal(pw.Layout); err == nil {
+					wLayout = b
+				}
+			}
 			widget := dashboards.Widget{
 				WidgetType: pw.Type,
-				Layout:     flowLayout(created),
+				Layout:     wLayout,
 				MachineID:  &mid,
 				Config:     cfgJSON,
 			}

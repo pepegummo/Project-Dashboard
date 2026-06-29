@@ -27,9 +27,12 @@ export const useDashboardStore = defineStore('dashboards', () => {
   async function fetchDashboard(id: string) {
     loading.value = true;
     try {
-      currentDashboard.value = await api.getDashboard(id);
+      const dash = await api.getDashboard(id);
+      currentDashboard.value = dash;
+      return dash;
     } catch (err) {
       error.value = (err as Error).message;
+      throw err;
     } finally {
       loading.value = false;
     }

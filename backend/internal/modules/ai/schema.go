@@ -319,9 +319,10 @@ type PreviewWidget struct {
 	Max           float64 `json:"max,omitempty"`
 	StartDateTime string  `json:"startDateTime,omitempty"` // absolute window start (datetime-local) for chart widgets
 	EndDateTime   string  `json:"endDateTime,omitempty"`
-	Bucket        string  `json:"bucket,omitempty"` // count widget: bucket size, e.g. "30m"
-	Sku           string  `json:"sku,omitempty"`    // count widget: SKU filter ("" = all)
-	Status        string  `json:"status,omitempty"` // count widget: all | good | reject
+	Bucket        string         `json:"bucket,omitempty"` // count widget: bucket size, e.g. "30m"
+	Sku           string         `json:"sku,omitempty"`    // count widget: SKU filter ("" = all)
+	Status        string         `json:"status,omitempty"` // count widget: all | good | reject
+	Layout        map[string]any `json:"layout,omitempty"` // optional grid position from preview
 }
 
 type PreviewDashboardResult struct {

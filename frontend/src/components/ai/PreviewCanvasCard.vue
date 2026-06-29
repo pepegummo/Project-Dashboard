@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue';
+import { ref, computed, onMounted, watch, nextTick } from 'vue';
 import { ClipboardList, CheckCircle2, Plus, Loader2 } from 'lucide-vue-next';
 import type { DashboardWidget, WidgetLayout, WidgetType, WidgetConfig } from '@/types';
 import GridStackCanvas from '@/components/dashboard/GridStackCanvas.vue';
@@ -13,6 +13,7 @@ interface PreviewWidget {
   startDateTime?: string; endDateTime?: string;
   bucket?: string; sku?: string; status?: 'all' | 'good' | 'reject';
   widgetId?: string;
+  layout?: WidgetLayout;
 }
 
 const props = withDefaults(defineProps<{
@@ -29,12 +30,12 @@ const props = withDefaults(defineProps<{
 }>(), { variant: 'build' });
 
 const emit = defineEmits<{
-  confirm: [dashboardName: string];
+  confirm: [dashboardName: string, layouts: Record<string, WidgetLayout>];
   'remove-widget': [index: number];
   'add-widget': [widget: PreviewWidget];
   'update-widget': [index: number, data: Partial<PreviewWidget>];
   'mention-widget': [payload: { widget: { id: string; title: string }; selected: boolean }];
-  save: [];
+  save: [layouts: Record<string, WidgetLayout>];
 }>();
 
 const machineStore = useMachineStore();
@@ -57,9 +58,33 @@ const editingPreviewIdx = ref(-1);
 const editingWidget = ref<DashboardWidget | null>(null);
 const gridRef = ref<InstanceType<typeof GridStackCanvas> | null>(null);
 
+const localHighlightId = ref<string | undefined>(undefined);
+const activeHighlightId = computed(() => localHighlightId.value || props.highlightId);
+
+function handleChipClick(index: number) {
+  const id = `preview-${index}`;
+  localHighlightId.value = undefined;
+  nextTick(() => {
+    localHighlightId.value = id;
+  });
+}
+
 function flowLayout(index: number): WidgetLayout {
   const w = 6, h = 4, perRow = 2;
   return { x: (index % perRow) * w, y: Math.floor(index / perRow) * h, w, h };
+}
+
+function buildAllLayouts(): Record<string, WidgetLayout> {
+  const fromGrid = gridRef.value?.getCurrentLayouts() ?? [];
+  if (fromGrid.length) {
+    return Object.fromEntries(fromGrid.map(({ id, layout }) => [id, layout]));
+  }
+  return Object.fromEntries(
+    props.result.widgets.map((_, i) => {
+      const id = `preview-${i}`;
+      return [id, localLayouts.value[id] ?? flowLayout(i)];
+    })
+  );
 }
 
 const previewWidgets = computed<DashboardWidget[]>(() =>
@@ -70,7 +95,7 @@ const previewWidgets = computed<DashboardWidget[]>(() =>
       dashboardId: 'preview',
       widgetType: w.type as DashboardWidget['widgetType'],
       title: w.title || (w.machine ? `${w.machine}${w.metric ? ' — ' + w.metric : ''}` : w.type),
-      layout: localLayouts.value[id] ?? flowLayout(i),
+      layout: localLayouts.value[id] ?? w.layout ?? flowLayout(i),
       config: {
         field: w.metric || '',
         unit: w.unit || '',
@@ -218,7 +243,7 @@ function onSaveWidget(data: { machineId?: string; widgetType: WidgetType; title?
           :key="result.widgets.length"
           :widgets="previewWidgets"
           :selected-ids="selectedIds"
-          :highlighted-id="props.highlightId"
+          :highlighted-id="activeHighlightId"
           @edit-widget="onEditPreviewWidget"
           @remove-widget="onRemovePreviewWidget"
           @select-widget="onSelectPreviewWidget"
@@ -232,7 +257,15 @@ function onSaveWidget(data: { machineId?: string; widgetType: WidgetType; title?
       <span
         v-for="(w, i) in result.widgets"
         :key="i"
-        class="inline-flex items-center px-2 py-1 rounded-md text-xs bg-white/5 border border-white/10 text-white/70"
+        class="inline-flex items-center px-2 py-1 rounded-md text-xs border select-none transition-all duration-200"
+        :class="[
+          variant === 'dashboard'
+            ? 'bg-white/5 border-white/10 text-white/70'
+            : (selectedIds.includes(`preview-${i}`) || activeHighlightId === `preview-${i}`
+              ? 'bg-violet-500/25 border-violet-500/40 text-violet-300 cursor-pointer'
+              : 'bg-white/5 border-white/10 text-white/70 hover:bg-white/10 hover:text-white cursor-pointer')
+        ]"
+        @click="variant !== 'dashboard' ? handleChipClick(i) : undefined"
       >
         {{ w.title || w.type }}
       </span>
@@ -251,14 +284,14 @@ function onSaveWidget(data: { machineId?: string; widgetType: WidgetType; title?
       <template v-if="variant === 'dashboard'">
         <button
           class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 transition-colors"
-          @click="emit('confirm', '')"
+          @click="emit('confirm', '', {})"
         >
           Open Editor
         </button>
         <button
           class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-violet-600 hover:bg-violet-500 text-white transition-colors disabled:opacity-50"
           :disabled="saving"
-          @click="emit('save')"
+          @click="emit('save', buildAllLayouts())"
         >
           <Loader2 v-if="saving" class="w-3.5 h-3.5 animate-spin" />
           <CheckCircle2 v-else class="w-3.5 h-3.5" />
@@ -270,7 +303,7 @@ function onSaveWidget(data: { machineId?: string; widgetType: WidgetType; title?
       <button
         v-else
         class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-violet-600 hover:bg-violet-500 text-white transition-colors"
-        @click="emit('confirm', variant === 'build' ? localName : (result.widgets[0]?.machine ?? 'New Dashboard'))"
+        @click="emit('confirm', variant === 'build' ? localName : (result.widgets[0]?.machine ?? 'New Dashboard'), buildAllLayouts())"
       >
         <CheckCircle2 class="w-3.5 h-3.5" />
         Create Dashboard

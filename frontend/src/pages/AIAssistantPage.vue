@@ -103,6 +103,7 @@ function toPreviewWidgets(dbWidgets: DashboardWidget[]) {
   return dbWidgets.map(w => ({
     widgetId:    w.id,
     type:        w.widgetType,
+    layout:      w.layout,
     title:       w.title ?? '',
     machine:     w.machine?.name ?? '',
     machineUuid: w.machineId,
@@ -116,7 +117,7 @@ function toPreviewWidgets(dbWidgets: DashboardWidget[]) {
   }));
 }
 
-async function saveDashboardCard(card: any) {
+async function saveDashboardCard(card: any, layouts: Record<string, WidgetLayout> = {}) {
   if (dashboardSaving.value) return;
   dashboardSaving.value = true;
   try {
@@ -153,13 +154,25 @@ async function saveDashboardCard(card: any) {
       }
     }
 
+    // Save layouts for widgets that were explicitly dragged
+    if (Object.keys(layouts).length > 0) {
+      const dbLayouts = Object.entries(layouts)
+        .map(([previewId, layout]) => {
+          const i = parseInt(previewId.replace('preview-', ''), 10);
+          const pw = previewWidgets[i];
+          return pw?.widgetId ? { id: pw.widgetId as string, layout } : null;
+        })
+        .filter((x): x is { id: string; layout: WidgetLayout } => x !== null);
+      if (dbLayouts.length) await api.bulkUpdateLayout(dashboardId, dbLayouts);
+    }
+
     // Re-fetch and rebuild card with fresh widget IDs
-    await dashboardStore.fetchDashboard(dashboardId);
+    const freshDash = await dashboardStore.fetchDashboard(dashboardId);
     const idx = canvasCards.value.findIndex(c => c === card);
     if (idx >= 0) {
       canvasCards.value[idx] = {
         kind: 'dashboard', id: uid(), dashboardId,
-        result: { dashboardName: dashboardStore.currentDashboard?.name ?? '', widgets: toPreviewWidgets(dashboardStore.widgets), summary: '' },
+        result: { dashboardName: freshDash?.name ?? '', widgets: toPreviewWidgets(freshDash?.widgets ?? []), summary: '' },
       };
     }
     showToast('Dashboard saved.');
@@ -182,11 +195,13 @@ onMounted(async () => {
       canvasCards.value = [{ kind, id: uid(), result: draft.data.result, args: draft.data.args ?? {} }];
       nextTick(() => { restoring.value = false; });
     } else if (draft?.dashboardId) {
-      await dashboardStore.fetchDashboard(draft.dashboardId);
+      restoring.value = true;
+      const dash = await dashboardStore.fetchDashboard(draft.dashboardId);
       canvasCards.value = [{
         kind: 'dashboard', id: uid(), dashboardId: draft.dashboardId,
-        result: { dashboardName: dashboardStore.currentDashboard?.name ?? '', widgets: toPreviewWidgets(dashboardStore.widgets), summary: '' },
+        result: { dashboardName: dash?.name ?? '', widgets: toPreviewWidgets(dash?.widgets ?? []), summary: '' }
       }];
+      nextTick(() => { restoring.value = false; });
     }
   } catch { /* no draft / offline — start empty */ }
 });
@@ -345,7 +360,7 @@ function deriveFocusWidget(messages: any[], rawText: string): any | null {
   };
 }
 
-async function confirmFocusCreate(card: any, name: string) {
+async function confirmFocusCreate(card: any, name: string, layouts: Record<string, WidgetLayout> = {}) {
   const widgets = card.result?.widgets ?? [];
   if (!widgets.length) return;
   const dashName = name || (widgets[0]?.machine ?? 'New') + ' Dashboard';
@@ -353,7 +368,8 @@ async function confirmFocusCreate(card: any, name: string) {
     const dash = await dashboardStore.createDashboard({ name: dashName });
     // Load the new dashboard so addWidget can target it via currentDashboard
     await dashboardStore.fetchDashboard(dash.id);
-    for (const pw of widgets) {
+    for (let i = 0; i < widgets.length; i++) {
+      const pw = widgets[i];
       await dashboardStore.addWidget({
         machineId: pw.machineUuid,
         widgetType: pw.type,
@@ -363,7 +379,7 @@ async function confirmFocusCreate(card: any, name: string) {
           ...(pw.min !== undefined ? { min: pw.min } : {}),
           ...(pw.max !== undefined ? { max: pw.max } : {}),
         },
-        layout: { x: 0, y: 9999, w: 6, h: 4 },
+        layout: layouts[`preview-${i}`] ?? { x: 0, y: 9999, w: 6, h: 4 },
       });
     }
     canvasCards.value = canvasCards.value.filter(c => c !== card);
@@ -456,6 +472,8 @@ async function sendMessage() {
             setAiHighlight(existing.id, existing.title ?? existing.widgetType, false);
           } else if (focusIdx >= 0) {
             aiSelectedPreviewIds.value = [...new Set([...aiSelectedPreviewIds.value, `preview-${focusIdx}`])];
+            previewHighlightId.value = undefined;
+            nextTick(() => { previewHighlightId.value = `preview-${focusIdx}`; });
           } else if (hasPreview.value) {
             // A preview dashboard is on screen — highlight its widget(s) for this metric.
             // Preview stores machine as the short name (e.g. "CW-01"); show_metric returns
@@ -467,13 +485,20 @@ async function sendMessage() {
                 || (!!pw.machine && !!w.machine && w.machine.toLowerCase().includes((pw.machine as string).toLowerCase()));
               if (pw.metric === w.metric && machineOk) {
                 setAiHighlight(`preview-${i}`, pw.title ?? pw.metric ?? `preview-${i}`, true);
+                previewHighlightId.value = undefined;
+                nextTick(() => { previewHighlightId.value = `preview-${i}`; });
               }
             });
           } else {
             if (focusCard) {
               focusCard.result.widgets.push(w);
+              const idx = focusCard.result.widgets.length - 1;
+              previewHighlightId.value = undefined;
+              nextTick(() => { previewHighlightId.value = `preview-${idx}`; });
             } else {
-              canvasCards.value.push({ kind: 'focus', id: uid(), result: { dashboardName: '', widgets: [w], summary: '' } });
+              canvasCards.value = [{ kind: 'focus', id: uid(), result: { dashboardName: '', widgets: [w], summary: '' } }];
+              previewHighlightId.value = undefined;
+              nextTick(() => { previewHighlightId.value = 'preview-0'; });
             }
           }
         }
@@ -486,7 +511,7 @@ async function sendMessage() {
           if (existing >= 0) {
             canvasCards.value[existing] = { kind: 'preview', id: uid(), result: r, args };
           } else {
-            canvasCards.value.push({ kind: 'preview', id: uid(), result: r, args });
+            canvasCards.value = [{ kind: 'preview', id: uid(), result: r, args }];
           }
         }
       }
@@ -687,7 +712,7 @@ async function sendMessage() {
         && !canvasCards.value.some(c => c.kind === 'focus')) {
       if (!machineStore.machines.length) await machineStore.fetchMachines();
       const pw = deriveFocusWidget(messages, rawText);
-      if (pw) canvasCards.value.push({ kind: 'focus', id: uid(), result: { dashboardName: '', widgets: [pw], summary: '' } });
+      if (pw) canvasCards.value = [{ kind: 'focus', id: uid(), result: { dashboardName: '', widgets: [pw], summary: '' } }];
     }
   } catch (e: any) {
     showToast(`Error: ${e?.message ?? 'Something went wrong. Please try again.'}`);
@@ -709,14 +734,18 @@ function clearChat() {
   api.deletePreviewDraft().catch(() => {});
 }
 
-async function confirmCreate(dashboardName: string) {
+async function confirmCreate(dashboardName: string, layouts: Record<string, WidgetLayout> = {}) {
   const card = canvasCards.value.find(c => c.kind === 'preview') as any;
   try {
     processing.value = true;
+    const widgetsWithLayouts = (card?.result?.widgets ?? []).map((w: any, i: number) => ({
+      ...w,
+      layout: layouts[`preview-${i}`] ?? undefined,
+    }));
     const r = await api.executeAiTool('create_custom_dashboard', {
       ...(card?.args ?? {}),
       name: dashboardName,
-      widgets: card?.result?.widgets ?? [],
+      widgets: widgetsWithLayouts,
     }) as any;
     if (r?.success && r.dashboardId) {
       canvasCards.value = [];
@@ -789,7 +818,7 @@ function handleKeydown(e: KeyboardEvent) {
           :highlight-id="previewHighlightId"
           :ai-selected-widget-ids="aiSelectedPreviewIds"
           :reset-token="selectionResetToken"
-          @confirm="confirmCreate"
+          @confirm="(name, layouts) => confirmCreate(name, layouts)"
           @remove-widget="removePreviewWidget"
           @add-widget="addPreviewWidget"
           @update-widget="updatePreviewWidget"
@@ -799,8 +828,9 @@ function handleKeydown(e: KeyboardEvent) {
           v-else-if="card.kind === 'focus'"
           variant="focus"
           :result="(card as any).result"
+          :highlight-id="previewHighlightId"
           :ai-selected-widget-ids="aiSelectedPreviewIds"
-          @confirm="(name: string) => confirmFocusCreate(card, name)"
+          @confirm="(name, layouts) => confirmFocusCreate(card, name, layouts)"
           @remove-widget="() => removeFocusCard(card.id)"
           @add-widget="addPreviewWidget"
           @update-widget="updatePreviewWidget"
@@ -811,10 +841,11 @@ function handleKeydown(e: KeyboardEvent) {
           variant="dashboard"
           :result="(card as any).result"
           :saving="dashboardSaving"
+          :highlight-id="previewHighlightId"
           :ai-selected-widget-ids="aiSelectedPreviewIds"
           :reset-token="selectionResetToken"
-          @confirm="confirmDashboard((card as any).dashboardId)"
-          @save="saveDashboardCard(card)"
+          @confirm="() => confirmDashboard((card as any).dashboardId)"
+          @save="(layouts) => saveDashboardCard(card, layouts)"
           @remove-widget="removePreviewWidget"
           @add-widget="addPreviewWidget"
           @update-widget="updatePreviewWidget"

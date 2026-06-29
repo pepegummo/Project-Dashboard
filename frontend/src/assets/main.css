@@ -107,13 +107,10 @@
   z-index: 10;
 }
 
-@keyframes widgetHighlight {
-  0%   { box-shadow: 0 0 0 3px #8b5cf6, 0 0 30px rgba(139,92,246,0.6); transform: scale(1.025); }
-  60%  { box-shadow: 0 0 0 4px #8b5cf6, 0 0 40px rgba(139,92,246,0.8); }
-  100% { box-shadow: 0 0 0 0px transparent; transform: scale(1); }
-}
 .widget-highlight {
-  animation: widgetHighlight 3s ease-out forwards;
+  outline: 2px solid var(--accent-violet, #8b5cf6);
+  outline-offset: -2px;
+  border-radius: 6px;
   z-index: 20 !important;
   position: relative;
 }

@@ -328,7 +328,7 @@ class ApiService {
   }
 
   async getPreviewDraft() {
-    const { data } = await this.client.get<ApiResponse<{ conversationId: string; dashboardId?: string; data: any } | null>>('/ai/preview-draft');
+    const { data } = await this.client.get<ApiResponse<{ conversationId: string; dashboardId?: string; data: any } | null>>(`/ai/preview-draft?_t=${Date.now()}`);
     return data.data;
   }
 

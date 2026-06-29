@@ -63,13 +63,12 @@ onMounted(async () => {
   }
 
   grid.on('change', () => {
-    if (!grid) return;
-    const items = grid.save(false) as Array<{ id?: string; x: number; y: number; w: number; h: number }>;
-    const layouts = items
-      .filter(item => item.id)
-      .map(item => ({
-        id: item.id!,
-        layout: { x: item.x, y: item.y, w: item.w, h: item.h },
+    if (!grid || !grid.engine || !grid.engine.nodes) return;
+    const layouts = grid.engine.nodes
+      .filter(node => node.id !== undefined && node.id !== null)
+      .map(node => ({
+        id: String(node.id),
+        layout: { x: node.x ?? 0, y: node.y ?? 0, w: node.w ?? 6, h: node.h ?? 4 },
       }));
     emit('layout-change', layouts);
   });
@@ -115,11 +114,13 @@ function addWidgetToGrid(widget: DashboardWidget) {
 }
 
 function getCurrentLayouts() {
-  if (!grid) return [];
-  const items = grid.save(false) as Array<{ id?: string; x: number; y: number; w: number; h: number }>;
-  return items
-    .filter(item => item.id)
-    .map(item => ({ id: item.id!, layout: { x: item.x, y: item.y, w: item.w, h: item.h } }));
+  if (!grid || !grid.engine || !grid.engine.nodes) return [];
+  return grid.engine.nodes
+    .filter(node => node.id !== undefined && node.id !== null)
+    .map(node => ({
+      id: String(node.id),
+      layout: { x: node.x ?? 0, y: node.y ?? 0, w: node.w ?? 6, h: node.h ?? 4 },
+    }));
 }
 
 defineExpose({ getCurrentLayouts });
