@@ -290,6 +290,9 @@ func (a *DashboardAction) PreviewUpdateWidget(ctx context.Context, orgID string,
 		Max         *float64 `json:"max"`
 		StartDate   string   `json:"start_date"`
 		EndDate     string   `json:"end_date"`
+		Bucket      string   `json:"bucket"`
+		SKU         string   `json:"sku"`
+		Status      string   `json:"status"`
 	}
 	if err := json.Unmarshal(rawArgs, &args); err != nil {
 		return nil, middleware.NewAppError(400, "VALIDATION_ERROR", "Malformed tool arguments")
@@ -325,6 +328,15 @@ func (a *DashboardAction) PreviewUpdateWidget(ctx context.Context, orgID string,
 	}
 	if e := strings.TrimSpace(args.EndDate); e != "" {
 		changes["endDateTime"] = toDatetimeLocal(e, true)
+	}
+	if b := strings.TrimSpace(args.Bucket); b != "" {
+		changes["bucket"] = b
+	}
+	if args.SKU != "" {
+		changes["sku"] = args.SKU
+	}
+	if s := strings.TrimSpace(args.Status); s != "" {
+		changes["status"] = s
 	}
 
 	return map[string]any{

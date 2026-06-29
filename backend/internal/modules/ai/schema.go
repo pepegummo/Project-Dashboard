@@ -8,7 +8,7 @@ var allowedWidgetTypes = []string{
 // reused across read/alert tools — nudges the model to ask rather than guess a name.
 var machineIDProp = map[string]any{
 	"type":        "string",
-	"description": "Exact machine name (e.g. CW-01). If the user named no machine, ask which one — never guess.",
+	"description": "Machine name (e.g. CW-01). Ask user if unknown — never guess.",
 }
 
 // widgetItemSchema is used by add_widget_to_dashboard only.
@@ -148,6 +148,9 @@ var PreviewUpdateWidgetTool = map[string]any{
 			"max":          map[string]any{"type": "number"},
 			"start_date":   map[string]any{"type": "string", "description": "Absolute window start as YYYY-MM-DD (chart widgets). Convert any DD/MM/YYYY the user gives."},
 			"end_date":     map[string]any{"type": "string", "description": "Absolute window end as YYYY-MM-DD (chart widgets)."},
+			"bucket":       map[string]any{"type": "string", "description": "Time bucket size for count widgets, e.g. '25m', '1h', '1d'. Format: <number><m|h|d>."},
+			"sku":          map[string]any{"type": "string", "description": "SKU filter for count widgets (empty = all SKUs)."},
+			"status":       map[string]any{"type": "string", "enum": []string{"all", "good", "reject"}, "description": "Piece status filter for count widgets."},
 		},
 	},
 }

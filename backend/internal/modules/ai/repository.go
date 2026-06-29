@@ -74,7 +74,7 @@ func (r *Repository) GetMessages(ctx context.Context, conversationID string) ([]
 		SELECT id, conversation_id, role, content, tool_name, tool_input, tool_result, created_at
 		FROM ai_messages
 		WHERE conversation_id = $1
-		ORDER BY created_at ASC
+		ORDER BY created_at DESC LIMIT 20
 	`, conversationID)
 	if err != nil {
 		return nil, err
