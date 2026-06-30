@@ -556,6 +556,30 @@ func buildGroqMessages(msgs []Message) []groqMessage {
 			result = append(result, groqMessage{Role: "user", Content: strPtr(m.Content)})
 		case "assistant":
 			result = append(result, groqMessage{Role: "assistant", Content: strPtr(m.Content)})
+		case "tool":
+			if m.ToolName != nil {
+				// Reconstruct assistant tool_calls message
+				var tc groqToolCall
+				tc.ID = "call_" + m.ID
+				tc.Type = "function"
+				tc.Function.Name = *m.ToolName
+				tc.Function.Arguments = string(m.ToolInput)
+
+				tcMsg := groqMessage{
+					Role:      "assistant",
+					ToolCalls: []groqToolCall{tc},
+				}
+
+				// Reconstruct tool result message
+				trStr := string(m.ToolResult)
+				trMsg := groqMessage{
+					Role:       "tool",
+					ToolCallID: tc.ID,
+					Content:    &trStr,
+				}
+
+				result = append(result, tcMsg, trMsg)
+			}
 		}
 	}
 	return result

@@ -433,9 +433,24 @@ function buildDashboardContext(): string {
   const card = canvasCards.value.find(c => c.kind === 'preview' || c.kind === 'dashboard') as any;
   const widgets = card?.result?.widgets ?? [];
   if (widgets.length) {
-    const lines = widgets.map((w: any) =>
-      `- ${w.type} "${w.title}" — machine ${w.machine}, metric ${w.metric}`
-    );
+    const lines = widgets.map((w: any) => {
+      const parts = [`- ${w.type} "${w.title || ''}" — machine ${w.machine}`];
+      if (w.machineUuid) {
+
+          const val = telemetryStore.getFieldValue(w.machineUuid, w.metric);
+
+          if (val !== undefined && val !== null) {
+
+            parts.push(`current value: ${val}${w.unit || ''}`);
+
+          }
+
+        }
+      if (w.bucket) parts.push(`bucket ${w.bucket}`);
+      if (w.sku) parts.push(`sku ${w.sku}`);
+      if (w.status) parts.push(`status ${w.status}`);
+      return parts.join(', ');
+    });
     const label = card.kind === 'dashboard' ? 'Active dashboard' : 'Current dashboard preview';
     return `${label} "${card.result.dashboardName}" on screen:\n${lines.join('\n')}`;
   }
@@ -444,19 +459,47 @@ function buildDashboardContext(): string {
   const focusCard = canvasCards.value.find(c => c.kind === 'focus') as any;
   const focusWidgets = focusCard?.result?.widgets ?? [];
   if (focusWidgets.length) {
-    const lines = focusWidgets.map((w: any) =>
-      `- ${w.type} "${w.title}" — machine ${w.machine}, metric ${w.metric}`
-    );
+    const lines = focusWidgets.map((w: any) => {
+      const parts = [`- ${w.type} "${w.title || ''}" — machine ${w.machine}`];
+      if (w.metric) {
+        parts.push(`metric ${w.metric}`);
+        if (w.machineUuid) {
+          const val = telemetryStore.getFieldValue(w.machineUuid, w.metric);
+          if (val !== undefined && val !== null) {
+            parts.push(`current value: ${val}${w.unit || ''}`);
+          }
+        }
+      }
+      if (w.bucket) parts.push(`bucket ${w.bucket}`);
+      if (w.sku) parts.push(`sku ${w.sku}`);
+      if (w.status) parts.push(`status ${w.status}`);
+      return parts.join(', ');
+    });
     return `Metric focus card on screen (call show_metric to highlight/refresh):\n${lines.join('\n')}`;
   }
 
-  // No AI preview — send only machine name so the AI knows what's active without
-  // getting enough widget detail to answer metric queries without calling show_metric.
+  // Active dashboard widgets — send full configurations and current values to the AI
   const live = dashboardStore.widgets;
   if (live.length) {
-    const machines = [...new Set(live.map(w => w.machine?.name).filter(Boolean))];
-    const machineStr = machines.length ? machines.join(', ') : 'unknown';
-    return `Dashboard "${dashboardStore.currentDashboard?.name ?? ''}" is active. Machine: ${machineStr}. Call show_metric to display any live metric.`;
+    const lines = live.map((w: any) => {
+      const parts = [`- ${w.widgetType} "${w.title || ''}"`];
+      const uuid = w.machineId || w.machine?.id;
+      if (w.machine?.name) parts.push(`machine ${w.machine.name}`);
+      if (w.config?.field) {
+        parts.push(`metric ${w.config.field}`);
+        if (uuid) {
+          const val = telemetryStore.getFieldValue(uuid, w.config.field);
+          if (val !== undefined && val !== null) {
+            parts.push(`current value: ${val}${w.config.unit || ''}`);
+          }
+        }
+      }
+      if (w.config?.bucket) parts.push(`bucket ${w.config.bucket}`);
+      if (w.config?.sku) parts.push(`sku ${w.config.sku}`);
+      if (w.config?.status) parts.push(`status ${w.config.status}`);
+      return parts.join(', ');
+    });
+    return `Dashboard "${dashboardStore.currentDashboard?.name ?? ''}" is active on screen with widgets:\n${lines.join('\n')}`;
   }
 
   return '';
@@ -495,10 +538,13 @@ async function sendMessage() {
         // Handles both single widget (happy path) and widgets array (fallback when metric not found).
         const widgetsToShow: any[] = result?.widgets ?? (result?.widget ? [result.widget] : []);
         for (const w of widgetsToShow) {
-          if (!w?.machineUuid || !w.metric) continue;
-          const existing = dashboardStore.widgets.find(dw =>
-            (dw.machineId === w.machineUuid || dw.machine?.id === w.machineUuid) && dw.config.field === w.metric
-          );
+          if (!w?.machineUuid || (!w.metric && w.type !== 'daily-count')) continue;
+          const existing = dashboardStore.widgets.find(dw => {
+            const sameMachine = dw.machineId === w.machineUuid || dw.machine?.id === w.machineUuid;
+            if (!sameMachine) return false;
+            if (w.type === 'daily-count') return dw.widgetType === 'daily-count';
+            return dw.config.field === w.metric;
+          });
           const focusCard = canvasCards.value.find(c => c.kind === 'focus') as any;
           const focusIdx = focusCard?.result.widgets.findIndex(
             (fw: any) => fw.machineUuid === w.machineUuid && fw.metric === w.metric && fw.type === w.type

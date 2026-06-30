@@ -55,6 +55,48 @@ func (tk *ToolKit) ShowMetric(ctx context.Context, orgID string, raw json.RawMes
 		machineName = args.Machine
 	}
 
+	if metric == "count" || metric == "daily-count" || metric == "counter" {
+		bucket := "1h"
+		status := "all"
+		sku := ""
+
+		var configBytes []byte
+		dbErr := database.Pool.QueryRow(ctx, `
+			SELECT config
+			FROM dashboard_widgets
+			WHERE machine_id = $1 AND widget_type = 'daily-count'
+			ORDER BY updated_at DESC LIMIT 1
+		`, id).Scan(&configBytes)
+		if dbErr == nil {
+			var cfg map[string]any
+			if json.Unmarshal(configBytes, &cfg) == nil {
+				if b, ok := cfg["bucket"].(string); ok && b != "" {
+					bucket = b
+				}
+				if s, ok := cfg["status"].(string); ok && s != "" {
+					status = s
+				}
+				if k, ok := cfg["sku"].(string); ok {
+					sku = k
+				}
+			}
+		}
+
+		return map[string]any{
+			"widget": map[string]any{
+				"type":        "daily-count",
+				"title":       fmt.Sprintf("%s — Count", machineName),
+				"machine":     machineName,
+				"machineUuid": id,
+				"metric":      "",
+				"unit":        "pcs",
+				"bucket":      bucket,
+				"status":      status,
+				"sku":         sku,
+			},
+		}, nil
+	}
+
 	var label string
 	var unit *string
 	var wmin, wmax *float64
