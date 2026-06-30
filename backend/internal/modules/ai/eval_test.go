@@ -72,12 +72,12 @@ func TestBakeOff(t *testing.T) {
 	}
 	config.Env = &config.Config{GroqApiKey: key}
 
-	tools := buildGroqTools("admin") // all 14, model has full choice
+	tools := buildGroqTools("admin", true) // full tool set for bake-off
 
 	for _, model := range bakeModels {
 		fmt.Printf("\n========== MODEL: %s ==========\n", model)
 		for _, tc := range bakeCases {
-			sp := systemPrompt
+			sp := systemPromptBase + systemPromptContextExt // bake-off always uses full prompt
 			msgs := []groqMessage{{Role: "system", Content: &sp}}
 			msgs = append(msgs, tc.history...)
 			msgs = append(msgs, groqMessage{Role: "user", Content: strPtr(tc.message)})
@@ -111,6 +111,10 @@ func TestBakeOff(t *testing.T) {
 					txt = strings.TrimSpace(*ch.Message.Content)
 				}
 				fmt.Printf("  -> TEXT: %s\n", txt)
+			}
+			if resp.Usage != nil {
+				fmt.Printf("  tokens: prompt=%d completion=%d total=%d\n",
+					resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
 			}
 		}
 	}

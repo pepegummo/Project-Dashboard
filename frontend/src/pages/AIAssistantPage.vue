@@ -210,8 +210,10 @@ onMounted(async () => {
         result: { dashboardName: dash?.name ?? '', widgets: toPreviewWidgets(dash?.widgets ?? []), summary: '' }
       }];
       nextTick(() => { restoring.value = false; });
+    } else {
+      dashboardStore.currentDashboard = null; // clear navigation leftovers so context is empty on first message
     }
-  } catch { /* no draft / offline — start empty */ }
+  } catch { dashboardStore.currentDashboard = null; /* no draft / offline — start empty */ }
 });
 
 // Persist the in-progress preview per user so it survives a refresh. Preview mutations

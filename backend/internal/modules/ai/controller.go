@@ -17,25 +17,24 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-// gpt-oss-20b: chosen via the Phase 1 bake-off (see eval_test.go) — best Thai
-// intent understanding (11/11, beat 120b and qwen), no language leaks, cheapest, and
-// Groq prompt-caches it (the stable system+tools prefix is discounted and off the rate limit).
-const groqModel = "openai/gpt-oss-120b"
+// gpt-oss-20b: confirmed via bake-off (see eval_test.go) — 12/13, beats 120b (11/13) and qwen.
+// 120b fails preview-edit intent (calls preview_dashboard instead of preview_update_widget).
+// 20b is also cheaper and Groq prompt-caches the stable base prefix.
+const groqModel = "openai/gpt-oss-20b"
 const groqBaseURL = "https://api.groq.com/openai/v1/chat/completions"
-const systemPrompt = `You are IotVision AI, assistant for an industrial IoT platform. Language: match the user's latest message exactly — Thai or English, never mix.
+// systemPromptBase is always sent. It covers the no-preview path (pure reads, dashboard
+// creation, existing-dashboard edits, greetings). Kept stable so Groq can cache it.
+const systemPromptBase = `You are IotVision AI, assistant for an industrial IoT platform. Language: match the user's latest message exactly — Thai or English, never mix.
 
 TOOL SELECTION:
 - Greeting / general question → plain text only, no tool.
 - "What is X?" / "Show me X" / "ดู X" / any metric read → ALWAYS call show_metric. You have no live sensor data without it. Never fabricate a value. After the tool returns, reply with one short natural sentence — never print raw JSON.
 - User asks to see ALL metrics of a machine → get_machines first, then show_metric once per field.
 - "Create a dashboard" / "สร้าง dashboard" → call preview_dashboard (default template: machine_overview). Never ask which template. Never call create_custom_dashboard — the user confirms via a button, not by typing.
-- Editing the current preview canvas → use preview_add_widget / preview_update_widget / preview_remove_widget. For count/production widgets always use type "daily-count".
 - User names an existing dashboard to modify → add_widget_to_dashboard / remove_widget.
 - "Show / add a widget for X" without naming a dashboard → show_metric (renders a card the user can add themselves). Never ask which dashboard.
 - Active alerts → get_active_alerts.
 - Alert rule management (create / resolve / acknowledge) → plain text: "Alert rules are managed on the Alerts page." Offer get_active_alerts instead.
-
-Compound message (read + write intent) → serve the read first, then ask about the write.
 
 SLOT FILLING:
 - Machine unknown → ask which machine in ONE question. Never guess. Never call get_machines just to list them back.
@@ -43,7 +42,14 @@ SLOT FILLING:
 - Ambiguous action ("fix it", "change it") → ask what to change in ONE question.
 
 WIDGET TYPES: daily-count (production/piece counts) · kpi-card (single value) · line-chart (trend) · gauge (dial)
-Line charts support absolute date ranges — convert any DD/MM/YYYY the user gives to YYYY-MM-DD for start_date/end_date.
+Line charts support absolute date ranges — convert any DD/MM/YYYY the user gives to YYYY-MM-DD for start_date/end_date.`
+
+// systemPromptContextExt is appended only when a dashboard/preview context is present.
+// Keeps preview-specific rules and the CONTEXT section out of no-preview requests (~100 tokens saved).
+const systemPromptContextExt = `
+
+Compound message (read + write intent) → serve the read first, then ask about the write.
+Editing the current preview canvas → use preview_add_widget / preview_update_widget / preview_remove_widget. For count/production widgets always use type "daily-count".
 
 CONTEXT: An authoritative dashboard state may be injected.
 - Structural questions (widget count, names, layout) → answer from context.
@@ -73,6 +79,11 @@ type groqResponse struct {
 		Message      groqMessage `json:"message"`
 		FinishReason string      `json:"finish_reason"`
 	} `json:"choices"`
+	Usage *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
 		Code    string `json:"code"`
@@ -317,8 +328,13 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 		return err
 	}
 
-	// Build Groq messages: system prompt + capped history
-	sp := systemPrompt
+	// Build Groq messages: system prompt + capped history.
+	// Append the context extension only when a preview/dashboard is open — saves ~100
+	// tokens on pure read/greeting requests and keeps the base prefix cache-stable.
+	sp := systemPromptBase
+	if body.Context != "" {
+		sp += systemPromptContextExt
+	}
 	msgs := []groqMessage{{Role: "system", Content: &sp}}
 	msgs = append(msgs, buildGroqMessages(history)...)
 	// Inject the on-screen dashboard preview AFTER history so the current state is
@@ -329,14 +345,18 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 		msgs = append(msgs, groqMessage{Role: "system", Content: &ctxContent})
 	}
 
-	tools := buildGroqTools(middleware.GetUser(c).Role)
+	hasContext := body.Context != ""
+	tools := buildGroqTools(middleware.GetUser(c).Role, hasContext)
 
-	// Force a tool call only when the message looks like a live-data read (contains a
-	// metric keyword, machine reference, or @widget mention). Greetings and structural
-	// questions ("how many widgets?") answer correctly from context without a tool call,
-	// so forcing "required" there just burns an extra LLM round-trip on failure.
+	// Pure conversational messages (greetings, "what can you do?") get no tools —
+	// the model answers in plain text and tools are sent on the next actionable message.
+	if !hasContext && !needsTools(body.Message) {
+		tools = nil
+	}
+
+	// Force a tool call only when the message looks like a live-data or action request.
 	firstToolChoice := ""
-	if body.Context != "" && looksLikeDataQuery(body.Message) {
+	if hasContext && needsTools(body.Message) {
 		firstToolChoice = "required"
 	}
 
@@ -432,9 +452,58 @@ func toGroqTool(t map[string]any) map[string]any {
 	}
 }
 
-// buildGroqTools returns all tools the LLM may call, filtered only by role.
-// Mutating tools require admin/editor — viewers can only read.
-func buildGroqTools(role string) []map[string]any {
+// toGroqToolSlim sends only name + description (no parameters/input_schema).
+// The description embeds arg hints so the model knows what JSON to produce.
+// Saves ~50–80 tokens per simple tool vs the full schema form.
+var slimToolDescriptions = map[string]string{
+	"show_metric":         "Show a live metric widget. Args: machine (name, e.g. CW-01), metric (field key, e.g. speed/temp/weight), viz (value|gauge|trend).",
+	"get_telemetry_trend": "Get avg/min/max of one metric. Args: machine_id (name), metric (field key), time_range (5m|15m|30m|1h|6h|24h|7d|15d|30d).",
+	"get_daily_count":     "Per-day production count. Args: machine_id (name), days (integer, default 7).",
+	"preview_dashboard":   "Preview a template dashboard. Args: machine (name), template (machine_overview|machine_production|machine_maintenance).",
+	"remove_widget":       "Remove a widget from a named dashboard. Args: dashboard_name, widget_title.",
+}
+
+func toGroqToolSlim(t map[string]any) map[string]any {
+	name := t["name"].(string)
+	desc, _ := t["description"].(string)
+	if slim, ok := slimToolDescriptions[name]; ok {
+		desc = slim
+	}
+	return map[string]any{
+		"type": "function",
+		"function": map[string]any{
+			"name":        name,
+			"description": desc,
+			// additionalProperties:true lets the model pass args derived from the
+			// description hints without Groq's schema validator rejecting them.
+			"parameters": map[string]any{
+				"type":                 "object",
+				"additionalProperties": true,
+			},
+		},
+	}
+}
+
+// complexSchemaTools keep their full input_schema because they have nested objects
+// (widgetItemSchema) or many optional patch fields that the model needs to see.
+var complexSchemaTools = map[string]bool{
+	"add_widget_to_dashboard": true,
+	"preview_add_widget":      true,
+	"preview_remove_widget":   true,
+	"preview_update_widget":   true,
+}
+
+// previewOnlyTools are only useful when a dashboard/preview context is present.
+// Hiding them on no-context requests saves tokens from the tools list.
+var previewOnlyTools = map[string]bool{
+	"preview_add_widget":    true,
+	"preview_remove_widget": true,
+	"preview_update_widget": true,
+}
+
+// buildGroqTools returns the tool list filtered by role and context.
+// Simple tools use slim (description-only) form; complex tools keep full schemas.
+func buildGroqTools(role string, hasContext bool) []map[string]any {
 	canWrite := role == "admin" || role == "editor"
 	out := make([]map[string]any, 0, len(AllTools()))
 	for _, t := range AllTools() {
@@ -442,7 +511,14 @@ func buildGroqTools(role string) []map[string]any {
 		if isWriteTool(name) && !canWrite {
 			continue
 		}
-		out = append(out, toGroqTool(t))
+		if previewOnlyTools[name] && !hasContext {
+			continue
+		}
+		if complexSchemaTools[name] {
+			out = append(out, toGroqTool(t))
+		} else {
+			out = append(out, toGroqToolSlim(t))
+		}
 	}
 	return out
 }
@@ -543,13 +619,17 @@ func parseRetryAfter(header string, body []byte) time.Duration {
 
 func strPtr(s string) *string { return &s }
 
-// looksLikeDataQuery returns true when a message is likely asking for live sensor data.
-// Used to gate tool_choice:"required" so greetings and structural questions aren't penalised.
-var dataQueryRe = regexp.MustCompile(`(?i)@|\b(speed|temp(erature)?|weight|pressure|humidity|voltage|current|power|flow|level|count|status|ดู|แสดง|เร็ว|อุณห|น้ำหนัก|ความดัน|กระแส|กำลัง)\b`)
+// needsTools returns true when the message likely needs a tool — a metric read, action request,
+// or reference to a machine/dashboard. Used to gate tool_choice:"required" on context-present
+// requests, and to zero-out tools for pure greetings so they don't pay for the full tool list.
+var needsToolsRe = regexp.MustCompile(`(?i)@|\b(` +
+	`speed|temp(erature)?|weight|pressure|humidity|voltage|current|power|flow|level|count|status|` +
+	`ดู|แสดง|เร็ว|อุณห|น้ำหนัก|ความดัน|กระแส|กำลัง|` +
+	`show|create|dashboard|add|widget|remove|alert|machine|trend|gauge|kpi|production|` +
+	`สร้าง|เพิ่ม|ลบ|แก้|เปลี่ยน|เครื่อง|แจ้งเตือน|ผลิต` +
+	`)\b`)
 
-func looksLikeDataQuery(msg string) bool {
-	return dataQueryRe.MatchString(msg)
-}
+func needsTools(msg string) bool { return needsToolsRe.MatchString(msg) }
 
 // buildGroqMessages converts the last 8 DB messages to Groq/OpenAI format.
 // GetMessages now returns DESC order (newest first) to avoid a full table scan;

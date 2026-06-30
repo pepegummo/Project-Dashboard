@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IotVision AI — Bug &amp; Optimization Log</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #0f1117;
+    --surface:   #1a1d27;
+    --surface2:  #21253a;
+    --border:    #2a2d3e;
+    --text:      #e2e8f0;
+    --muted:     #8892a4;
+    --subtle:    #5a6478;   /* dim labels — replaces border color for text */
+    --accent:    #6366f1;
+    --bug:       #ef4444;
+    --opt:       #22c55e;
+    --discovery: #f59e0b;
+    --code-bg:   #12141e;
+    --sidebar-w: 240px;
+    --radius:    8px;
+  }
+
+  html, body {
+    height: 100%;
+    overflow: hidden;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 15px;     /* was 14px — bumps all rem values up */
+    line-height: 1.65;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Full-width header ── */
+  .page-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 1.75rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    flex-shrink: 0;
+    z-index: 10;
+  }
+  .page-header h1 { font-size: 1.15rem; font-weight: 700; letter-spacing: -0.3px; }
+  .page-header p  { color: var(--muted); font-size: 0.82rem; margin-top: 0.15rem; }
+  .header-meta {
+    text-align: right;
+    font-size: 0.82rem;
+    color: var(--muted);
+    line-height: 2;
+  }
+  .badge {
+    display: inline-block;
+    padding: 0.15rem 0.55rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+  .badge-accent { background: #6366f120; color: var(--accent); border: 1px solid #6366f140; }
+
+  /* ── Body layout ── */
+  .layout {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    width: var(--sidebar-w);
+    flex-shrink: 0;
+    overflow-y: auto;
+    border-right: 1px solid var(--border);
+    padding: 0.75rem 0 1.5rem;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .sidebar::-webkit-scrollbar { width: 4px; }
+  .sidebar::-webkit-scrollbar-track { background: transparent; }
+  .sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .nav-section {
+    padding: 1rem 0 0.35rem 1rem;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--subtle);
+  }
+  .nav-section:first-child { padding-top: 0.5rem; }
+
+  .nav-link {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.5rem 1rem;          /* was 0.38rem — bigger click target */
+    font-size: 0.84rem;            /* was 0.8rem (~12px) */
+    color: var(--muted);
+    text-decoration: none;
+    border-left: 2px solid transparent;
+    transition: color 0.15s, background 0.15s, border-color 0.15s;
+    cursor: pointer;
+    line-height: 1.4;
+    min-height: 36px;
+  }
+  .nav-link:hover { color: var(--text); background: #ffffff09; }
+  .nav-link.active { color: var(--text); border-left-color: var(--accent); background: #6366f112; }
+
+  .nav-link.nav-bug.active    { border-left-color: var(--bug);       background: #ef444412; color: #fca5a5; }
+  .nav-link.nav-opt.active    { border-left-color: var(--opt);       background: #22c55e12; color: #86efac; }
+  .nav-link.nav-disc.active   { border-left-color: var(--discovery); background: #f59e0b12; color: #fcd34d; }
+
+  .nav-num {
+    font-size: 0.72rem;            /* was 0.65rem (~9.8px) — too small */
+    font-weight: 600;
+    color: var(--subtle);          /* was --border (nearly invisible) */
+    min-width: 1.3rem;
+    text-align: right;
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+  }
+  .nav-link.active .nav-num { color: inherit; opacity: 0.65; }
+
+  .nav-dot {
+    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  }
+  .nav-bug  .nav-dot { background: var(--bug); }
+  .nav-opt  .nav-dot { background: var(--opt); }
+  .nav-disc .nav-dot { background: var(--discovery); }
+  .nav-ref  .nav-dot { background: var(--accent); }
+
+  /* ── Main content ── */
+  .main {
+    flex: 1;
+    min-width: 0;
+    overflow-y: auto;
+    padding: 1.75rem 2.25rem 3rem;
+  }
+
+  h2 {
+    font-size: 1.05rem;            /* was 0.95rem (~14.25px) — too small for a heading */
+    font-weight: 700;              /* was 600 */
+    margin: 2.25rem 0 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    scroll-margin-top: 70px;
+    letter-spacing: -0.2px;
+  }
+  h2:first-child { margin-top: 0; }
+
+  /* ── Metric cards ── */
+  .metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 0.5rem;
+  }
+  .metric-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 0.85rem 1rem;
+  }
+  .metric-card .label { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.5px; }
+  .metric-card .value { font-size: 1.5rem; font-weight: 700; margin-top: 0.2rem; }
+  .metric-card .sub   { font-size: 0.72rem; color: var(--muted); margin-top: 0.15rem; }
+  .green  { color: #22c55e; }
+  .red    { color: #ef4444; }
+  .indigo { color: var(--accent); }
+
+  /* ── Tables ── */
+  .table-wrap { overflow-x: auto; margin-bottom: 0.5rem; border: 1px solid var(--border); border-radius: var(--radius); }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th {
+    background: var(--surface);
+    color: var(--muted);
+    text-align: left;
+    padding: 0.6rem 1rem;
+    font-weight: 600;
+    font-size: 0.72rem;            /* was 0.68rem (~10.2px) */
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  td { padding: 0.7rem 1rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #ffffff06; }
+  td.before { color: #ef4444; font-weight: 600; }
+  td.after  { color: #22c55e; font-weight: 700; }
+  td.delta  { color: #22c55e; font-weight: 600; }
+  td.arrow  { color: var(--muted); }
+  .score-pass    { color: #22c55e; font-weight: 700; }
+  .score-partial { color: #f59e0b; font-weight: 700; }
+
+  code {
+    font-family: 'SF Mono','Fira Code','Cascadia Code',monospace;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    padding: 0.12em 0.38em;
+    border-radius: 4px;
+    font-size: 0.82em;             /* was 0.77em (~10.8px at 14px base) */
+    color: #a5b4fc;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.1rem;
+    font-size: 0.8rem;             /* was 0.74rem (~10.4px) */
+    overflow-x: auto;
+    font-family: 'SF Mono','Fira Code',monospace;
+    color: #c7d2fe;
+    margin-top: 0.85rem;
+    line-height: 1.6;
+  }
+
+  /* ── Accordion entries ── */
+  .entry-list { display: flex; flex-direction: column; }
+
+  details.entry {
+    border: 1px solid var(--border);
+    border-radius: 0;
+    overflow: hidden;
+    margin-top: -1px;
+    scroll-margin-top: 70px;
+  }
+  details.entry:first-child { border-radius: 8px 8px 0 0; }
+  details.entry:last-child  { border-radius: 0 0 8px 8px; }
+
+  details.entry summary {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    padding: 0.75rem 1rem;         /* was 0.65rem 0.9rem — more breathing room */
+    cursor: pointer;
+    user-select: none;
+    list-style: none;
+    background: var(--surface);
+    transition: background 0.15s;
+    min-height: 44px;
+  }
+  details.entry summary::-webkit-details-marker { display: none; }
+  details.entry[open] > summary { background: var(--surface2); border-bottom: 1px solid var(--border); }
+  details.entry summary:hover { background: #ffffff09; }
+
+  details.entry-bug   summary { border-left: 3px solid var(--bug); }
+  details.entry-opt   summary { border-left: 3px solid var(--opt); }
+  details.entry-disc  summary { border-left: 3px solid var(--discovery); }
+
+  .entry-num {
+    font-size: 0.75rem;            /* was 0.7rem */
+    font-weight: 700;
+    color: var(--subtle);          /* was muted — subtle is slightly dimmer, still readable */
+    min-width: 1.3rem;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .type-pill {
+    display: inline-block;
+    padding: 0.13rem 0.5rem;       /* slightly more padding */
+    border-radius: 5px;
+    font-size: 0.7rem;             /* was 0.65rem (~9.75px at 15px base) */
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .pill-bug  { background: #ef444420; color: #fca5a5; border: 1px solid #ef444440; }
+  .pill-opt  { background: #22c55e20; color: #86efac; border: 1px solid #22c55e40; }
+  .pill-disc { background: #f59e0b20; color: #fcd34d; border: 1px solid #f59e0b40; }
+
+  .entry-title { flex: 1; font-weight: 600; font-size: 0.88rem; } /* was 0.85rem */
+  .entry-files {
+    font-size: 0.73rem;            /* was 0.68rem */
+    color: var(--muted);
+    font-family: 'SF Mono','Fira Code',monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
+  }
+  .entry-chevron {
+    color: var(--muted);
+    font-size: 0.82rem;
+    transition: transform 0.2s ease;
+    flex-shrink: 0;
+  }
+  details.entry[open] .entry-chevron { transform: rotate(180deg); }
+
+  .entry-detail {
+    padding: 1.1rem 1.25rem 1.2rem 1.25rem;  /* was 0.9rem 1rem — more breathing room */
+    border-left: 3px solid transparent;
+  }
+  details.entry-bug  .entry-detail { border-left-color: #ef444428; }
+  details.entry-opt  .entry-detail { border-left-color: #22c55e28; }
+  details.entry-disc .entry-detail { border-left-color: #f59e0b28; }
+
+  .field {
+    display: grid;
+    grid-template-columns: 100px 1fr;  /* was 95px — wider label column */
+    gap: 0.3rem 1rem;
+    margin-bottom: 0.65rem;            /* was 0.55rem */
+    font-size: 0.85rem;                /* was 0.81rem */
+    line-height: 1.65;
+  }
+  .field:last-of-type { margin-bottom: 0; }
+  .field-label {
+    color: var(--muted);
+    font-size: 0.72rem;                /* was 0.68rem (~10.2px) */
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    padding-top: 0.2rem;
+    font-weight: 600;
+  }
+
+  .legend {
+    display: flex;
+    gap: 1.1rem;
+    margin-bottom: 0.8rem;
+    flex-wrap: wrap;
+  }
+  .legend-item { display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; color: var(--muted); }
+  .legend-dot  { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+
+  footer {
+    margin-top: 2.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.78rem;                /* was 0.72rem */
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  /* §1 Accessibility — focus rings */
+  .nav-link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  details.entry summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+
+  /* Smooth scroll in the main panel */
+  .main { scroll-behavior: smooth; }
+
+  /* Slightly dim the metric card border on hover for polish */
+  .metric-card { transition: border-color 0.15s; }
+  .metric-card:hover { border-color: #3a3d54; }
+</style>
+</head>
+<body>
+
+<!-- ── Full-width header ── -->
+<header class="page-header">
+  <div>
+    <h1>IotVision AI — Bug &amp; Optimization Log</h1>
+    <p>Architecture review · bug fixes · token optimization · 2026-06-30</p>
+    <div style="display:flex;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap;">
+      <span class="badge" style="background:#ef444420;color:#fca5a5;border:1px solid #ef444440;">5 Bugs</span>
+      <span class="badge" style="background:#22c55e20;color:#86efac;border:1px solid #22c55e40;">4 Optimizations</span>
+      <span class="badge" style="background:#f59e0b20;color:#fcd34d;border:1px solid #f59e0b40;">1 Discovery</span>
+      <span class="badge badge-accent">10 total</span>
+    </div>
+  </div>
+  <div class="header-meta">
+    <div>Model &nbsp;<span class="badge badge-accent">openai/gpt-oss-20b</span> on Groq</div>
+    <div>Bake-off &nbsp;<strong class="green">13 / 13 ✓</strong></div>
+    <div>Branch &nbsp;<code>ai</code></div>
+  </div>
+</header>
+
+<div class="layout">
+
+  <!-- ── Sidebar ── -->
+  <nav class="sidebar">
+    <div class="nav-section">Bugs</div>
+    <a class="nav-link nav-bug" href="#entry-1" onclick="navTo('entry-1')">
+      <span class="nav-num">1</span><span class="nav-dot"></span> Dashboard name lookup
+    </a>
+    <a class="nav-link nav-bug" href="#entry-2" onclick="navTo('entry-2')">
+      <span class="nav-num">2</span><span class="nav-dot"></span> Can't change machine
+    </a>
+    <a class="nav-link nav-bug" href="#entry-3" onclick="navTo('entry-3')">
+      <span class="nav-num">3</span><span class="nav-dot"></span> Dead CreateDashboard
+    </a>
+    <a class="nav-link nav-bug" href="#entry-4" onclick="navTo('entry-4')">
+      <span class="nav-num">4</span><span class="nav-dot"></span> firstToolChoice gate
+    </a>
+    <a class="nav-link nav-bug" href="#entry-5" onclick="navTo('entry-5')">
+      <span class="nav-num">5</span><span class="nav-dot"></span> Context nav leak
+    </a>
+
+    <div class="nav-section">Optimizations</div>
+    <a class="nav-link nav-opt" href="#entry-6" onclick="navTo('entry-6')">
+      <span class="nav-num">6</span><span class="nav-dot"></span> Prompt split
+    </a>
+    <a class="nav-link nav-opt" href="#entry-7" onclick="navTo('entry-7')">
+      <span class="nav-num">7</span><span class="nav-dot"></span> Preview tools filter
+    </a>
+    <a class="nav-link nav-opt" href="#entry-8" onclick="navTo('entry-8')">
+      <span class="nav-num">8</span><span class="nav-dot"></span> Zero-tool fast path
+    </a>
+    <a class="nav-link nav-opt" href="#entry-9" onclick="navTo('entry-9')">
+      <span class="nav-num">9</span><span class="nav-dot"></span> Slim tool schemas
+    </a>
+
+    <div class="nav-section">Discoveries</div>
+    <a class="nav-link nav-disc" href="#entry-10" onclick="navTo('entry-10')">
+      <span class="nav-num">10</span><span class="nav-dot"></span> Groq schema validation
+    </a>
+
+    <div class="nav-section">Reference</div>
+    <a class="nav-link nav-ref" href="#section-bakeoff" onclick="navTo('section-bakeoff')">
+      <span class="nav-dot"></span> Bake-off results
+    </a>
+    <a class="nav-link nav-ref" href="#section-arch" onclick="navTo('section-arch')">
+      <span class="nav-dot"></span> Architecture
+    </a>
+    <a class="nav-link nav-ref" href="#section-remaining" onclick="navTo('section-remaining')">
+      <span class="nav-dot"></span> Remaining items
+    </a>
+  </nav>
+
+  <!-- ── Main ── -->
+  <main class="main">
+
+    <!-- Token Summary -->
+    <h2 id="section-tokens">📉 Token Reduction Summary</h2>
+    <div class="metrics">
+      <div class="metric-card">
+        <div class="label">Greeting · Before</div>
+        <div class="value red">1143</div>
+        <div class="sub">full tool list always</div>
+      </div>
+      <div class="metric-card">
+        <div class="label">Greeting · After</div>
+        <div class="value green">~273</div>
+        <div class="sub">zero-tool gate + leak fix</div>
+      </div>
+      <div class="metric-card">
+        <div class="label">Saving</div>
+        <div class="value green">−76%</div>
+        <div class="sub">870 tool tokens gone</div>
+      </div>
+      <div class="metric-card">
+        <div class="label">Tool request · After</div>
+        <div class="value green">~600</div>
+        <div class="sub">slim schemas, no leaked ctx</div>
+      </div>
+      <div class="metric-card">
+        <div class="label">Dashboard edit · After</div>
+        <div class="value indigo">~950</div>
+        <div class="sub">was ~2120</div>
+      </div>
+    </div>
+
+    <div class="table-wrap" style="margin-top:1rem">
+    <table>
+      <thead>
+        <tr><th>Request type</th><th>Before</th><th></th><th>After</th><th>Change</th><th>What changed</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>"hello" — no prior navigation</td>
+          <td class="before">1143</td><td class="arrow">→</td><td class="after">~273</td>
+          <td class="delta">−76%</td><td>Zero-tool gate + slim schemas</td>
+        </tr>
+        <tr>
+          <td>"hello" — after visiting a dashboard</td>
+          <td class="before">1118 (leaked)</td><td class="arrow">→</td><td class="after">~273</td>
+          <td class="delta">−76%</td><td>Context leak fixed in <code>onMounted</code></td>
+        </tr>
+        <tr>
+          <td>"speed ของ CW-01" — no context</td>
+          <td class="before">1143</td><td class="arrow">→</td><td class="after">~600</td>
+          <td class="delta">−47%</td><td>Slim schemas · preview tools excluded</td>
+        </tr>
+        <tr>
+          <td>Dashboard editing — with context</td>
+          <td class="before">~2120</td><td class="arrow">→</td><td class="after">~950</td>
+          <td class="delta">−55%</td><td>Slim schemas + context ext gated</td>
+        </tr>
+        <tr>
+          <td>First no-context request</td>
+          <td class="before">~1661</td><td class="arrow">→</td><td class="after">~1143</td>
+          <td class="delta">−31%</td><td>Phase 1: prompt split + preview tools hidden</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <!-- Bug & Optimization Log -->
+    <h2 id="section-log">🐛 Bug &amp; Optimization Log</h2>
+    <div class="legend">
+      <div class="legend-item"><span class="legend-dot" style="background:#ef4444"></span>Bug</div>
+      <div class="legend-item"><span class="legend-dot" style="background:#22c55e"></span>Optimization</div>
+      <div class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span>Discovery (side-effect)</div>
+    </div>
+
+    <div class="entry-list">
+
+      <details class="entry entry-bug" id="entry-1">
+        <summary>
+          <span class="entry-num">1</span>
+          <span class="type-pill pill-bug">Bug</span>
+          <span class="entry-title">Dashboard name lookup — exact match only</span>
+          <span class="entry-files">tool_actions.go</span>
+          <span class="entry-chevron">▾</span>
+        </summary>
+        <div class="entry-detail">
+          <div class="field"><span class="field-label">Symptom</span><span>"add widget to CW-01 Overview" silently fails when the dashboard's actual name is "Machine Overview — CW-01".</span></div>
+          <div class="field"><span class="field-label">Root cause</span><span><code>resolveDashboardID</code> used <code>LOWER(name) = LOWER($2)</code> (exact). Machine lookup already used substring — inconsistent.</span></div>
+          <div class="field"><span class="field-label">Fix</span><span>Changed to <code>LIKE '%'||LOWER($2)||'%'</code> with exact-match ranked first via <code>CASE</code>.</span></div>
+<pre>WHERE organization_id = $1 AND LOWER(name) LIKE '%' || LOWER($2) || '%'
+ORDER BY
+  CASE WHEN LOWER(name) = LOWER($2) THEN 0 ELSE 1 END,
+  created_at DESC
+LIMIT 1</pre>
+        </div>
+      </details>
+
+      <details class="entry entry-bug" id="entry-2">
+        <summary>
+          <span class="entry-num">2</span>
+          <span class="type-pill pill-bug">Bug</span>
+          <span class="entry-title">preview_update_widget cannot change machine</span>
+          <span class="entry-files">schema.go · dashboard_action.go</span>
+          <span class="entry-chevron">▾</span>
+        </summary>
+        <div class="entry-detail">
+          <div class="field"><span class="field-label">Symptom</span><span>"เปลี่ยน CW-01 เป็น CW-02 ใน widget นี้" — machine unchanged silently.</span></div>
+          <div class="field"><span class="field-label">Root cause</span><span>No <code>machine</code> parameter in the tool schema or handler. Model had nowhere to pass the new machine name.</span></div>
+          <div class="field"><span class="field-label">Fix</span><span>Added <code>Machine string `json:"machine"`</code> to <code>PreviewUpdateWidgetArgs</code>. Handler resolves via <code>resolveMachineID</code> and writes <code>changes["machine"]</code> + <code>changes["machineUuid"]</code>.</span></div>
+        </div>
+      </details>
+
+      <details class="entry entry-bug" id="entry-3">
+        <summary>
+          <span class="entry-num">3</span>
+          <span class="type-pill pill-bug">Bug</span>
+          <span class="entry-title">Dead CreateDashboardTool variable</span>
+          <span class="entry-files">schema.go · controller.go</span>
+          <span class="entry-chevron">▾</span>
+        </summary>
+        <div class="entry-detail">
+          <div class="field"><span class="field-label">Symptom</span><span>Confusing dead code with comment "STEP 2: Create the dashboard" implying the LLM could trigger dashboard creation.</span></div>
+          <div class="field"><span class="field-label">Root cause</span><span>Variable declared but never added to <code>AllTools()</code>. Frontend calls <code>create_custom_dashboard</code> directly after user clicks Confirm — LLM cannot trigger it by design.</span></div>
+          <div class="field"><span class="field-label">Fix</span><span>Deleted the variable. Added comment at <code>dispatch()</code> explaining the preview-then-confirm flow.</span></div>
+<pre>// create_custom_dashboard is intentionally excluded from AllTools().
+// Only the frontend calls it (via /ai/tools/execute) after the user
+// clicks Confirm — enforces the preview-then-confirm safety gate.</pre>
+        </div>
+      </details>
+
+      <details class="entry entry-bug" id="entry-4">
+        <summary>
+          <span class="entry-num">4</span>
+          <span class="type-pill pill-bug">Bug</span>
+          <span class="entry-title">firstToolChoice gate too broad — greetings trigger Groq error</span>
+          <span class="entry-files">controller.go</span>
+          <span class="entry-chevron">▾</span>
+        </summary>
+        <div class="entry-detail">
+          <div class="field"><span class="field-label">Symptom</span><span>"สวัสดีครับ" with any dashboard open causes 2 LLM calls + Groq "Tool choice is required" error + retry.</span></div>
+          <div class="field"><span class="field-label">Root cause</span><span><code>firstToolChoice = "required"</code> fired on ALL messages when <code>body.Context != ""</code> — including greetings.</span></div>
+          <div class="field"><span class="field-label">Fix</span><span>Replaced with <code>needsTools(msg)</code> regex. Only forces <code>required</code> when message contains metric keywords or action words.</span></div>
+<pre>var needsToolsRe = regexp.MustCompile(`(?i)@|\b(speed|temp|weight|pressure|` +
+    `ดู|แสดง|เร็ว|อุณห|show|create|dashboard|add|widget|สร้าง|เพิ่ม...)\b`)
+
+if body.Context != "" &amp;&amp; needsTools(body.Message) {
+    firstToolChoice = "required"
+}</pre>
+        </div>
+      </details>
+
+      <details class="entry entry-bug" id="entry-5">
+        <summary>
+          <span class="entry-num">5</span>
+          <span class="type-pill pill-bug">Bug</span>
+          <span class="entry-title">AI context leaked from dashboard navigation</span>
+          <span class="entry-files">AIAssistantPage.vue · onMounted</span>
+          <span class="entry-chevron">▾</span>
+        </summary>
+        <div class="entry-detail">
+          <div class="field"><span class="field-label">Symptom</span><span>After zero-tool gate was added, "hello" still showed ~1118 tokens. Gate never fired because <code>hasContext</code> was always <code>true</code>.</span></div>
+          <div class="field"><span class="field-label">Root cause</span><span><code>buildDashboardContext()</code> falls through to <code>dashboardStore.widgets</code>, a computed from <code>currentDashboard</code>. Navigating <code>/dashboards/:id → /ai</code> left <code>currentDashboard</code> populated — <code>onMounted</code> had no <code>else</code> to clear it. Backend saw non-empty context → full tool list sent.</span></div>
+          <div class="field"><span class="field-label">Fix</span><span>Added <code>else { dashboardStore.currentDashboard = null }</code> in <code>onMounted</code> when no draft is restored. Also updated the <code>catch</code> block.</span></div>
+<pre>// onMounted — AIAssistantPage.vue
+if (draft) {
+  // restore draft...
+} else {
+  dashboardStore.currentDashboard = null  // clear nav leftovers
+}
+} catch { dashboardStore.currentDashboard = null }</pre>
+        </div>
+      </details>
+
+      <details class="entry entry-opt" id="entry-6">
+        <summary>
+          <span class="entry-num">6</span>
+          <span class="type-pill pill-opt">Optimization</span>
+          <span class="entry-title">System prompt split — base + context extension</span>
+          <span class="entry-files">controller.go</span>
+          <span class="entry-chevron">▾</span>
+        </summary>
+        <div class="entry-detail">
+          <div class="field"><span class="field-label">Problem</span><span>Every request included preview-editing instructions and the CONTEXT section even when no dashboard was open — ~100 wasted tokens per no-context request.</span></div>
+          <div class="field"><span class="field-label">Root cause</span><span>Single <code>systemPrompt</code> constant always fully appended regardless of context.</span></div>
+          <div class="field"><span class="field-label">Fix</span><span>Split into <code>systemPromptBase</code> (always sent, cache-stable) and <code>systemPromptContextExt</code> (appended only when <code>body.Context != ""</code>).</span></div>
+<pre>sp := systemPromptBase
+if body.Context != "" {
+    sp += systemPromptContextExt
+}</pre>
+        </div>
+      </details>
+
+      <details class="entry entry-opt" id="entry-7">
+        <summary>
+          <span class="entry-num">7</span>
+          <span class="type-pill pill-opt">Optimization</span>
+          <span class="entry-title">Preview tools filtered by context presence</span>
+          <span class="entry-files">controller.go</span>
+          <span class="entry-chevron">▾</span>
+        </summary>
+        <div class="entry-detail">
+          <div class="field"><span class="field-label">Problem</span><span><code>preview_add_widget</code>, <code>preview_remove_widget</code>, <code>preview_update_widget</code> always included — ~250 wasted tokens when no preview is open.</span></div>
+          <div class="field"><span class="field-label">Root cause</span><span>No filtering in <code>buildGroqTools</code> for context-dependent tools.</span></div>
+          <div class="field"><span class="field-label">Fix</span><span>Added <code>previewOnlyTools</code> map. <code>buildGroqTools(role, hasContext)</code> hides these 3 tools when <code>!hasContext</code>.</span></div>
+<pre>var previewOnlyTools = map[string]bool{
+    "preview_add_widget":    true,
+    "preview_remove_widget": true,
+    "preview_update_widget": true,
+}
+if previewOnlyTools[name] &amp;&amp; !hasContext { continue }</pre>
+        </div>
+      </details>
+
+      <details class="entry entry-opt" id="entry-8">
+        <summary>
+          <span class="entry-num">8</span>
+          <span class="type-pill pill-opt">Optimization</span>
+          <span class="entry-title">Zero-tool fast path for greetings</span>
+          <span class="entry-files">controller.go</span>
+          <span class="entry-chevron">▾</span>
+        </summary>
+        <div class="entry-detail">
+          <div class="field"><span class="field-label">Problem</span><span>Greetings sent the full tool list (~870 tokens) to Groq even though no tool call would be needed.</span></div>
+          <div class="field"><span class="field-label">Root cause</span><span>No mechanism to skip tools for non-actionable messages.</span></div>
+          <div class="field"><span class="field-label">Fix</span><span>If <code>!hasContext &amp;&amp; !needsTools(msg)</code>, sets <code>tools = nil</code>. Groq receives no tool list → ~273 tokens for greetings.</span></div>
+<pre>if !hasContext &amp;&amp; !needsTools(body.Message) {
+    tools = nil  // pure greeting → no tools → ~273 tokens
+}</pre>
+        </div>
+      </details>
+
+      <details class="entry entry-opt" id="entry-9">
+        <summary>
+          <span class="entry-num">9</span>
+          <span class="type-pill pill-opt">Optimization</span>
+          <span class="entry-title">Slim tool schemas for simple tools</span>
+          <span class="entry-files">controller.go</span>
+          <span class="entry-chevron">▾</span>
+        </summary>
+        <div class="entry-detail">
+          <div class="field"><span class="field-label">Problem</span><span>Full <code>input_schema</code> JSON sent for all 12 tools (~870 tokens), even for tools with 0–3 obvious params.</span></div>
+          <div class="field"><span class="field-label">Root cause</span><span>Every tool used <code>toGroqTool()</code> with full property definitions and enums.</span></div>
+          <div class="field"><span class="field-label">Fix</span><span>Added <code>toGroqToolSlim()</code> — name + description (with arg hints embedded) + <code>additionalProperties:true</code>. Applied to 8 simple tools. 4 complex tools keep full schemas.</span></div>
+<pre>var complexSchemaTools = map[string]bool{
+    "add_widget_to_dashboard": true,
+    "preview_add_widget":      true,
+    "preview_remove_widget":   true,
+    "preview_update_widget":   true,
+}
+// Simple tools get description-only, e.g.:
+// "Show a live metric. Args: machine (e.g. CW-01), metric (field key), viz (value|gauge|trend)."</pre>
+        </div>
+      </details>
+
+      <details class="entry entry-disc" id="entry-10">
+        <summary>
+          <span class="entry-num">10</span>
+          <span class="type-pill pill-disc">Discovery</span>
+          <span class="entry-title">Omitting parameters field breaks Groq schema validation</span>
+          <span class="entry-files">controller.go</span>
+          <span class="entry-chevron">▾</span>
+        </summary>
+        <div class="entry-detail">
+          <div class="field"><span class="field-label">Symptom</span><span>After slim schemas deployed, all <code>show_metric</code> calls errored: <em>"additionalProperties 'machine', 'metric', 'viz' not allowed"</em>. Bake-off: 0/5 metric reads passing.</span></div>
+          <div class="field"><span class="field-label">Root cause</span><span>Omitting <code>parameters</code> from a tool definition makes Groq treat it as <code>{"additionalProperties":false}</code>, rejecting any args the model passes — even correct ones.</span></div>
+          <div class="field"><span class="field-label">Fix</span><span>Added <code>"parameters": {"type":"object","additionalProperties":true}</code> to <code>toGroqToolSlim()</code>. After fix: 13/13 bake-off cases pass.</span></div>
+<pre>func toGroqToolSlim(t map[string]any) map[string]any {
+    return map[string]any{
+        "type": "function",
+        "function": map[string]any{
+            "name":        name,
+            "description": desc,
+            "parameters": map[string]any{
+                "type":                 "object",
+                "additionalProperties": true,  // ← required
+            },
+        },
+    }
+}</pre>
+        </div>
+      </details>
+
+    </div><!-- entry-list -->
+
+    <!-- Bake-off -->
+    <h2 id="section-bakeoff">🏆 Model Bake-off Results</h2>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Model</th><th>Score</th><th>Prompt tokens</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>qwen/qwen3-32b</td>
+          <td class="score-partial">~7/13 *</td>
+          <td>~2116</td>
+          <td>Reasoning model — verbose, slow, hit free-tier rate limits mid-run</td>
+        </tr>
+        <tr>
+          <td><strong>openai/gpt-oss-20b</strong> ← chosen</td>
+          <td class="score-pass">13/13 ✓</td>
+          <td>1576</td>
+          <td>Fast, cheap, Groq prompt-caches stable prefix. Correct on Thai, metric reads, preview-edit, slot-fill</td>
+        </tr>
+        <tr>
+          <td>openai/gpt-oss-120b</td>
+          <td class="score-pass">13/13 ✓</td>
+          <td>1576</td>
+          <td>Matched 20b in second run. Failed preview-edit in earlier run. More expensive, no accuracy gain</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+    <p style="color:var(--muted);font-size:0.75rem;margin-top:0.5rem">* qwen3-32b hit Groq free-tier rate limits; only 7 of 13 cases completed.</p>
+
+    <!-- Architecture -->
+    <h2 id="section-arch">🏗️ Architecture Notes</h2>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Area</th><th>Decision</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td>Tool execution</td><td>Backend executes all tools (Go)</td><td>LLM never writes to DB directly. Tools inherit service layer auth + org-scoping.</td></tr>
+        <tr><td>Dashboard creation</td><td>Preview-then-confirm</td><td>LLM previews → user clicks Confirm → frontend calls <code>create_custom_dashboard</code>. LLM cannot accidentally create.</td></tr>
+        <tr><td>Prompt caching</td><td>Stable base prefix first</td><td>Groq caches system prompt + tools. Every token removed compounds across all calls.</td></tr>
+        <tr><td>Role gate</td><td>Write tools filtered by role</td><td>Viewers see read tools only; <code>admin</code>/<code>editor</code> get write tools.</td></tr>
+        <tr><td>Machine resolution</td><td>Substring match</td><td>Users say "CW-01" not "Checkweigher CW-01 Line 3".</td></tr>
+        <tr><td>Dashboard resolution</td><td>Substring match (fixed #1)</td><td>Same reason. Was exact-match — fixed in bug #1 this session.</td></tr>
+        <tr><td>History cap</td><td>Last 8 messages</td><td>Prevents context explosion while retaining enough for multi-turn edits.</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <!-- Remaining -->
+    <h2 id="section-remaining">📋 Known Remaining Items</h2>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>ID</th><th>Area</th><th>Issue</th><th>Priority</th></tr></thead>
+      <tbody>
+        <tr><td>L2</td><td>Latency</td><td>No SSE streaming — user waits for full response before seeing anything</td><td>High (biggest UX win)</td></tr>
+        <tr><td>L3</td><td>Latency</td><td>Multiple tool calls in one turn execute sequentially</td><td>Medium</td></tr>
+        <tr><td>B6</td><td>UX</td><td>Conversation title always "New Conversation" — never auto-updated</td><td>Low</td></tr>
+        <tr><td>B4</td><td>Recovery</td><td>Tool errors returned as plain strings; model guesses how to recover</td><td>Medium</td></tr>
+        <tr><td>—</td><td>Tool</td><td>"remove the gauge" fails — <code>remove_widget</code> requires exact title, not type</td><td>Medium</td></tr>
+        <tr><td>—</td><td>Tool</td><td>No <code>get_machine_fields</code> — "what metrics does CW-01 have?" returns all machines</td><td>Low</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <footer>
+      <span>IotVision AI Bug &amp; Optimization Log · 2026-06-30</span>
+      <span>CPF/docs/ · Reviewed by Claude Sonnet 4.6</span>
+    </footer>
+
+  </main>
+</div><!-- layout -->
+
+<script>
+function navTo(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  // If it's a details element, open it
+  if (el.tagName === 'DETAILS') el.open = true;
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  setActive(id);
+}
+
+function setActive(id) {
+  document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+  const link = document.querySelector(`.nav-link[href="#${id}"]`);
+  if (link) link.classList.add('active');
+}
+
+// Highlight sidebar link when entry is visible in viewport
+const targets = document.querySelectorAll('.entry[id], h2[id]');
+const observer = new IntersectionObserver(entries => {
+  entries.forEach(e => {
+    if (e.isIntersecting) setActive(e.target.id);
+  });
+}, { rootMargin: '-10% 0px -70% 0px', threshold: 0 });
+targets.forEach(el => observer.observe(el));
+</script>
+</body>
+</html>
