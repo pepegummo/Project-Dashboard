@@ -373,84 +373,6 @@ func (tk *ToolKit) RemoveWidget(ctx context.Context, orgID string, raw json.RawM
 	return nil, fmt.Errorf("no widget titled %q found on %q", args.WidgetTitle, args.DashboardName)
 }
 
-// ── Category C: manage alert rules & events ──────────────────────────────────
-
-// CreateAlert defines a new threshold alert rule on a machine metric.
-func (tk *ToolKit) CreateAlert(ctx context.Context, orgID string, raw json.RawMessage) (any, error) {
-	var args CreateAlertArgs
-	if err := json.Unmarshal(raw, &args); err != nil {
-		return nil, fmt.Errorf("malformed arguments")
-	}
-	id, ok := resolveMachineID(ctx, orgID, strings.TrimSpace(args.MachineID))
-	if !ok {
-		return nil, fmt.Errorf("machine %q not found", args.MachineID)
-	}
-	if strings.TrimSpace(args.Metric) == "" {
-		return nil, fmt.Errorf("metric is required")
-	}
-	if !isValidCondition(args.Condition) {
-		return nil, fmt.Errorf("invalid condition %q (use gt, lt, gte, lte, eq, neq, between, outside)", args.Condition)
-	}
-	if (args.Condition == "between" || args.Condition == "outside") && args.ThresholdHi == nil {
-		return nil, fmt.Errorf("condition %q requires threshold_hi", args.Condition)
-	}
-	severity := strings.TrimSpace(args.Severity)
-	if severity == "" {
-		severity = "warning"
-	}
-	name := strings.TrimSpace(args.Name)
-	if name == "" {
-		name = fmt.Sprintf("%s %s %g", args.Metric, args.Condition, args.Threshold)
-	}
-	a := alerts.Alert{
-		MachineID:   id,
-		Name:        name,
-		Field:       args.Metric,
-		Condition:   args.Condition,
-		Threshold:   args.Threshold,
-		ThresholdHi: args.ThresholdHi,
-		Severity:    severity,
-	}
-	if args.CooldownSec != nil {
-		a.CooldownSec = *args.CooldownSec
-	}
-	created, err := tk.alert.CreateAlert(ctx, orgID, a)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{
-		"success": true,
-		"alertId": created.ID,
-		"summary": fmt.Sprintf("Created alert %q on %s.", name, args.MachineID),
-	}, nil
-}
-
-// AckAlert marks an open alert event as acknowledged.
-func (tk *ToolKit) AckAlert(ctx context.Context, userID string, raw json.RawMessage) (any, error) {
-	var args AlertEventArg
-	_ = json.Unmarshal(raw, &args)
-	if strings.TrimSpace(args.EventID) == "" {
-		return nil, fmt.Errorf("event_id is required (call get_active_alerts first)")
-	}
-	if err := tk.alert.AcknowledgeEvent(ctx, args.EventID, userID); err != nil {
-		return nil, err
-	}
-	return map[string]any{"success": true, "summary": "Alert acknowledged."}, nil
-}
-
-// ResolveAlert marks an open alert event as resolved.
-func (tk *ToolKit) ResolveAlert(ctx context.Context, userID string, raw json.RawMessage) (any, error) {
-	var args AlertEventArg
-	_ = json.Unmarshal(raw, &args)
-	if strings.TrimSpace(args.EventID) == "" {
-		return nil, fmt.Errorf("event_id is required (call get_active_alerts first)")
-	}
-	if err := tk.alert.ResolveEvent(ctx, args.EventID, userID); err != nil {
-		return nil, err
-	}
-	return map[string]any{"success": true, "summary": "Alert resolved."}, nil
-}
-
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 // resolveDashboardID does a case-insensitive, org-scoped dashboard name lookup.
@@ -468,10 +390,4 @@ func resolveDashboardID(ctx context.Context, orgID, name string) (string, bool) 
 	return id, true
 }
 
-func isValidCondition(c string) bool {
-	switch c {
-	case "gt", "lt", "gte", "lte", "eq", "neq", "between", "outside":
-		return true
-	}
-	return false
-}
+

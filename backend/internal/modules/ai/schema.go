@@ -184,38 +184,6 @@ var RemoveWidgetTool = map[string]any{
 	},
 }
 
-var CreateAlertTool = map[string]any{
-	"name":        "create_alert",
-	"description": "Create a threshold alert rule on a machine metric.",
-	"input_schema": map[string]any{
-		"type":     "object",
-		"required": []string{"machine_id", "metric", "condition", "threshold"},
-		"properties": map[string]any{
-			"machine_id":   machineIDProp,
-			"metric":       map[string]any{"type": "string"},
-			"condition":    map[string]any{"type": "string", "enum": []string{"gt", "lt", "gte", "lte", "eq", "neq", "between", "outside"}},
-			"threshold":    map[string]any{"type": "number"},
-			"threshold_hi": map[string]any{"type": "number"},
-			"severity":     map[string]any{"type": "string", "enum": []string{"info", "warning", "critical"}},
-			"name":         map[string]any{"type": "string"},
-			"cooldown_sec": map[string]any{"type": "integer"},
-		},
-	},
-}
-
-var ManageAlertEventTool = map[string]any{
-	"name":        "manage_alert_event",
-	"description": "Acknowledge or resolve an open alert event. action: ack | resolve.",
-	"input_schema": map[string]any{
-		"type":     "object",
-		"required": []string{"event_id", "action"},
-		"properties": map[string]any{
-			"event_id": map[string]any{"type": "string"},
-			"action":   map[string]any{"type": "string", "enum": []string{"ack", "resolve"}},
-		},
-	},
-}
-
 // AllTools is the complete set handed to the LLM and exposed via GET /api/ai/tools.
 func AllTools() []map[string]any {
 	return []map[string]any{
@@ -231,8 +199,6 @@ func AllTools() []map[string]any {
 		PreviewUpdateWidgetTool,
 		AddWidgetTool,
 		RemoveWidgetTool,
-		CreateAlertTool,
-		ManageAlertEventTool,
 	}
 }
 
@@ -241,8 +207,6 @@ var writeTools = map[string]bool{
 	"create_custom_dashboard": true,
 	"add_widget_to_dashboard": true,
 	"remove_widget":           true,
-	"create_alert":            true,
-	"manage_alert_event":      true,
 }
 
 func isWriteTool(name string) bool { return writeTools[name] }
@@ -295,21 +259,6 @@ type AddWidgetArgs struct {
 type RemoveWidgetArgs struct {
 	DashboardName string `json:"dashboard_name"`
 	WidgetTitle   string `json:"widget_title"`
-}
-
-type CreateAlertArgs struct {
-	MachineID   string   `json:"machine_id"`
-	Name        string   `json:"name"`
-	Metric      string   `json:"metric"`
-	Condition   string   `json:"condition"`
-	Threshold   float64  `json:"threshold"`
-	ThresholdHi *float64 `json:"threshold_hi"`
-	Severity    string   `json:"severity"`
-	CooldownSec *int     `json:"cooldown_sec"`
-}
-
-type AlertEventArg struct {
-	EventID string `json:"event_id"`
 }
 
 // ── Preview types ─────────────────────────────────────────────────────────────

@@ -123,18 +123,6 @@ func (ctrl *Controller) dispatch(c *fiber.Ctx, toolName string, rawArgs json.Raw
 		return ctrl.tk.AddWidget(ctx, user.OrgId, rawArgs)
 	case "remove_widget":
 		return ctrl.tk.RemoveWidget(ctx, user.OrgId, rawArgs)
-	case "create_alert":
-		return ctrl.tk.CreateAlert(ctx, user.OrgId, rawArgs)
-	case "manage_alert_event":
-		var a struct {
-			EventID string `json:"event_id"`
-			Action  string `json:"action"`
-		}
-		json.Unmarshal(rawArgs, &a)
-		if a.Action == "resolve" {
-			return ctrl.tk.ResolveAlert(ctx, user.Sub, rawArgs)
-		}
-		return ctrl.tk.AckAlert(ctx, user.Sub, rawArgs)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", toolName)
 	}
