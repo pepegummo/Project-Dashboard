@@ -1,7 +1,7 @@
 # IotVision AI — Overview & Flow
 
 > A conversational assistant built into the dashboard. Ask questions in plain language,
-> get live data, create dashboards, and manage alerts — without touching any configuration UI.
+> get live data, and create dashboards — without touching any configuration UI.
 
 ---
 
@@ -19,9 +19,9 @@ full dashboard preview with appropriate widgets. You confirm with one click to s
 Add or remove widgets from any named dashboard without opening the editor.
 Just tell the AI which dashboard and what you want changed.
 
-### 🔔 Manage Alerts
-Check what alerts are currently firing, acknowledge them, or resolve them —
-all from the chat window.
+### 🔔 Check Alerts
+Ask what alerts are currently firing. The AI lists all open alert events with severity,
+machine, metric, and value — in plain text.
 
 ### 📈 Analyze Trends
 Ask for averages, minimums, or maximums over any time period.
@@ -40,6 +40,7 @@ View per-day production counts per machine, with configurable time buckets and S
 | Modify dashboards if you are a **Viewer** | Write tools are blocked at the API layer for viewer accounts |
 | Create new machines or sensor fields | Outside the AI module scope — done through the Machines page |
 | Answer metric questions without calling a tool | Live sensor values are never stored in the chat; the AI always fetches fresh data |
+| Acknowledge or resolve alerts | Alert management is done through the Alerts page |
 
 ---
 
@@ -100,7 +101,6 @@ sequenceDiagram
 | "Add a weight widget to CW-01 Overview" | `add_widget_to_dashboard` | Confirmation card + link to updated dashboard |
 | "Are there any active alerts right now?" | `get_active_alerts` | Plain-text list of open alert events |
 | "What was the average temperature last hour?" | `get_telemetry_trend` | "Average: 72.4 °C, Min: 68.1, Max: 76.0" |
-| "Acknowledge alert #abc123" | `manage_alert_event` | "Alert acknowledged." |
 | "Remove the pressure widget from CW-01 Overview" | `remove_widget` | Confirmation that widget was removed |
 
 > **Note:** The AI works in both **English and Thai**. You can switch languages mid-conversation.
@@ -122,8 +122,6 @@ graph LR
         E1[Everything in Viewer]
         E2[Create & modify dashboards]
         E3[Add / remove widgets]
-        E4[Create alert rules]
-        E5[Acknowledge & resolve alerts]
     end
 
     style Viewer fill:#e8f4fd,stroke:#3b82f6
