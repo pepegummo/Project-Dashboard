@@ -7,28 +7,36 @@
 
 ## What the AI Can Do
 
+### 📋 List Machines & Dashboards
+Ask "what machines do we have?" or "list my dashboards." The AI fetches live data
+and replies in plain text with names, types, statuses, and widget counts.
+
 ### 📊 View Live Sensor Data
 Ask for any machine metric by name. The AI instantly renders a live widget card —
 gauge, KPI value, or trend chart — directly in the chat canvas.
 
-### 🗂️ Create Dashboards
-Describe what you need ("a dashboard for CW-01 production"). The AI generates a
-full dashboard preview with appropriate widgets. You confirm with one click to save it.
-
-### ✏️ Modify Existing Dashboards
-Add or remove widgets from any named dashboard without opening the editor.
-Just tell the AI which dashboard and what you want changed.
+### 📈 Analyze Trends
+Ask for averages, minimums, or maximums over any time period (5 min → 30 days).
+The AI queries the historical sensor archive and replies in plain text.
 
 ### 🔔 Check Alerts
 Ask what alerts are currently firing. The AI lists all open alert events with severity,
 machine, metric, and value — in plain text.
 
-### 📈 Analyze Trends
-Ask for averages, minimums, or maximums over any time period.
-The AI queries the historical sensor archive and replies in plain text.
-
 ### 🏭 Production Counts
 View per-day production counts per machine, with configurable time buckets and SKU filters.
+
+### 🗂️ Create Dashboards (Preview → Confirm)
+Describe what you need ("a production dashboard for CW-01"). The AI picks a template
+(`machine_overview`, `machine_production`, or `machine_maintenance`), generates a full
+dashboard preview with widgets, and waits for your confirmation before saving.
+
+### ✏️ Edit the Preview Before Saving
+While a dashboard preview is open, tell the AI to add, remove, or change any widget —
+all in-memory with no DB write. Confirm once when you're happy.
+
+### 🔧 Modify Existing Dashboards
+Add or remove widgets from any already-saved dashboard by name, without opening the editor.
 
 ---
 
@@ -64,7 +72,7 @@ sequenceDiagram
     API->>Groq: System prompt + conversation history + tool definitions
 
     alt Needs live data or a dashboard action
-        Groq-->>API: tool_call (e.g. show_metric, preview_dashboard)
+        Groq-->>API: tool_call (e.g. show_metric, preview_dashboard, preview_add_widget)
         Note over API: Role check — viewer blocked from write tools
         API->>DB: Query machines / telemetry / dashboards / alerts
         DB-->>API: Result data
@@ -82,7 +90,9 @@ sequenceDiagram
         Chat->>User: 📊 Live metric widget card (gauge / KPI / trend)
     else preview_dashboard called
         Chat->>User: 🗂️ Dashboard preview — Confirm or Discard
-    else add_widget called
+    else preview_add/remove/update_widget called
+        Chat->>User: 🗂️ Updated preview (no DB write yet)
+    else add_widget_to_dashboard or remove_widget called
         Chat->>User: ✅ Success card with link to dashboard
     else Text reply
         Chat->>User: 💬 Chat bubble
@@ -95,12 +105,18 @@ sequenceDiagram
 
 | User says | AI calls | What you see |
 |-----------|----------|--------------|
+| "What machines do we have?" | `get_machines` | Plain-text list of machines, types, and fields |
+| "List my dashboards" | `list_dashboards` | Plain-text list with widget counts |
 | "Show me the speed of CW-01" | `show_metric` | Live gauge card for CW-01 speed |
-| "What's the production count for CW-01?" | `show_metric` (daily-count) | Daily count widget card |
-| "Create a production dashboard for CW-01" | `preview_dashboard` | Full dashboard preview with Confirm button |
-| "Add a weight widget to CW-01 Overview" | `add_widget_to_dashboard` | Confirmation card + link to updated dashboard |
-| "Are there any active alerts right now?" | `get_active_alerts` | Plain-text list of open alert events |
+| "Show me a trend chart for weight on CW-01" | `show_metric` (viz=trend) | Live line-chart card |
 | "What was the average temperature last hour?" | `get_telemetry_trend` | "Average: 72.4 °C, Min: 68.1, Max: 76.0" |
+| "Are there any active alerts right now?" | `get_active_alerts` | Plain-text list of open alert events |
+| "What's the production count for CW-01 this week?" | `get_daily_count` | Plain-text per-day table |
+| "Create a production dashboard for CW-01" | `preview_dashboard` | Full dashboard preview with Confirm button |
+| "Add a weight gauge to the preview" | `preview_add_widget` | Preview updates in place |
+| "Remove the temperature card from the preview" | `preview_remove_widget` | Preview updates in place |
+| "Change the speed gauge max to 200" | `preview_update_widget` | Preview updates in place |
+| "Add a weight widget to CW-01 Overview" | `add_widget_to_dashboard` | Confirmation card + link to updated dashboard |
 | "Remove the pressure widget from CW-01 Overview" | `remove_widget` | Confirmation that widget was removed |
 
 > **Note:** The AI works in both **English and Thai**. You can switch languages mid-conversation.
@@ -141,3 +157,21 @@ graph LR
 | Role enforcement | Backend blocks write tools for `viewer` role at dispatch layer |
 | Persistence | Conversations + messages stored in `ai_conversations` / `ai_messages` |
 | Dashboard drafts | Preview state saved in DB — survives page refresh |
+
+### Tool Reference
+
+| Tool | Description | Role required |
+|------|-------------|---------------|
+| `get_machines` | List all machines, types, statuses, and fields | Viewer |
+| `show_metric` | Render a live widget card (gauge / KPI / trend) | Viewer |
+| `get_telemetry_trend` | avg/min/max over a time window (5m – 30d) | Viewer |
+| `get_active_alerts` | List all open alert events | Viewer |
+| `get_daily_count` | Per-day production count for one machine | Viewer |
+| `list_dashboards` | List dashboards with widget counts | Viewer |
+| `preview_dashboard` | Generate a template dashboard preview (no DB write) | Viewer |
+| `preview_add_widget` | Add a widget to the open preview plan (no DB write) | Viewer |
+| `preview_remove_widget` | Remove a widget from the open preview plan (no DB write) | Viewer |
+| `preview_update_widget` | Edit a widget in the open preview plan (no DB write) | Viewer |
+| `create_custom_dashboard` | Save the confirmed preview as a real dashboard | Editor / Admin |
+| `add_widget_to_dashboard` | Add a widget to an existing saved dashboard | Editor / Admin |
+| `remove_widget` | Remove a widget from an existing saved dashboard | Editor / Admin |
