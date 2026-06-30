@@ -104,3 +104,25 @@ flowchart TD
 | preview_* | — | ✓ | ✓ |
 | add_widget_to_dashboard, remove_widget | — | ✓ | ✓ |
 | create_custom_dashboard | — | ✓ | ✓ |
+
+---
+
+## System Prompt Rules
+
+Defined in `controller.go` → `systemPrompt`. Injected as the first message in every Groq request.
+
+| # | Rule |
+|---|------|
+| 1 | Plain text for greetings / general questions — no tool call |
+| 2 | Use exact machine and dashboard names as given; call `get_machines` or `list_dashboards` only when the name is ambiguous or unknown |
+| 3 | Do only what was asked — no extra chained actions |
+| 4 | After any change confirm briefly in plain text. After `show_metric`, reply with one short sentence — never output raw JSON or the tool result object. Never say "Here is X" / "นี่คือ X" without a preceding `show_metric` call this turn |
+| 5 | `preview_add/update/remove_widget` are only for a dashboard being composed this turn (after `preview_dashboard`, before confirm). For count/production widgets always use type `daily-count`. For a named existing dashboard use `add_widget_to_dashboard` / `remove_widget` directly |
+| 6 | `preview_dashboard`: pick `machine_overview` (general/status), `machine_production` (output/count), `machine_maintenance` (health). Default to `machine_overview` if no type given — never ask which template. User confirms via button, not text |
+| 7 | If a structural question (widget count, layout) can be answered from dashboard context, answer directly. For live metric values always call `show_metric` — context values are not a substitute |
+| 8 | Line/trend widgets support absolute date ranges. Use `preview_update_widget` with `start_date`/`end_date` (YYYY-MM-DD). Never claim only preset ranges are supported |
+| 9 | Reply entirely in the same language as the user's latest message — never mix languages |
+| 10 | Ask a clarifying question only when a tool needs a machine and none is identifiable. Ask in ONE short question — never guess, never call `get_machines` just to list names back. Use sensible defaults (rule 6) instead of asking |
+| 11 | When the user asks to see or add a widget for a metric, MUST call `show_metric` — no live sensor values are available without it. Use `viz:"trend"` for history, `viz:"gauge"/"value"` for current reading. For all metrics of a machine: call `get_machines` first, then `show_metric` per field |
+| 12 | `@Widget Title` tokens in the user message identify the exact widget. Use the @-mentioned title verbatim for `preview_update_widget` — never ask the user to name the widget |
+| 13 | Cannot create, acknowledge, or resolve alert rules. If asked, reply in plain text that alert management is done through the Alerts page, and offer to show active alerts with `get_active_alerts` instead |
