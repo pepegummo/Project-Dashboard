@@ -1,6 +1,6 @@
 # AI Module — Architecture & Flow
 
-IotVision AI is a Groq-backed agentic loop that reads live telemetry, manages dashboards, and handles alerts via tool calls. This document covers the full flow from user input to frontend rendering.
+IotVision AI is a Groq-backed agentic loop that reads live telemetry and manages dashboards via tool calls. This document covers the full flow from user input to frontend rendering.
 
 ---
 
@@ -46,10 +46,6 @@ flowchart TD
             T10["remove_widget\nby title, case-insensitive"]
             T11["create_custom_dashboard\nconfirm + persist preview draft"]
         end
-        subgraph WA["Write — Alerts  (admin / editor only)"]
-            T12["create_alert\nthreshold rule on machine metric"]
-            T13["manage_alert_event\nack or resolve by event_id"]
-        end
     end
 
     subgraph DB["Database — TimescaleDB"]
@@ -72,12 +68,11 @@ flowchart TD
     DISP --> T1 & T2 & T3 & T4
     DISP --> T5 & T6
     DISP --> T7 & T8 & T9 & T10 & T11
-    DISP --> T12 & T13
 
     T1 & T5 --> DB1
     T1 & T2 & T3 --> DB2
     T6 & T7 & T8 & T9 & T10 & T11 --> DB3
-    T4 & T12 & T13 --> DB4
+    T4 --> DB4
     B1 & B2 & SAVE --> DB5
 
     RET --> RENDER
@@ -109,4 +104,3 @@ flowchart TD
 | preview_* | — | ✓ | ✓ |
 | add_widget_to_dashboard, remove_widget | — | ✓ | ✓ |
 | create_custom_dashboard | — | ✓ | ✓ |
-| create_alert, manage_alert_event | — | ✓ | ✓ |
