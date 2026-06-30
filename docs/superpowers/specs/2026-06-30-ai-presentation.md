@@ -19,12 +19,17 @@ gauge, KPI value, or trend chart — directly in the chat canvas.
 Ask for averages, minimums, or maximums over any time period (5 min → 30 days).
 The AI queries the historical sensor archive and replies in plain text.
 
+### 📉 Read Chart & Widget Data
+Ask the AI what a line chart or production count widget is showing. It fetches
+the same bucketed data points the widget renders — not just a summary.
+
 ### 🔔 Check Alerts
 Ask what alerts are currently firing. The AI lists all open alert events with severity,
 machine, metric, and value — in plain text.
 
 ### 🏭 Production Counts
-View per-day production counts per machine, with configurable time buckets and SKU filters.
+View production counts per machine with any bucket size (1m → 1d), configurable point
+count, and optional SKU / status filters — matching exactly what the DailyCount widget shows.
 
 ### 🗂️ Create Dashboards (Preview → Confirm)
 Describe what you need ("a production dashboard for CW-01"). The AI picks a template
@@ -110,8 +115,10 @@ sequenceDiagram
 | "Show me the speed of CW-01" | `show_metric` | Live gauge card for CW-01 speed |
 | "Show me a trend chart for weight on CW-01" | `show_metric` (viz=trend) | Live line-chart card |
 | "What was the average temperature last hour?" | `get_telemetry_trend` | "Average: 72.4 °C, Min: 68.1, Max: 76.0" |
+| "What does the speed chart show for the last 6h?" | `get_telemetry_series` | All bucketed data points (avg/min/max per bucket) |
 | "Are there any active alerts right now?" | `get_active_alerts` | Plain-text list of open alert events |
 | "What's the production count for CW-01 this week?" | `get_daily_count` | Plain-text per-day table |
+| "How many pieces in the last 48 half-hour slots?" | `get_production_count` | 48 rows of `{bucket, count}` matching the widget |
 | "Create a production dashboard for CW-01" | `preview_dashboard` | Full dashboard preview with Confirm button |
 | "Add a weight gauge to the preview" | `preview_add_widget` | Preview updates in place |
 | "Remove the temperature card from the preview" | `preview_remove_widget` | Preview updates in place |
@@ -165,8 +172,10 @@ graph LR
 | `get_machines` | List all machines, types, statuses, and fields | Viewer |
 | `show_metric` | Render a live widget card (gauge / KPI / trend) | Viewer |
 | `get_telemetry_trend` | avg/min/max over a time window (5m – 30d) | Viewer |
+| `get_telemetry_series` | All bucketed data points a line chart renders (5m – 30d) | Viewer |
 | `get_active_alerts` | List all open alert events | Viewer |
 | `get_daily_count` | Per-day production count for one machine | Viewer |
+| `get_production_count` | Bucket-level piece counts with SKU/status filter — mirrors DailyCount widget | Viewer |
 | `list_dashboards` | List dashboards with widget counts | Viewer |
 | `preview_dashboard` | Generate a template dashboard preview (no DB write) | Viewer |
 | `preview_add_widget` | Add a widget to the open preview plan (no DB write) | Viewer |

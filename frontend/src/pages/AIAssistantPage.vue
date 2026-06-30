@@ -539,20 +539,26 @@ async function sendMessage() {
         const result = msg.toolResult as any;
         // Handles both single widget (happy path) and widgets array (fallback when metric not found).
         const widgetsToShow: any[] = result?.widgets ?? (result?.widget ? [result.widget] : []);
+        const isFallback = !!result?.fallback;
+        let liveHighlightDone = false;
         for (const w of widgetsToShow) {
           if (!w?.machineUuid || (!w.metric && w.type !== 'daily-count')) continue;
-          const existing = dashboardStore.widgets.find(dw => {
-            const sameMachine = dw.machineId === w.machineUuid || dw.machine?.id === w.machineUuid;
-            if (!sameMachine) return false;
-            if (w.type === 'daily-count') return dw.widgetType === 'daily-count';
-            return dw.config.field === w.metric;
-          });
+          const sameMachineWidgets = dashboardStore.widgets.filter(dw =>
+            dw.machineId === w.machineUuid || dw.machine?.id === w.machineUuid
+          );
+          const existing = w.type === 'daily-count'
+            ? sameMachineWidgets.find(dw => dw.widgetType === 'daily-count')
+            : (sameMachineWidgets.find(dw => dw.config.field === w.metric && dw.widgetType === w.type)
+               ?? sameMachineWidgets.find(dw => dw.config.field === w.metric));
           const focusCard = canvasCards.value.find(c => c.kind === 'focus') as any;
           const focusIdx = focusCard?.result.widgets.findIndex(
             (fw: any) => fw.machineUuid === w.machineUuid && fw.metric === w.metric && fw.type === w.type
           ) ?? -1;
           if (existing) {
-            setAiHighlight(existing.id, existing.title ?? existing.widgetType, false);
+            if (isFallback || !liveHighlightDone) {
+              setAiHighlight(existing.id, existing.title ?? existing.widgetType, false);
+              liveHighlightDone = true;
+            }
           } else if (focusIdx >= 0) {
             aiSelectedPreviewIds.value = [...new Set([...aiSelectedPreviewIds.value, `preview-${focusIdx}`])];
             previewHighlightId.value = undefined;
@@ -610,7 +616,11 @@ async function sendMessage() {
         const previewCard = canvasCards.value.find(c => c.kind === 'preview' || c.kind === 'dashboard') as any;
         if (r?.widgetTitle && previewCard) {
           const idx = findPreviewWidgetIdx(previewCard, r.widgetTitle);
-          if (idx >= 0) previewCard.result.widgets.splice(idx, 1);
+          if (idx >= 0) {
+            previewCard.result.widgets.splice(idx, 1);
+          } else {
+            showToast(`Widget "${r.widgetTitle}" not found — nothing removed`);
+          }
         }
       }
       if (msg.toolName === 'preview_update_widget') {
@@ -670,7 +680,9 @@ async function sendMessage() {
           // highlighting the machine's first widget (e.g. Speed) for a status query is wrong.
           const w = metric
             ? liveCandidates.find(dw => dw.config.field === metric)
-            : liveCandidates.find(dw => dw.config.field && assistantText.includes(dw.config.field.toLowerCase()));
+            : msg.toolName === 'get_daily_count'
+              ? liveCandidates.find(dw => dw.widgetType === 'daily-count')
+              : liveCandidates.find(dw => dw.config.field && assistantText.includes(dw.config.field.toLowerCase()));
           if (w) {
             const sameField = w.config.field
               ? liveCandidates.filter(dw => dw.config.field === w.config.field)

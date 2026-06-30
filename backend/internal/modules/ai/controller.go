@@ -54,7 +54,13 @@ Editing the current preview canvas → use preview_add_widget / preview_update_w
 CONTEXT: An authoritative dashboard state may be injected.
 - Structural questions (widget count, names, layout) → answer from context.
 - Live value questions ("what is X", "speed of CW-01") → always call show_metric.
-- @Widget Title tokens identify the exact widget; use the @-mentioned title verbatim as widget_title in preview_update_widget.`
+@Widget Title tokens identify the exact widget the user is referring to. Find it in context by title, then:
+- Edit/remove intent → use the title verbatim as widget_title in preview_update_widget / preview_remove_widget.
+- Descriptive question ("what is this?", "what does this show?", "explain this", "นี้คืออะไร", "แสดงอะไร") → read the widget's type/machine/metric from context, then:
+  • daily-count → call get_daily_count(machine_id from context); describe the widget's bucket/sku/status filters.
+  • gauge / kpi-card / line-chart / status-card / table → call show_metric(machine and metric from context); describe what the metric represents.
+  • alarm-panel → call get_active_alerts; describe what alerts it monitors.
+  Never fabricate machine or metric — always read them from the context entry for that widget.`
 
 // ── Groq / OpenAI-compatible API types ───────────────────────────────────────
 
@@ -126,6 +132,10 @@ func (ctrl *Controller) dispatch(c *fiber.Ctx, toolName string, rawArgs json.Raw
 		return ctrl.tk.GetActiveAlerts(ctx, user.OrgId)
 	case "get_daily_count":
 		return ctrl.tk.GetDailyCount(ctx, user.OrgId, rawArgs)
+	case "get_telemetry_series":
+		return ctrl.tk.GetTelemetrySeries(ctx, user.OrgId, rawArgs)
+	case "get_production_count":
+		return ctrl.tk.GetProductionCount(ctx, user.OrgId, rawArgs)
 	case "list_dashboards":
 		return ctrl.tk.ListDashboards(ctx, user.OrgId, user.Sub)
 	case "preview_dashboard":

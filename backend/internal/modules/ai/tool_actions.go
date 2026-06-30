@@ -265,6 +265,43 @@ func (tk *ToolKit) GetDailyCount(ctx context.Context, orgID string, raw json.Raw
 	return tk.tel.GetDailyCount(ctx, id, days, &orgID)
 }
 
+// GetTelemetrySeries returns time-bucketed avg/min/max data points — mirrors what a line chart shows.
+func (tk *ToolKit) GetTelemetrySeries(ctx context.Context, orgID string, raw json.RawMessage) (any, error) {
+	var args SeriesArgs
+	_ = json.Unmarshal(raw, &args)
+	id, ok := resolveMachineID(ctx, orgID, strings.TrimSpace(args.MachineID))
+	if !ok {
+		return nil, fmt.Errorf("machine %q not found", args.MachineID)
+	}
+	if strings.TrimSpace(args.Metric) == "" {
+		return nil, fmt.Errorf("metric is required")
+	}
+	tr := strings.TrimSpace(args.TimeRange)
+	if tr == "" {
+		tr = "1h"
+	}
+	return tk.tel.GetSeries(ctx, id, args.Metric, tr, "", "", &orgID)
+}
+
+// GetProductionCount returns bucket-level piece counts — mirrors what a daily-count widget shows.
+func (tk *ToolKit) GetProductionCount(ctx context.Context, orgID string, raw json.RawMessage) (any, error) {
+	var args ProductionCountArgs
+	_ = json.Unmarshal(raw, &args)
+	id, ok := resolveMachineID(ctx, orgID, strings.TrimSpace(args.MachineID))
+	if !ok {
+		return nil, fmt.Errorf("machine %q not found", args.MachineID)
+	}
+	bucket := strings.TrimSpace(args.Bucket)
+	if bucket == "" {
+		bucket = "1h"
+	}
+	points := args.Points
+	if points <= 0 {
+		points = 48
+	}
+	return tk.tel.GetBucketCount(ctx, id, args.Sku, args.Status, bucket, points, &orgID)
+}
+
 // ── Category B: manage existing dashboards ───────────────────────────────────
 
 // ListDashboards returns the org's dashboards with names + widget counts so the

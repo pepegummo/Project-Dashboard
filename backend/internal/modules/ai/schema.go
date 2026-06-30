@@ -92,6 +92,36 @@ var GetDailyCountTool = map[string]any{
 	},
 }
 
+var GetTelemetrySeriesTool = map[string]any{
+	"name":        "get_telemetry_series",
+	"description": "Get all time-bucketed data points (avg/min/max per bucket) for a metric — use this to read what a line chart is showing.",
+	"input_schema": map[string]any{
+		"type":     "object",
+		"required": []string{"machine_id", "metric"},
+		"properties": map[string]any{
+			"machine_id": machineIDProp,
+			"metric":     map[string]any{"type": "string"},
+			"time_range": map[string]any{"type": "string", "enum": []string{"5m", "15m", "30m", "1h", "6h", "24h", "7d", "15d", "30d"}},
+		},
+	},
+}
+
+var GetProductionCountTool = map[string]any{
+	"name":        "get_production_count",
+	"description": "Get production/piece counts bucketed over time — use to read what a daily-count widget is showing. bucket: '30m','1h','1d'; points: how many buckets back (default 48).",
+	"input_schema": map[string]any{
+		"type":     "object",
+		"required": []string{"machine_id", "bucket"},
+		"properties": map[string]any{
+			"machine_id": machineIDProp,
+			"bucket":     map[string]any{"type": "string", "description": "Time bucket size, e.g. '30m', '1h', '1d'."},
+			"points":     map[string]any{"type": "integer", "description": "Number of buckets to return (default 48, max 500)."},
+			"sku":        map[string]any{"type": "string", "description": "SKU filter (empty = all SKUs)."},
+			"status":     map[string]any{"type": "string", "enum": []string{"all", "good", "reject"}},
+		},
+	},
+}
+
 var ListDashboardsTool = map[string]any{
 	"name":         "list_dashboards",
 	"description":  "List existing dashboards with names and widget counts.",
@@ -124,7 +154,7 @@ var PreviewRemoveWidgetTool = map[string]any{
 		"type":     "object",
 		"required": []string{"widget_title"},
 		"properties": map[string]any{
-			"widget_title": map[string]any{"type": "string"},
+			"widget_title": map[string]any{"type": "string", "description": "Exact displayed title of the widget as shown in the dashboard context (e.g. \"CW-01 Count\"), not the widget type."},
 		},
 	},
 }
@@ -185,8 +215,10 @@ func AllTools() []map[string]any {
 		GetMachinesTool,
 		ShowMetricTool,
 		GetTelemetryTrendTool,
+		GetTelemetrySeriesTool,
 		GetActiveAlertsTool,
 		GetDailyCountTool,
+		GetProductionCountTool,
 		ListDashboardsTool,
 		PreviewDashboardTool,
 		PreviewAddWidgetTool,
@@ -244,6 +276,20 @@ type TrendArgs struct {
 type DailyCountArgs struct {
 	MachineID string `json:"machine_id"`
 	Days      int    `json:"days"`
+}
+
+type SeriesArgs struct {
+	MachineID string `json:"machine_id"`
+	Metric    string `json:"metric"`
+	TimeRange string `json:"time_range"`
+}
+
+type ProductionCountArgs struct {
+	MachineID string `json:"machine_id"`
+	Bucket    string `json:"bucket"`
+	Points    int    `json:"points"`
+	Sku       string `json:"sku"`
+	Status    string `json:"status"`
 }
 
 type AddWidgetArgs struct {

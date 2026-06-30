@@ -32,7 +32,9 @@ flowchart TD
         subgraph RT["Read — Telemetry"]
             T1["show_metric\nresolve machine + field → widget spec\nhandles count / daily-count / fallback"]
             T2["get_telemetry_trend\navg / min / max over time period"]
+            T2b["get_telemetry_series\nall bucketed data points · mirrors line chart"]
             T3["get_daily_count\nper-day production counts"]
+            T3b["get_production_count\nbucket counts + SKU/status · mirrors daily-count widget"]
             T4["get_active_alerts\nopen alert events for org"]
         end
         subgraph RS["Read — Structure"]
@@ -65,12 +67,12 @@ flowchart TD
 
     POST --> B1
 
-    DISP --> T1 & T2 & T3 & T4
+    DISP --> T1 & T2 & T2b & T3 & T3b & T4
     DISP --> T5 & T6
     DISP --> T7 & T8 & T9 & T10 & T11
 
     T1 & T5 --> DB1
-    T1 & T2 & T3 --> DB2
+    T1 & T2 & T2b & T3 & T3b --> DB2
     T6 & T7 & T8 & T9 & T10 & T11 --> DB3
     T4 --> DB4
     B1 & B2 & SAVE --> DB5
@@ -100,6 +102,7 @@ flowchart TD
 |------|--------|--------|-------|
 | get_machines, list_dashboards | ✓ | ✓ | ✓ |
 | show_metric, get_telemetry_trend, get_daily_count | ✓ | ✓ | ✓ |
+| get_telemetry_series, get_production_count | ✓ | ✓ | ✓ |
 | get_active_alerts | ✓ | ✓ | ✓ |
 | preview_* | — | ✓ | ✓ |
 | add_widget_to_dashboard, remove_widget | — | ✓ | ✓ |

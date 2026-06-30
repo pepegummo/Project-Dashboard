@@ -375,10 +375,10 @@
     <h1>IotVision AI — Bug &amp; Optimization Log</h1>
     <p>Architecture review · bug fixes · token optimization · 2026-06-30</p>
     <div style="display:flex;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap;">
-      <span class="badge" style="background:#ef444420;color:#fca5a5;border:1px solid #ef444440;">5 Bugs</span>
+      <span class="badge" style="background:#ef444420;color:#fca5a5;border:1px solid #ef444440;">7 Bugs</span>
       <span class="badge" style="background:#22c55e20;color:#86efac;border:1px solid #22c55e40;">4 Optimizations</span>
       <span class="badge" style="background:#f59e0b20;color:#fcd34d;border:1px solid #f59e0b40;">1 Discovery</span>
-      <span class="badge badge-accent">10 total</span>
+      <span class="badge badge-accent">12 total</span>
     </div>
   </div>
   <div class="header-meta">
@@ -407,6 +407,12 @@
     </a>
     <a class="nav-link nav-bug" href="#entry-5" onclick="navTo('entry-5')">
       <span class="nav-num">5</span><span class="nav-dot"></span> Context nav leak
+    </a>
+    <a class="nav-link nav-bug" href="#entry-11" onclick="navTo('entry-11')">
+      <span class="nav-num">11</span><span class="nav-dot"></span> LineChart unreadable
+    </a>
+    <a class="nav-link nav-bug" href="#entry-12" onclick="navTo('entry-12')">
+      <span class="nav-num">12</span><span class="nav-dot"></span> DailyCount wrong data
     </a>
 
     <div class="nav-section">Optimizations</div>
@@ -719,6 +725,47 @@ if previewOnlyTools[name] &amp;&amp; !hasContext { continue }</pre>
             },
         },
     }
+}</pre>
+        </div>
+      </details>
+
+      <details class="entry entry-bug" id="entry-11">
+        <summary>
+          <span class="entry-num">11</span>
+          <span class="type-pill pill-bug">Bug</span>
+          <span class="entry-title">LineChart data unreadable by AI — missing get_telemetry_series tool</span>
+          <span class="entry-files">schema.go · tool_actions.go · controller.go</span>
+          <span class="entry-chevron">▾</span>
+        </summary>
+        <div class="entry-detail">
+          <div class="field"><span class="field-label">Symptom</span><span>AI could not describe what a line chart was plotting. Asking "what does the speed trend show?" returned only a scalar summary (avg/min/max) from <code>get_telemetry_trend</code> — not the actual bucketed data points the chart renders.</span></div>
+          <div class="field"><span class="field-label">Root cause</span><span>No AI tool wrapped <code>telemetry.GetSeries()</code>. The line chart widget calls <code>/telemetry/{id}/series</code> and receives <code>[{bucket, avg, min, max, count}, …]</code> — a completely different shape from <code>/aggregate</code> which returns one row.</span></div>
+          <div class="field"><span class="field-label">Fix</span><span>Added <code>get_telemetry_series</code> tool. Wraps <code>tk.tel.GetSeries(ctx, id, metric, timeRange, …)</code>. Returns all data points the chart plots. Parameters: <code>machine_id</code>, <code>metric</code>, <code>time_range</code> (5m–30d).</span></div>
+<pre>// tool_actions.go
+func (tk *ToolKit) GetTelemetrySeries(ctx, orgID, raw) {
+    return tk.tel.GetSeries(ctx, id, args.Metric, timeRange, "", "", &amp;orgID)
+    // → [{bucket, avg, min, max, count}, …]
+}</pre>
+        </div>
+      </details>
+
+      <details class="entry entry-bug" id="entry-12">
+        <summary>
+          <span class="entry-num">12</span>
+          <span class="type-pill pill-bug">Bug</span>
+          <span class="entry-title">DailyCount widget data mismatch — get_daily_count called wrong service method</span>
+          <span class="entry-files">schema.go · tool_actions.go · controller.go</span>
+          <span class="entry-chevron">▾</span>
+        </summary>
+        <div class="entry-detail">
+          <div class="field"><span class="field-label">Symptom</span><span>"How many pieces did CW-01 produce in the last 48 half-hour buckets?" returned 7 per-calendar-day rows — not the 48 half-hour buckets the widget was displaying.</span></div>
+          <div class="field"><span class="field-label">Root cause</span><span><code>get_daily_count</code> calls <code>GetDailyCount()</code> → <code>/daily-count?days=7</code>. The DailyCount widget uses <code>GetBucketCount()</code> → <code>/count?bucket=30m&amp;points=48&amp;status=all</code> — a separate endpoint with bucket size, point count, SKU, and status filters. The two never overlapped.</span></div>
+          <div class="field"><span class="field-label">Fix</span><span>Added <code>get_production_count</code> tool. Wraps <code>tk.tel.GetBucketCount(ctx, id, sku, status, bucket, points, &amp;orgID)</code>. Returns <code>[{bucket, count}]</code> matching exactly what the widget shows. Parameters: <code>machine_id</code>, <code>bucket</code> (e.g. "30m"), <code>points</code> (default 48), <code>sku</code>, <code>status</code>.</span></div>
+<pre>// tool_actions.go
+func (tk *ToolKit) GetProductionCount(ctx, orgID, raw) {
+    return tk.tel.GetBucketCount(ctx, id, args.Sku, args.Status,
+        args.Bucket, args.Points, &amp;orgID)
+    // → [{bucket, count}, …] — same shape as widget
 }</pre>
         </div>
       </details>
