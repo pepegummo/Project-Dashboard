@@ -104,12 +104,6 @@ var PreviewDashboardTool = map[string]any{
 	"input_schema": templateDashboardInput,
 }
 
-var CreateDashboardTool = map[string]any{
-	"name":         "create_custom_dashboard",
-	"description":  "STEP 2: Create the dashboard, only after the user confirms the preview.",
-	"input_schema": templateDashboardInput,
-}
-
 var PreviewAddWidgetTool = map[string]any{
 	"name":        "preview_add_widget",
 	"description": "Add a widget to the in-progress preview plan (no DB write).",
@@ -144,6 +138,7 @@ var PreviewUpdateWidgetTool = map[string]any{
 		"properties": map[string]any{
 			"widget_title": map[string]any{"type": "string", "description": "Current title of the widget to edit."},
 			"new_title":    map[string]any{"type": "string"},
+			"machine":      map[string]any{"type": "string", "description": "New machine name to reassign this widget (e.g. CW-02). Resolves to machineUuid automatically."},
 			"type":         map[string]any{"type": "string"},
 			"metric":       map[string]any{"type": "string"},
 			"unit":         map[string]any{"type": "string"},

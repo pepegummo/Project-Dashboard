@@ -295,6 +295,7 @@ func (a *DashboardAction) PreviewUpdateWidget(ctx context.Context, orgID string,
 	var args struct {
 		WidgetTitle string   `json:"widget_title"`
 		NewTitle    string   `json:"new_title"`
+		Machine     string   `json:"machine"`
 		Type        string   `json:"type"`
 		Metric      string   `json:"metric"`
 		Unit        string   `json:"unit"`
@@ -316,6 +317,12 @@ func (a *DashboardAction) PreviewUpdateWidget(ctx context.Context, orgID string,
 	changes := map[string]any{}
 	if strings.TrimSpace(args.NewTitle) != "" {
 		changes["title"] = args.NewTitle
+	}
+	if m := strings.TrimSpace(args.Machine); m != "" {
+		if id, ok := resolveMachineID(ctx, orgID, m); ok {
+			changes["machine"] = m
+			changes["machineUuid"] = id
+		}
 	}
 	if t := strings.TrimSpace(args.Type); t != "" {
 		if !isAllowedType(t) {

@@ -375,13 +375,16 @@ func (tk *ToolKit) RemoveWidget(ctx context.Context, orgID string, raw json.RawM
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-// resolveDashboardID does a case-insensitive, org-scoped dashboard name lookup.
+// resolveDashboardID does a case-insensitive substring match, consistent with resolveMachineID.
+// Exact matches are ranked first so a short query like "Overview" doesn't shadow "CW-01 Overview".
 func resolveDashboardID(ctx context.Context, orgID, name string) (string, bool) {
 	var id string
 	err := database.Pool.QueryRow(ctx, `
 		SELECT id FROM dashboards
-		WHERE organization_id = $1 AND LOWER(name) = LOWER($2)
-		ORDER BY created_at DESC
+		WHERE organization_id = $1 AND LOWER(name) LIKE '%' || LOWER($2) || '%'
+		ORDER BY
+		  CASE WHEN LOWER(name) = LOWER($2) THEN 0 ELSE 1 END,
+		  created_at DESC
 		LIMIT 1
 	`, orgID, name).Scan(&id)
 	if err != nil {
