@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IotVision AI — Demo Script</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #0f1117;
+    --surface:   #1a1d27;
+    --surface2:  #21253a;
+    --border:    #2a2d3e;
+    --text:      #e2e8f0;
+    --muted:     #8892a4;
+    --subtle:    #5a6478;
+    --accent:    #6366f1;
+    --green:     #22c55e;
+    --red:       #ef4444;
+    --amber:     #f59e0b;
+    --blue:      #3b82f6;
+    --code-bg:   #12141e;
+    --sidebar-w: 220px;
+    --radius:    8px;
+  }
+
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 15px;
+    line-height: 1.65;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Header ── */
+  .page-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem 1.75rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    flex-shrink: 0;
+    z-index: 10;
+  }
+  .page-header h1 { font-size: 1.15rem; font-weight: 700; letter-spacing: -0.3px; }
+  .page-header p  { color: var(--muted); font-size: 0.82rem; margin-top: 0.15rem; }
+  .header-meta { text-align: right; font-size: 0.82rem; color: var(--muted); line-height: 2; }
+  .badge {
+    display: inline-block;
+    padding: 0.15rem 0.55rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+  .badge-accent { background: #6366f120; color: var(--accent); border: 1px solid #6366f140; }
+  .badge-green  { background: #22c55e20; color: #86efac;       border: 1px solid #22c55e40; }
+  .badge-amber  { background: #f59e0b20; color: #fcd34d;       border: 1px solid #f59e0b40; }
+  .badge-blue   { background: #3b82f620; color: #93c5fd;       border: 1px solid #3b82f640; }
+
+  /* ── Layout ── */
+  .layout { display: flex; flex: 1; overflow: hidden; }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    width: var(--sidebar-w);
+    flex-shrink: 0;
+    overflow-y: auto;
+    border-right: 1px solid var(--border);
+    padding: 0.75rem 0 1.5rem;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .sidebar::-webkit-scrollbar { width: 4px; }
+  .sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .nav-section {
+    padding: 1rem 0 0.35rem 1rem;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--subtle);
+  }
+  .nav-section:first-child { padding-top: 0.5rem; }
+
+  .nav-link {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.5rem 1rem;
+    font-size: 0.84rem;
+    color: var(--muted);
+    text-decoration: none;
+    border-left: 2px solid transparent;
+    cursor: pointer;
+    min-height: 36px;
+    transition: color 0.15s, background 0.15s, border-color 0.15s;
+  }
+  .nav-link:hover { color: var(--text); background: #ffffff09; }
+  .nav-link.active { color: var(--text); border-left-color: var(--accent); background: #6366f112; }
+
+  .nav-num {
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--subtle);
+    min-width: 1.2rem;
+    text-align: right;
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+  }
+  .nav-link.active .nav-num { color: inherit; opacity: 0.65; }
+
+  .dur-chip {
+    margin-left: auto;
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: var(--subtle);
+    background: #ffffff08;
+    border-radius: 4px;
+    padding: 0.05rem 0.35rem;
+    flex-shrink: 0;
+  }
+  .nav-link.active .dur-chip { color: inherit; opacity: 0.55; }
+
+  /* ── Main ── */
+  .main {
+    flex: 1;
+    min-width: 0;
+    overflow-y: auto;
+    padding: 1.75rem 2.25rem 3rem;
+    scroll-behavior: smooth;
+  }
+
+  h2 {
+    font-size: 1.05rem;
+    font-weight: 700;
+    margin: 2.25rem 0 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    scroll-margin-top: 70px;
+    letter-spacing: -0.2px;
+  }
+  h2:first-child { margin-top: 0; }
+
+  /* ── Overview table ── */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 1rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th {
+    background: var(--surface);
+    color: var(--muted);
+    text-align: left;
+    padding: 0.6rem 1rem;
+    font-weight: 600;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  td { padding: 0.65rem 1rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #ffffff06; }
+
+  code {
+    font-family: 'SF Mono','Fira Code',monospace;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    padding: 0.12em 0.38em;
+    border-radius: 4px;
+    font-size: 0.82em;
+    color: #a5b4fc;
+  }
+
+  /* ── Scenario card ── */
+  .scenario {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 1.25rem;
+    scroll-margin-top: 70px;
+  }
+
+  .scenario-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.85rem 1.1rem;
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .s-num {
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--subtle);
+    min-width: 1.2rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .s-title { font-weight: 700; font-size: 0.95rem; flex: 1; }
+  .s-dur {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--muted);
+    background: #ffffff0a;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 0.15rem 0.5rem;
+  }
+  .s-tool {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: #a5b4fc;
+    background: #6366f115;
+    border: 1px solid #6366f130;
+    border-radius: 5px;
+    padding: 0.15rem 0.5rem;
+    font-family: 'SF Mono','Fira Code',monospace;
+  }
+
+  .scenario-body { display: grid; grid-template-columns: 1fr 1fr 1fr; }
+  @media (max-width: 900px) { .scenario-body { grid-template-columns: 1fr; } }
+
+  .s-col {
+    padding: 1rem 1.1rem;
+    border-right: 1px solid var(--border);
+  }
+  .s-col:last-child { border-right: none; }
+
+  .s-col-label {
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 0.55rem;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+  .label-say   { color: #93c5fd; }
+  .label-do    { color: #86efac; }
+  .label-see   { color: #fcd34d; }
+
+  .s-col p { font-size: 0.85rem; color: var(--text); line-height: 1.6; }
+  .s-col ul { list-style: none; padding: 0; font-size: 0.85rem; }
+  .s-col ul li { padding: 0.18rem 0; display: flex; gap: 0.4rem; }
+  .s-col ul li::before { content: '·'; color: var(--subtle); flex-shrink: 0; }
+
+  .s-tip {
+    padding: 0.6rem 1.1rem;
+    background: #6366f10a;
+    border-top: 1px solid #6366f125;
+    font-size: 0.8rem;
+    color: var(--muted);
+    display: flex;
+    gap: 0.5rem;
+    align-items: flex-start;
+  }
+  .s-tip-icon { color: var(--accent); flex-shrink: 0; font-size: 0.85rem; margin-top: 0.05rem; }
+
+  /* Thai input styling */
+  .thai {
+    font-size: 0.82rem;
+    background: var(--code-bg);
+    border: 1px solid #6366f140;
+    color: #c7d2fe;
+    border-radius: 6px;
+    padding: 0.5rem 0.7rem;
+    font-family: 'SF Mono','Fira Code',monospace;
+    margin: 0.4rem 0;
+    display: block;
+    line-height: 1.5;
+  }
+
+  .result-card {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.5rem 0.7rem;
+    font-size: 0.8rem;
+    color: #86efac;
+    margin: 0.4rem 0;
+    font-family: 'SF Mono','Fira Code',monospace;
+    line-height: 1.5;
+  }
+
+  /* Timeline bar */
+  .timeline {
+    display: flex;
+    gap: 0;
+    margin-bottom: 1.5rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .tl-seg {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 0.6rem 0.4rem;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-align: center;
+    border-right: 1px solid var(--border);
+    gap: 0.2rem;
+    min-width: 0;
+  }
+  .tl-seg:last-child { border-right: none; }
+  .tl-label { color: var(--muted); font-size: 0.65rem; }
+  .tl-dur   { color: var(--text); }
+
+  footer {
+    margin-top: 2.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.78rem;
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .nav-link:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+</style>
+</head>
+<body>
+
+<header class="page-header">
+  <div>
+    <h1>IotVision AI — Demo Script</h1>
+    <p>Presenter guide · 7 scenarios · ~6 min total</p>
+    <div style="display:flex;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap;">
+      <span class="badge badge-blue">7 Scenarios</span>
+      <span class="badge badge-green">~6 min</span>
+      <span class="badge badge-amber">Thai + English</span>
+      <span class="badge badge-accent">Live data</span>
+    </div>
+  </div>
+  <div class="header-meta">
+    <div>Model &nbsp;<span class="badge badge-accent">openai/gpt-oss-20b</span> on Groq</div>
+    <div>Page &nbsp;<code>/ai</code></div>
+    <div>Login &nbsp;<code>admin@acme-foods.com</code></div>
+  </div>
+</header>
+
+<div class="layout">
+
+  <!-- Sidebar -->
+  <nav class="sidebar">
+    <div class="nav-section">Scenarios</div>
+    <a class="nav-link" href="#s1" onclick="navTo('s1')">
+      <span class="nav-num">1</span> Greeting
+      <span class="dur-chip">15s</span>
+    </a>
+    <a class="nav-link" href="#s2" onclick="navTo('s2')">
+      <span class="nav-num">2</span> Live metric
+      <span class="dur-chip">30s</span>
+    </a>
+    <a class="nav-link" href="#s3" onclick="navTo('s3')">
+      <span class="nav-num">3</span> Read chart
+      <span class="dur-chip">45s</span>
+    </a>
+    <a class="nav-link" href="#s4" onclick="navTo('s4')">
+      <span class="nav-num">4</span> Production count
+      <span class="dur-chip">30s</span>
+    </a>
+    <a class="nav-link" href="#s5" onclick="navTo('s5')">
+      <span class="nav-num">5</span> Active alerts
+      <span class="dur-chip">20s</span>
+    </a>
+    <a class="nav-link" href="#s6" onclick="navTo('s6')">
+      <span class="nav-num">6</span> Create dashboard
+      <span class="dur-chip">2 min</span>
+    </a>
+    <a class="nav-link" href="#s7" onclick="navTo('s7')">
+      <span class="nav-num">7</span> Edit existing
+      <span class="dur-chip">45s</span>
+    </a>
+
+    <div class="nav-section">Reference</div>
+    <a class="nav-link" href="#section-prep" onclick="navTo('section-prep')">
+      Setup checklist
+    </a>
+    <a class="nav-link" href="#section-flow" onclick="navTo('section-flow')">
+      Run order
+    </a>
+  </nav>
+
+  <!-- Main -->
+  <main class="main">
+
+    <!-- Setup checklist -->
+    <h2 id="section-prep">✅ Before You Present</h2>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Check</th><th>Detail</th></tr></thead>
+      <tbody>
+        <tr><td>App running</td><td><code>docker compose up -d</code> · open <code>http://localhost:5173</code></td></tr>
+        <tr><td>Logged in as admin</td><td><code>admin@acme-foods.com</code> / <code>Admin@1234</code> — admin role needed for S6 &amp; S7</td></tr>
+        <tr><td>AI page open</td><td>Navigate to <strong>AI Assistant</strong> in the sidebar</td></tr>
+        <tr><td>Fresh conversation</td><td>Click <strong>New conversation</strong> — no prior history</td></tr>
+        <tr><td>Machine CW-01 online</td><td>Machines page → CW-01 status = <span style="color:#22c55e">online</span></td></tr>
+        <tr><td>At least one alert firing</td><td>Alerts page → confirm at least one open event exists</td></tr>
+        <tr><td>GROQ_API_KEY set</td><td><code>.env</code> has a valid key; backend logs show no auth errors</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <!-- Timeline -->
+    <h2 id="section-flow">⏱ Run Order &amp; Timing</h2>
+    <div class="timeline">
+      <div class="tl-seg" style="flex:1;background:#3b82f610;">
+        <span class="tl-dur">S1</span><span class="tl-label">15s</span>
+      </div>
+      <div class="tl-seg" style="flex:2;background:#6366f110;">
+        <span class="tl-dur">S2</span><span class="tl-label">30s</span>
+      </div>
+      <div class="tl-seg" style="flex:3;background:#6366f110;">
+        <span class="tl-dur">S3</span><span class="tl-label">45s</span>
+      </div>
+      <div class="tl-seg" style="flex:2;background:#6366f110;">
+        <span class="tl-dur">S4</span><span class="tl-label">30s</span>
+      </div>
+      <div class="tl-seg" style="flex:1.5;background:#f59e0b10;">
+        <span class="tl-dur">S5</span><span class="tl-label">20s</span>
+      </div>
+      <div class="tl-seg" style="flex:8;background:#22c55e10;">
+        <span class="tl-dur">S6</span><span class="tl-label">2 min</span>
+      </div>
+      <div class="tl-seg" style="flex:3;background:#22c55e10;">
+        <span class="tl-dur">S7</span><span class="tl-label">45s</span>
+      </div>
+    </div>
+    <p style="font-size:0.82rem;color:var(--muted);margin-bottom:1.5rem;">Scenarios 1–5 are read-only and can be shown in any order. S6 must come before S7 if you want to edit the dashboard you just created.</p>
+
+    <!-- Scenarios -->
+    <h2 id="section-scenarios">🎬 Scenarios</h2>
+
+    <!-- S1 -->
+    <div class="scenario" id="s1">
+      <div class="scenario-header">
+        <span class="s-num">1</span>
+        <span class="s-title">Greeting — language &amp; personality</span>
+        <span class="s-dur">~15 sec</span>
+        <span class="s-tool">no tool</span>
+      </div>
+      <div class="scenario-body">
+        <div class="s-col">
+          <div class="s-col-label label-say">🗣 Say &amp; type</div>
+          <p>Type exactly:</p>
+          <code class="thai">สวัสดีครับ ช่วยอะไรได้บ้าง?</code>
+          <p style="margin-top:0.5rem;font-size:0.8rem;color:var(--muted);">("Hello, what can you help me with?")</p>
+        </div>
+        <div class="s-col">
+          <div class="s-col-label label-do">🖱 Actions</div>
+          <ul>
+            <li>Press <strong>Enter</strong></li>
+            <li>Wait ~1 second for response</li>
+          </ul>
+        </div>
+        <div class="s-col">
+          <div class="s-col-label label-see">👁 Expected result</div>
+          <div class="result-card">A friendly Thai-language greeting appears as a chat bubble. No widget card — just text. Response is &lt; 1 second.</div>
+        </div>
+      </div>
+      <div class="s-tip">
+        <span class="s-tip-icon">💡</span>
+        <span>Talking point: <strong>Thai works out of the box.</strong> No language setting, no prefix. The AI replies in whatever language you write in. Greetings cost almost nothing — only ~273 prompt tokens, no tools sent to Groq.</span>
+      </div>
+    </div>
+
+    <!-- S2 -->
+    <div class="scenario" id="s2">
+      <div class="scenario-header">
+        <span class="s-num">2</span>
+        <span class="s-title">Live metric — instant widget card</span>
+        <span class="s-dur">~30 sec</span>
+        <span class="s-tool">show_metric</span>
+      </div>
+      <div class="scenario-body">
+        <div class="s-col">
+          <div class="s-col-label label-say">🗣 Say &amp; type</div>
+          <p>Type:</p>
+          <code class="thai">แสดง speed ของ CW-01 ให้หน่อย</code>
+          <p style="margin-top:0.5rem;font-size:0.8rem;color:var(--muted);">("Show me the speed of CW-01")</p>
+          <p style="margin-top:0.6rem;font-size:0.82rem;">Then follow up:</p>
+          <code class="thai">เป็น gauge ได้ไหม</code>
+          <p style="margin-top:0.3rem;font-size:0.8rem;color:var(--muted);">("Can it be a gauge?")</p>
+        </div>
+        <div class="s-col">
+          <div class="s-col-label label-do">🖱 Actions</div>
+          <ul>
+            <li>Send first message</li>
+            <li>Point to the live KPI card that appears</li>
+            <li>Note the value is updating in real time</li>
+            <li>Send the follow-up</li>
+          </ul>
+        </div>
+        <div class="s-col">
+          <div class="s-col-label label-see">👁 Expected result</div>
+          <div class="result-card">A live KPI card renders in the canvas with the current speed value. After follow-up: a gauge dial card replaces it, needle pointing at the live reading.</div>
+        </div>
+      </div>
+      <div class="s-tip">
+        <span class="s-tip-icon">💡</span>
+        <span>Talking point: <strong>The AI doesn't just answer — it renders a live widget.</strong> The value is fetched fresh from the database, not from the chat history. The follow-up shows multi-turn context: the AI knows you mean the same machine and metric.</span>
+      </div>
+    </div>
+
+    <!-- S3 -->
+    <div class="scenario" id="s3">
+      <div class="scenario-header">
+        <span class="s-num">3</span>
+        <span class="s-title">Read chart data — what is the line chart showing?</span>
+        <span class="s-dur">~45 sec</span>
+        <span class="s-tool">get_telemetry_series</span>
+      </div>
+      <div class="scenario-body">
+        <div class="s-col">
+          <div class="s-col-label label-say">🗣 Say &amp; type</div>
+          <p>Type:</p>
+          <code class="thai">temperature ของ CW-01 ใน 6 ชั่วโมงที่ผ่านมาเป็นยังไงบ้าง มีจุดไหนผิดปกติไหม</code>
+          <p style="margin-top:0.5rem;font-size:0.8rem;color:var(--muted);">("What does CW-01 temperature look like in the last 6 hours? Any anomalies?")</p>
+        </div>
+        <div class="s-col">
+          <div class="s-col-label label-do">🖱 Actions</div>
+          <ul>
+            <li>Send message</li>
+            <li>Wait for response (~2 sec)</li>
+            <li>Point to the time-bucketed values in the reply</li>
+          </ul>
+        </div>
+        <div class="s-col">
+          <div class="s-col-label label-see">👁 Expected result</div>
+          <div class="result-card">AI replies in Thai with the trend — actual avg/min/max per 5-min bucket for the last 6h. Calls out any spike or dip above/below normal range. Plain text, no widget card.</div>
+        </div>
+      </div>
+      <div class="s-tip">
+        <span class="s-tip-icon">💡</span>
+        <span>Talking point: <strong>The AI reads the same data the line chart plots</strong> — not just a summary average. It gets every bucket so it can reason about when exactly a spike happened. This is the <code>get_telemetry_series</code> tool added in the latest session.</span>
+      </div>
+    </div>
+
+    <!-- S4 -->
+    <div class="scenario" id="s4">
+      <div class="scenario-header">
+        <span class="s-num">4</span>
+        <span class="s-title">Production count — bucket-level output</span>
+        <span class="s-dur">~30 sec</span>
+        <span class="s-tool">get_production_count</span>
+      </div>
+      <div class="scenario-body">
+        <div class="s-col">
+          <div class="s-col-label label-say">🗣 Say &amp; type</div>
+          <p>Type:</p>
+          <code class="thai">CW-01 ผลิตชิ้นดีได้เท่าไหร่ใน 24 ชั่วโมงที่ผ่านมา แบ่งเป็น bucket 1 ชั่วโมง</code>
+          <p style="margin-top:0.5rem;font-size:0.8rem;color:var(--muted);">("How many good pieces did CW-01 produce in the last 24h, broken into 1-hour buckets?")</p>
+        </div>
+        <div class="s-col">
+          <div class="s-col-label label-do">🖱 Actions</div>
+          <ul>
+            <li>Send message</li>
+            <li>Point to the 24 rows of hourly counts</li>
+            <li>Note the status filter ("good" only)</li>
+          </ul>
+        </div>
+        <div class="s-col">
+          <div class="s-col-label label-see">👁 Expected result</div>
+          <div class="result-card">AI replies with 24 hourly rows of good-piece counts — same shape as the DailyCount widget. May summarize the best and worst hour.</div>
+        </div>
+      </div>
+      <div class="s-tip">
+        <span class="s-tip-icon">💡</span>
+        <span>Talking point: <strong>Flexible bucketing with status filter.</strong> You can ask for any bucket size (1m, 30m, 1h, 1d) and filter by good / reject / all. The AI understands "ชิ้นดี" (good pieces) and passes <code>status:"good"</code> to the query.</span>
+      </div>
+    </div>
+
+    <!-- S5 -->
+    <div class="scenario" id="s5">
+      <div class="scenario-header">
+        <span class="s-num">5</span>
+        <span class="s-title">Active alerts — what's firing right now</span>
+        <span class="s-dur">~20 sec</span>
+        <span class="s-tool">get_active_alerts</span>
+      </div>
+      <div class="scenario-body">
+        <div class="s-col">
+          <div class="s-col-label label-say">🗣 Say &amp; type</div>
+          <p>Type:</p>
+          <code class="thai">ตอนนี้มี alert อะไรบ้างที่ยังเปิดอยู่</code>
+          <p style="margin-top:0.5rem;font-size:0.8rem;color:var(--muted);">("What alerts are currently open?")</p>
+        </div>
+        <div class="s-col">
+          <div class="s-col-label label-do">🖱 Actions</div>
+          <ul>
+            <li>Send message</li>
+            <li>Point to severity colors in the reply</li>
+          </ul>
+        </div>
+        <div class="s-col">
+          <div class="s-col-label label-see">👁 Expected result</div>
+          <div class="result-card">Plain-text list of open alert events with machine name, metric, value, severity, and trigger time. If none: "ไม่มี alert ที่เปิดอยู่ตอนนี้".</div>
+        </div>
+      </div>
+      <div class="s-tip">
+        <span class="s-tip-icon">💡</span>
+        <span>Talking point: <strong>Read-only for alerts by design.</strong> The AI can list alerts but cannot acknowledge or resolve them — that stays in the Alerts page. This is a deliberate safety boundary, not a limitation.</span>
+      </div>
+    </div>
+
+    <!-- S6 -->
+    <div class="scenario" id="s6">
+      <div class="scenario-header">
+        <span class="s-num">6</span>
+        <span class="s-title">Create a dashboard — preview → edit → confirm</span>
+        <span class="s-dur">~2 min</span>
+        <span class="s-tool">preview_dashboard · preview_add_widget · preview_update_widget · create_custom_dashboard</span>
+      </div>
+      <div class="scenario-body">
+        <div class="s-col">
+          <div class="s-col-label label-say">🗣 Say &amp; type</div>
+          <p><strong>Step 1</strong></p>
+          <code class="thai">สร้าง production dashboard สำหรับ CW-01 ให้หน่อย</code>
+          <p style="margin-top:0.3rem;font-size:0.8rem;color:var(--muted);">("Create a production dashboard for CW-01")</p>
+
+          <p style="margin-top:0.8rem;"><strong>Step 2</strong> (after preview appears)</p>
+          <code class="thai">เพิ่ม gauge สำหรับ weight เข้าไปด้วย</code>
+          <p style="margin-top:0.3rem;font-size:0.8rem;color:var(--muted);">("Add a weight gauge too")</p>
+
+          <p style="margin-top:0.8rem;"><strong>Step 3</strong> (after preview updates)</p>
+          <p style="font-size:0.83rem;">Click <strong>Confirm</strong> button on the canvas card.</p>
+        </div>
+        <div class="s-col">
+          <div class="s-col-label label-do">🖱 Actions</div>
+          <ul>
+            <li>Send Step 1 — wait for canvas preview to appear</li>
+            <li>Point to each widget in the preview</li>
+            <li>Send Step 2 — watch preview update</li>
+            <li>Point to the new weight gauge in preview</li>
+            <li>Click <strong>Confirm</strong></li>
+            <li>Click the link in the success card to open the live dashboard</li>
+          </ul>
+        </div>
+        <div class="s-col">
+          <div class="s-col-label label-see">👁 Expected result</div>
+          <div class="result-card">Step 1: Canvas shows a preview card with 4–5 production widgets (count, speed, KPI cards). Confirm + Discard buttons visible.</div>
+          <div class="result-card" style="margin-top:0.4rem;">Step 2: Preview updates — weight gauge added. AI confirms in Thai.</div>
+          <div class="result-card" style="margin-top:0.4rem;">Step 3: Success card with a link. Dashboard exists in the Dashboards list with live widgets.</div>
+        </div>
+      </div>
+      <div class="s-tip">
+        <span class="s-tip-icon">💡</span>
+        <span>Talking point: <strong>Preview-then-confirm flow — the AI cannot accidentally create.</strong> The database write only happens when the user clicks Confirm. The LLM never touches the DB directly. Step 2 shows in-preview editing across multiple turns with no extra navigation.</span>
+      </div>
+    </div>
+
+    <!-- S7 -->
+    <div class="scenario" id="s7">
+      <div class="scenario-header">
+        <span class="s-num">7</span>
+        <span class="s-title">Edit existing dashboard — add widget by name</span>
+        <span class="s-dur">~45 sec</span>
+        <span class="s-tool">add_widget_to_dashboard</span>
+      </div>
+      <div class="scenario-body">
+        <div class="s-col">
+          <div class="s-col-label label-say">🗣 Say &amp; type</div>
+          <p>Type:</p>
+          <code class="thai">เพิ่ม line chart สำหรับ temperature ของ CW-01 เข้าไปใน CW-01 Overview</code>
+          <p style="margin-top:0.5rem;font-size:0.8rem;color:var(--muted);">("Add a temperature line chart for CW-01 to the CW-01 Overview dashboard")</p>
+        </div>
+        <div class="s-col">
+          <div class="s-col-label label-do">🖱 Actions</div>
+          <ul>
+            <li>Send message</li>
+            <li>Click the dashboard link in the success card</li>
+            <li>Point to the new widget at the bottom of the grid</li>
+          </ul>
+        </div>
+        <div class="s-col">
+          <div class="s-col-label label-see">👁 Expected result</div>
+          <div class="result-card">Success card appears with a link to "CW-01 Overview". Opening the dashboard shows a new line-chart widget for temperature added to the grid.</div>
+        </div>
+      </div>
+      <div class="s-tip">
+        <span class="s-tip-icon">💡</span>
+        <span>Talking point: <strong>No preview needed for existing dashboards</strong> — <code>add_widget_to_dashboard</code> writes directly. The dashboard name is matched by substring so "CW-01 Overview" finds "Machine Overview — CW-01". Editors and admins only; viewers see a permission error.</span>
+      </div>
+    </div>
+
+    <footer>
+      <span>IotVision AI Demo Script · 2026-06-30</span>
+      <span>CPF/docs/ · 7 scenarios · ~6 min</span>
+    </footer>
+
+  </main>
+</div>
+
+<script>
+function navTo(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  setActive(id);
+}
+
+function setActive(id) {
+  document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+  const link = document.querySelector(`.nav-link[href="#${id}"]`);
+  if (link) link.classList.add('active');
+}
+
+const targets = document.querySelectorAll('.scenario[id], h2[id]');
+const observer = new IntersectionObserver(entries => {
+  entries.forEach(e => { if (e.isIntersecting) setActive(e.target.id); });
+}, { rootMargin: '-10% 0px -60% 0px', threshold: 0 });
+targets.forEach(el => observer.observe(el));
+</script>
+</body>
+</html>

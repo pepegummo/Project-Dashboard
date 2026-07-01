@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IotVision AI — Roadmap</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0f1117; --surface: #1a1d27; --surface2: #21253a;
+    --border: #2a2d3e; --text: #e2e8f0; --muted: #8892a4; --subtle: #5a6478;
+    --accent: #6366f1; --green: #22c55e; --red: #ef4444; --amber: #f59e0b; --blue: #3b82f6;
+    --code-bg: #12141e; --radius: 8px;
+  }
+  html, body { height: 100%; overflow: hidden; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text); font-size: 15px; line-height: 1.65;
+    display: flex; flex-direction: column; }
+
+  .page-header { display: flex; align-items: center; justify-content: space-between;
+    padding: 1rem 1.75rem; border-bottom: 1px solid var(--border);
+    background: var(--surface); flex-wrap: wrap; gap: 0.75rem; flex-shrink: 0; }
+  .page-header h1 { font-size: 1.15rem; font-weight: 700; letter-spacing: -0.3px; }
+  .page-header p  { color: var(--muted); font-size: 0.82rem; margin-top: 0.15rem; }
+  .badge { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 9999px;
+    font-size: 0.75rem; font-weight: 600; }
+  .badge-green  { background: #22c55e20; color: #86efac; border: 1px solid #22c55e40; }
+  .badge-amber  { background: #f59e0b20; color: #fcd34d; border: 1px solid #f59e0b40; }
+  .badge-accent { background: #6366f120; color: var(--accent); border: 1px solid #6366f140; }
+
+  .main { flex: 1; overflow-y: auto; padding: 1.75rem 2.25rem 3rem; }
+  h2 { font-size: 1.05rem; font-weight: 700; margin: 2.25rem 0 1rem;
+    padding-bottom: 0.5rem; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 0.45rem; letter-spacing: -0.2px; }
+  h2:first-child { margin-top: 0; }
+  code { font-family: 'SF Mono','Fira Code',monospace; background: var(--code-bg);
+    border: 1px solid var(--border); padding: 0.12em 0.38em; border-radius: 4px;
+    font-size: 0.82em; color: #a5b4fc; }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 1rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th { background: var(--surface); color: var(--muted); text-align: left;
+    padding: 0.6rem 1rem; font-weight: 600; font-size: 0.72rem;
+    text-transform: uppercase; letter-spacing: 0.4px; border-bottom: 1px solid var(--border); }
+  td { padding: 0.65rem 1rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #ffffff06; }
+
+  /* ── Done list ── */
+  .done-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 0.6rem; margin-bottom: 1.5rem; }
+  .done-item { background: var(--surface); border: 1px solid #22c55e30;
+    border-left: 3px solid #22c55e; border-radius: 6px; padding: 0.7rem 1rem;
+    font-size: 0.85rem; display: flex; gap: 0.6rem; align-items: flex-start; }
+  .done-check { color: #22c55e; font-weight: 700; flex-shrink: 0; margin-top: 0.05rem; }
+  .done-text .dt-title { font-weight: 600; margin-bottom: 0.1rem; }
+  .done-text .dt-sub   { font-size: 0.75rem; color: var(--muted); }
+
+  /* ── Roadmap items ── */
+  .road-item {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 0.85rem;
+  }
+  .road-item-header {
+    display: flex; align-items: center; gap: 0.75rem;
+    padding: 0.8rem 1.1rem; background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+  }
+  .ri-priority {
+    font-size: 0.68rem; font-weight: 700; padding: 0.15rem 0.5rem;
+    border-radius: 5px; white-space: nowrap; flex-shrink: 0;
+    text-transform: uppercase; letter-spacing: 0.3px;
+  }
+  .p-high   { background: #ef444420; color: #fca5a5; border: 1px solid #ef444440; }
+  .p-medium { background: #f59e0b20; color: #fcd34d; border: 1px solid #f59e0b40; }
+  .p-low    { background: #3b82f620; color: #93c5fd; border: 1px solid #3b82f640; }
+  .ri-title { font-weight: 700; font-size: 0.92rem; flex: 1; }
+  .ri-area  { font-size: 0.72rem; color: var(--muted); white-space: nowrap; }
+  .road-item-body { padding: 0.85rem 1.1rem; }
+  .ri-why   { font-size: 0.85rem; color: var(--text); margin-bottom: 0.5rem; line-height: 1.55; }
+  .ri-how   { font-size: 0.8rem; color: var(--muted); }
+  .ri-how code { font-size: 0.78em; }
+
+  /* ── Future ideas ── */
+  .future-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 0.6rem; margin-bottom: 1rem; }
+  .future-card { background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 0.85rem 1rem; }
+  .fc-icon  { font-size: 1.3rem; margin-bottom: 0.35rem; }
+  .fc-title { font-weight: 700; font-size: 0.88rem; margin-bottom: 0.3rem; }
+  .fc-desc  { font-size: 0.8rem; color: var(--muted); line-height: 1.5; }
+
+  footer { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 0.78rem; display: flex; justify-content: space-between;
+    flex-wrap: wrap; gap: 0.5rem; }
+</style>
+</head>
+<body>
+
+<header class="page-header">
+  <div>
+    <h1>IotVision AI — Roadmap</h1>
+    <p>What's done · what's next · future ideas</p>
+    <div style="display:flex;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap;">
+      <span class="badge badge-green">12 items shipped</span>
+      <span class="badge badge-amber">6 items in backlog</span>
+      <span class="badge badge-accent">SSE streaming = highest UX win</span>
+    </div>
+  </div>
+</header>
+
+<main class="main">
+
+  <h2>✅ What's Done</h2>
+  <div class="done-grid">
+    <div class="done-item">
+      <span class="done-check">✓</span>
+      <div class="done-text">
+        <div class="dt-title">Groq agentic loop</div>
+        <div class="dt-sub">14 tools, max 5 rounds, role gate at dispatch</div>
+      </div>
+    </div>
+    <div class="done-item">
+      <span class="done-check">✓</span>
+      <div class="done-text">
+        <div class="dt-title">Thai language support</div>
+        <div class="dt-sub">Intent mapping, Thai keyword regex, reply in user's language</div>
+      </div>
+    </div>
+    <div class="done-item">
+      <span class="done-check">✓</span>
+      <div class="done-text">
+        <div class="dt-title">Preview-then-confirm flow</div>
+        <div class="dt-sub">LLM cannot write to DB directly; frontend confirms</div>
+      </div>
+    </div>
+    <div class="done-item">
+      <span class="done-check">✓</span>
+      <div class="done-text">
+        <div class="dt-title">Dashboard name substring match</div>
+        <div class="dt-sub">Fixed exact-match bug; now matches partial names</div>
+      </div>
+    </div>
+    <div class="done-item">
+      <span class="done-check">✓</span>
+      <div class="done-text">
+        <div class="dt-title">Token optimization (−76% greetings)</div>
+        <div class="dt-sub">Zero-tool gate, slim schemas, context leak fix, preview filter</div>
+      </div>
+    </div>
+    <div class="done-item">
+      <span class="done-check">✓</span>
+      <div class="done-text">
+        <div class="dt-title">Groq prompt caching</div>
+        <div class="dt-sub">Stable base prompt; context extension gated</div>
+      </div>
+    </div>
+    <div class="done-item">
+      <span class="done-check">✓</span>
+      <div class="done-text">
+        <div class="dt-title">Machine change in preview_update_widget</div>
+        <div class="dt-sub">Resolves new machine UUID on the fly</div>
+      </div>
+    </div>
+    <div class="done-item">
+      <span class="done-check">✓</span>
+      <div class="done-text">
+        <div class="dt-title">Model bake-off (gpt-oss-20b chosen)</div>
+        <div class="dt-sub">13/13 accuracy, fastest, cheapest of 3 candidates</div>
+      </div>
+    </div>
+    <div class="done-item">
+      <span class="done-check">✓</span>
+      <div class="done-text">
+        <div class="dt-title">get_telemetry_series tool</div>
+        <div class="dt-sub">AI can now read all data points a line chart shows</div>
+      </div>
+    </div>
+    <div class="done-item">
+      <span class="done-check">✓</span>
+      <div class="done-text">
+        <div class="dt-title">get_production_count tool</div>
+        <div class="dt-sub">Flexible bucket/SKU/status — mirrors DailyCount widget exactly</div>
+      </div>
+    </div>
+    <div class="done-item">
+      <span class="done-check">✓</span>
+      <div class="done-text">
+        <div class="dt-title">Context nav leak fixed</div>
+        <div class="dt-sub">Dashboard context no longer leaks from prior page navigation</div>
+      </div>
+    </div>
+    <div class="done-item">
+      <span class="done-check">✓</span>
+      <div class="done-text">
+        <div class="dt-title">Alert redirect behavior</div>
+        <div class="dt-sub">AI explains limitation and offers get_active_alerts instead</div>
+      </div>
+    </div>
+  </div>
+
+  <h2>🔜 Backlog — Prioritized</h2>
+
+  <div class="road-item">
+    <div class="road-item-header">
+      <span class="ri-priority p-high">High</span>
+      <span class="ri-title">SSE streaming — user sees tokens as they arrive</span>
+      <span class="ri-area">Latency · UX</span>
+    </div>
+    <div class="road-item-body">
+      <div class="ri-why">Biggest single UX improvement available. Currently the user stares at a spinner for 2–7 seconds while all Groq rounds complete. With SSE, text and tool results stream in as they're generated.</div>
+      <div class="ri-how">Backend: <code>text/event-stream</code> response; push each chunk and tool result as an SSE event. Frontend: consume <code>EventSource</code> and append tokens progressively to the chat bubble.</div>
+    </div>
+  </div>
+
+  <div class="road-item">
+    <div class="road-item-header">
+      <span class="ri-priority p-medium">Medium</span>
+      <span class="ri-title">Parallel tool execution — multiple tools in one round</span>
+      <span class="ri-area">Latency</span>
+    </div>
+    <div class="road-item-body">
+      <div class="ri-why">When Groq returns multiple tool calls in one message, they are executed sequentially today. Parallelising with goroutines would cut latency proportionally to the number of concurrent tool calls.</div>
+      <div class="ri-how">Detect multiple <code>tool_calls</code> in a single Groq response → fan out to goroutines with a <code>WaitGroup</code> → collect results → feed back to Groq in a single message batch.</div>
+    </div>
+  </div>
+
+  <div class="road-item">
+    <div class="road-item-header">
+      <span class="ri-priority p-medium">Medium</span>
+      <span class="ri-title">Structured tool error responses — better LLM recovery</span>
+      <span class="ri-area">Reliability</span>
+    </div>
+    <div class="road-item-body">
+      <div class="ri-why">Tool errors are currently returned as plain strings. The model guesses how to recover. A structured <code>{ "error": "code", "message": "...", "suggestion": "..." }</code> format would let the model give a more accurate user-facing explanation.</div>
+      <div class="ri-how">Define a <code>ToolError</code> struct in Go; return it as JSON in the tool result content. Update system prompt to describe the error shape.</div>
+    </div>
+  </div>
+
+  <div class="road-item">
+    <div class="road-item-header">
+      <span class="ri-priority p-medium">Medium</span>
+      <span class="ri-title">"Remove the gauge" — remove by widget type, not title</span>
+      <span class="ri-area">UX · Tool</span>
+    </div>
+    <div class="road-item-body">
+      <div class="ri-why"><code>remove_widget</code> requires exact title match. "Remove the gauge" fails because there is no widget titled "gauge." Users naturally refer to widgets by type, not by the configured title.</div>
+      <div class="ri-how">Extend <code>remove_widget</code> to accept a <code>widget_type</code> fallback. If title match fails, match by type within the dashboard — with a confirmation step if multiple widgets of that type exist.</div>
+    </div>
+  </div>
+
+  <div class="road-item">
+    <div class="road-item-header">
+      <span class="ri-priority p-low">Low</span>
+      <span class="ri-title">Auto-update conversation title</span>
+      <span class="ri-area">UX</span>
+    </div>
+    <div class="road-item-body">
+      <div class="ri-why">All conversations are titled "New Conversation." Users with multiple open threads cannot tell them apart in the sidebar.</div>
+      <div class="ri-how">After the first user message, call Groq with a tiny prompt: "Summarise this chat in 5 words." Write the result to <code>ai_conversations.title</code>. No agentic loop needed — plain call.</div>
+    </div>
+  </div>
+
+  <div class="road-item">
+    <div class="road-item-header">
+      <span class="ri-priority p-low">Low</span>
+      <span class="ri-title">get_machine_fields — "what can CW-01 measure?"</span>
+      <span class="ri-area">Tool gap</span>
+    </div>
+    <div class="road-item-body">
+      <div class="ri-why">"What metrics does CW-01 have?" today calls <code>get_machines</code>, which returns all machines. The model filters the result but sends unnecessary data. A dedicated tool would be leaner and more accurate.</div>
+      <div class="ri-how">Add <code>get_machine_fields(machine_id)</code> → returns only the field schema for one machine. Saves tokens and removes the need for the model to filter a full org-wide machine list.</div>
+    </div>
+  </div>
+
+  <h2>🔭 Future Ideas</h2>
+  <div class="future-grid">
+    <div class="future-card">
+      <div class="fc-icon">🔔</div>
+      <div class="fc-title">Alert management via AI</div>
+      <div class="fc-desc">Allow the AI to acknowledge and resolve alerts. Currently blocked by design — needs a clear safety model before enabling write access to alert state.</div>
+    </div>
+    <div class="future-card">
+      <div class="fc-icon">🌍</div>
+      <div class="fc-title">Multi-machine comparison</div>
+      <div class="fc-desc">"Compare speed of CW-01 and CW-02 last hour." Requires multi-machine tool calls and a combined response format.</div>
+    </div>
+    <div class="future-card">
+      <div class="fc-icon">📅</div>
+      <div class="fc-title">Scheduled reports</div>
+      <div class="fc-desc">"Send me a daily summary of CW-01 production at 8am." Requires a cron/notification layer outside the current chat loop.</div>
+    </div>
+    <div class="future-card">
+      <div class="fc-icon">🤖</div>
+      <div class="fc-title">Anomaly detection</div>
+      <div class="fc-desc">Let the AI proactively surface unusual patterns in telemetry — not just answer questions but flag issues before alerts fire.</div>
+    </div>
+    <div class="future-card">
+      <div class="fc-icon">🔗</div>
+      <div class="fc-title">MCP integration</div>
+      <div class="fc-desc">Expose IotVision tools via the Model Context Protocol so external Claude instances or other AI clients can query factory data.</div>
+    </div>
+    <div class="future-card">
+      <div class="fc-icon">🎙️</div>
+      <div class="fc-title">Voice input</div>
+      <div class="fc-desc">Factory floor operators often have gloved hands. Browser Web Speech API → transcript → existing chat endpoint. No backend change needed.</div>
+    </div>
+  </div>
+
+  <footer>
+    <span>IotVision AI — Roadmap · 2026-06-30</span>
+    <span>CPF/docs/</span>
+  </footer>
+
+</main>
+</body>
+</html>

@@ -6,6 +6,7 @@ import { api } from '@/services/api.service';
 import { useDashboardStore } from '@/stores/dashboard.store';
 import { useMachineStore } from '@/stores/machine.store';
 import { useTelemetryStore } from '@/stores/telemetry.store';
+import { useWidgetViewStateStore } from '@/stores/widget-view-state.store';
 import GridStackCanvas from '@/components/dashboard/GridStackCanvas.vue';
 import WidgetToolbox from '@/components/dashboard/WidgetToolbox.vue';
 import WidgetConfigModal from '@/components/dashboard/WidgetConfigModal.vue';
@@ -23,6 +24,7 @@ const router = useRouter();
 const dashboardStore = useDashboardStore();
 const machineStore = useMachineStore();
 const telemetryStore = useTelemetryStore();
+const widgetViewStateStore = useWidgetViewStateStore();
 const canvasCards = ref<CanvasCard[]>([]);
 const previewHighlightId = ref<string | undefined>(undefined);
 const selectionResetToken = ref(0);
@@ -429,13 +431,31 @@ function removeFocusCard(id: string) {
   canvasCards.value = canvasCards.value.filter(c => c.id !== id);
 }
 
+// Analytical intent → the user wants a trend/prediction, so the focused widget's
+// full on-screen series is worth its tokens. Simple/edit messages skip it.
+const ANALYTICAL_RE = /trend|analy|predict|forecast|how'?s it doing|over time|history|แนวโน้ม|วิเคราะห์|ทำนาย/i;
+
 // Summarize the on-screen preview (widgets + live values) so the AI can answer
-// questions about what the user is looking at.
-function buildDashboardContext(): string {
+// questions about what the user is looking at. For a focused line-chart/daily-count
+// widget on an analytical question, also inject the exact series it's rendering.
+function buildDashboardContext(text = '', focusedIds: string[] = []): string {
+  const analytical = ANALYTICAL_RE.test(text);
+  // For a focused chart/count widget on an analytical question, append the exact
+  // series the widget already rendered (from widget-view-state) so the AI reads
+  // on-screen data with no tool call. Empty for anything else.
+  const seriesLine = (id: string, type: string): string => {
+    if (!analytical || !focusedIds.includes(id)) return '';
+    if (type !== 'line-chart' && type !== 'daily-count') return '';
+    const s = widgetViewStateStore.seriesStates[id];
+    if (!s?.data?.length) return '';
+    // Last ~24 points is enough to read a trend — half the tokens of the full 48.
+    return `\n  on-screen data — columns ${JSON.stringify(s.columns)}, data ${JSON.stringify(s.data.slice(-24))}`;
+  };
+
   const card = canvasCards.value.find(c => c.kind === 'preview' || c.kind === 'dashboard') as any;
   const widgets = card?.result?.widgets ?? [];
   if (widgets.length) {
-    const lines = widgets.map((w: any) => {
+    const lines = widgets.map((w: any, i: number) => {
       const parts = [`- ${w.type} "${w.title || ''}" — machine ${w.machine}`];
       if (w.machineUuid) {
 
@@ -448,10 +468,12 @@ function buildDashboardContext(): string {
           }
 
         }
-      if (w.bucket) parts.push(`bucket ${w.bucket}`);
+      // Bucket chip is local widget state, not persisted config — read the live selection.
+      const bucket = widgetViewStateStore.bucketStates[`preview-${i}`] ?? w.bucket;
+      if (bucket) parts.push(`bucket ${bucket}`);
       if (w.sku) parts.push(`sku ${w.sku}`);
       if (w.status) parts.push(`status ${w.status}`);
-      return parts.join(', ');
+      return parts.join(', ') + seriesLine(`preview-${i}`, w.type);
     });
     const label = card.kind === 'dashboard' ? 'Active dashboard' : 'Current dashboard preview';
     return `${label} "${card.result.dashboardName}" on screen:\n${lines.join('\n')}`;
@@ -461,7 +483,7 @@ function buildDashboardContext(): string {
   const focusCard = canvasCards.value.find(c => c.kind === 'focus') as any;
   const focusWidgets = focusCard?.result?.widgets ?? [];
   if (focusWidgets.length) {
-    const lines = focusWidgets.map((w: any) => {
+    const lines = focusWidgets.map((w: any, i: number) => {
       const parts = [`- ${w.type} "${w.title || ''}" — machine ${w.machine}`];
       if (w.metric) {
         parts.push(`metric ${w.metric}`);
@@ -472,10 +494,11 @@ function buildDashboardContext(): string {
           }
         }
       }
-      if (w.bucket) parts.push(`bucket ${w.bucket}`);
+      const bucket = widgetViewStateStore.bucketStates[`preview-${i}`] ?? w.bucket;
+      if (bucket) parts.push(`bucket ${bucket}`);
       if (w.sku) parts.push(`sku ${w.sku}`);
       if (w.status) parts.push(`status ${w.status}`);
-      return parts.join(', ');
+      return parts.join(', ') + seriesLine(`preview-${i}`, w.type);
     });
     return `Metric focus card on screen (call show_metric to highlight/refresh):\n${lines.join('\n')}`;
   }
@@ -496,10 +519,11 @@ function buildDashboardContext(): string {
           }
         }
       }
-      if (w.config?.bucket) parts.push(`bucket ${w.config.bucket}`);
+      const bucket = widgetViewStateStore.bucketStates[w.id] ?? w.config?.bucket;
+      if (bucket) parts.push(`bucket ${bucket}`);
       if (w.config?.sku) parts.push(`sku ${w.config.sku}`);
       if (w.config?.status) parts.push(`status ${w.config.status}`);
-      return parts.join(', ');
+      return parts.join(', ') + seriesLine(w.id, w.widgetType);
     });
     return `Dashboard "${dashboardStore.currentDashboard?.name ?? ''}" is active on screen with widgets:\n${lines.join('\n')}`;
   }
@@ -529,7 +553,7 @@ async function sendMessage() {
       conversationId.value = conv.id;
     }
 
-    const messages = await api.chat(conversationId.value!, text, buildDashboardContext());
+    const messages = await api.chat(conversationId.value!, text, buildDashboardContext(text, mentionSnapshot.map(w => w.id)));
 
     for (const msg of messages) {
       if (msg.role === 'assistant' && msg.content?.trim()) {

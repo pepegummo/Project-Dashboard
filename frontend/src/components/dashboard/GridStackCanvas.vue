@@ -143,18 +143,25 @@ function removeWidgetFromGrid(widgetId: string) {
   }
 }
 
-// Spotlight: when highlightedId changes, add animation class to the target cell
+// Spotlight: when highlightedId changes, flash the target cell.
+// A mentioned widget already carries a persistent .widget-selected ring that looks
+// identical to .widget-highlight, so just adding the highlight class on top is a
+// no-op — nothing visibly changes. Strip both classes first so re-adding the
+// highlight is a real state transition, then restore selection from live props.
 watch(
   () => props.highlightedId,
   (id) => {
     if (!id || !gridRef.value) return;
     const el = gridRef.value.querySelector(`[gs-id="${id}"]`) as HTMLElement | null;
     if (!el) return;
-    el.classList.remove('widget-highlight');
-    // Force reflow to restart animation if same widget is highlighted again
-    void el.offsetWidth;
+    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    el.classList.remove('widget-highlight', 'widget-selected');
+    void el.offsetWidth; // force reflow so the removal is applied before re-adding
     el.classList.add('widget-highlight');
-    setTimeout(() => el.classList.remove('widget-highlight'), 3200);
+    setTimeout(() => {
+      el.classList.remove('widget-highlight');
+      if (props.selectedIds?.includes(id)) el.classList.add('widget-selected');
+    }, 3200);
   },
 );
 

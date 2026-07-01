@@ -260,7 +260,9 @@ func (r *Repository) GetSkuCount(ctx context.Context, machineID, sku, status, in
 	skuFilter := ""
 	if sku != "" {
 		args = append(args, sku)
-		skuFilter = "  AND data->>'sku' = $4"
+		// Case-insensitive so "cw-1001" and "CW-1001" match the same pieces.
+		// ponytail: no index on LOWER(...); count already scans, fine at this scale.
+		skuFilter = "  AND LOWER(data->>'sku') = LOWER($4)"
 	}
 
 	query := fmt.Sprintf(`

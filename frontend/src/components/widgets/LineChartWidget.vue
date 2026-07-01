@@ -94,6 +94,20 @@ const chartData = computed<Array<{ ts: string; value: number; min?: number; max?
 );
 const loading = computed<boolean>(() => liveMode.value ? liveLoading.value : histLoading.value);
 
+// Publish the on-screen series (compacted, last ~48 points) so the AI can read
+// exactly what this chart shows when it's focused — no extra fetch. Same
+// columns/data shape the backend uses in compactSeriesResult.
+watch(chartData, (pts) => {
+  const recent = pts.slice(-48);
+  const hasBand = recent.some(p => p.min != null || p.max != null);
+  widgetViewStateStore.setSeries(props.widget.id, {
+    columns: hasBand ? ['time', 'value', 'min', 'max'] : ['time', 'value'],
+    data: recent.map(p => hasBand
+      ? [p.ts, p.value, p.min ?? p.value, p.max ?? p.value]
+      : [p.ts, p.value]),
+  });
+}, { immediate: true });
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Limits / Thresholds
 // ─────────────────────────────────────────────────────────────────────────────

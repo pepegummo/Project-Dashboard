@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
+	"time"
 
 	"iot-dashboard/internal/database"
 	"iot-dashboard/internal/modules/alerts"
@@ -280,7 +282,11 @@ func (tk *ToolKit) GetTelemetrySeries(ctx context.Context, orgID string, raw jso
 	if tr == "" {
 		tr = "1h"
 	}
-	return tk.tel.GetSeries(ctx, id, args.Metric, tr, "", "", &orgID)
+	result, err := tk.tel.GetSeries(ctx, id, args.Metric, tr, "", "", &orgID)
+	if err != nil {
+		return nil, err
+	}
+	return compactSeriesResult(result), nil
 }
 
 // GetProductionCount returns bucket-level piece counts — mirrors what a daily-count widget shows.
@@ -299,7 +305,118 @@ func (tk *ToolKit) GetProductionCount(ctx context.Context, orgID string, raw jso
 	if points <= 0 {
 		points = 48
 	}
-	return tk.tel.GetBucketCount(ctx, id, args.Sku, args.Status, bucket, points, &orgID)
+	result, err := tk.tel.GetBucketCount(ctx, id, args.Sku, args.Status, bucket, points, &orgID)
+	if err != nil {
+		return nil, err
+	}
+	return compactBucketResult(result), nil
+}
+
+// GetSkus lists the distinct SKU values seen for a machine — so the AI can answer
+// "which SKUs can I select?" and map a user's loose casing to a real SKU.
+func (tk *ToolKit) GetSkus(ctx context.Context, orgID string, raw json.RawMessage) (any, error) {
+	var args struct {
+		MachineID string `json:"machine_id"`
+	}
+	_ = json.Unmarshal(raw, &args)
+	id, ok := resolveMachineID(ctx, orgID, strings.TrimSpace(args.MachineID))
+	if !ok {
+		return nil, fmt.Errorf("machine %q not found", args.MachineID)
+	}
+	skus, err := tk.tel.GetMachineSkus(ctx, id, &orgID)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"machine": args.MachineID, "skus": skus}, nil
+}
+
+// ── LLM token-footprint compaction ───────────────────────────────────────────
+// get_telemetry_series / get_production_count return up to 500 points; the
+// object-per-point shape (repeating "bucket"/"avg"/"min"/"max" keys on every
+// row) is what the REST API/frontend charts need, but it's the single biggest
+// cost in the tool-result tokens fed back into the model on every turn that
+// uses it — and again on every later turn that re-sends conversation history.
+// Reshape into [time, values...] tuples + a "columns" legend here, tool-side
+// only, so the shared telemetry service (and the REST API) are untouched.
+
+func shortTime(v any) string {
+	if t, ok := v.(time.Time); ok {
+		return t.UTC().Format("2006-01-02T15:04")
+	}
+	return ""
+}
+
+func shortTimePtr(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.UTC().Format("2006-01-02T15:04")
+}
+
+func round2(f float64) float64 { return math.Round(f*100) / 100 }
+
+func compactSeriesResult(result map[string]interface{}) map[string]any {
+	rows, _ := result["data"].([]telemetry.TelemetryPoint)
+	columns := []string{"time"}
+	if len(rows) > 0 {
+		if rows[0].Avg != nil {
+			columns = append(columns, "avg")
+		}
+		if rows[0].Min != nil {
+			columns = append(columns, "min")
+		}
+		if rows[0].Max != nil {
+			columns = append(columns, "max")
+		}
+		if rows[0].Value != nil {
+			columns = append(columns, "value")
+		}
+	}
+	data := make([][]any, 0, len(rows))
+	for _, p := range rows {
+		ts := p.Bucket
+		if ts == nil {
+			ts = p.Ts
+		}
+		row := []any{shortTimePtr(ts)}
+		if p.Avg != nil {
+			row = append(row, round2(*p.Avg))
+		}
+		if p.Min != nil {
+			row = append(row, round2(*p.Min))
+		}
+		if p.Max != nil {
+			row = append(row, round2(*p.Max))
+		}
+		if p.Value != nil {
+			row = append(row, round2(*p.Value))
+		}
+		data = append(data, row)
+	}
+	return map[string]any{
+		"field":   result["field"],
+		"from":    shortTime(result["from"]),
+		"to":      shortTime(result["to"]),
+		"columns": columns,
+		"data":    data,
+	}
+}
+
+func compactBucketResult(result map[string]interface{}) map[string]any {
+	rows, _ := result["data"].([]telemetry.BucketCount)
+	data := make([][2]any, 0, len(rows))
+	for _, r := range rows {
+		data = append(data, [2]any{r.Bucket.UTC().Format("2006-01-02T15:04"), r.Count})
+	}
+	return map[string]any{
+		"sku":     result["sku"],
+		"status":  result["status"],
+		"bucket":  result["bucket"],
+		"from":    shortTime(result["from"]),
+		"to":      shortTime(result["to"]),
+		"columns": []string{"time", "count"},
+		"data":    data,
+	}
 }
 
 // ── Category B: manage existing dashboards ───────────────────────────────────

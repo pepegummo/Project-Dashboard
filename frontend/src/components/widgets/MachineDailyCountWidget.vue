@@ -5,6 +5,7 @@ import type { EChartsOption } from "echarts";
 import type { DashboardWidget } from "@/types";
 import { api } from "@/services/api.service";
 import { wsService } from "@/services/ws.service";
+import { useWidgetViewStateStore } from "@/stores/widget-view-state.store";
 
 // ── LED mode data shape ───────────────────────────────────────────────────────
 export interface LedWeekDay {
@@ -43,6 +44,10 @@ const BUCKET_PRESETS = ["1m", "5m", "15m", "30m", "1h", "1d"];
 const POINTS = 48; // number of recent buckets to fetch
 const configBucket = (props.widget.config?.bucket as string) || "";
 const selectedBucket = ref<string>(configBucket || "1h");
+// Bucket choice is local-only (not persisted to config) — mirror it into widget-view-state
+// so the AI assistant's context can see what the widget is actually showing (see LineChartWidget's
+// startDateTime/endDateTime sync for the same pattern).
+const widgetViewStateStore = useWidgetViewStateStore();
 const bucketChips = computed(() =>
   configBucket && !BUCKET_PRESETS.includes(configBucket)
     ? [configBucket, ...BUCKET_PRESETS]
@@ -70,6 +75,12 @@ async function load() {
       points: POINTS,
     });
     rows.value = (res?.data ?? []).map((r) => ({ bucket: r.bucket, count: r.count }));
+    // Publish the on-screen data (compacted) so the AI can read exactly what this
+    // count widget shows when it's focused — same columns/data shape the backend uses.
+    widgetViewStateStore.setSeries(props.widget.id, {
+      columns: ["time", "count"],
+      data: rows.value.map((r) => [r.bucket, r.count]),
+    });
   } catch (e) {
     error.value = (e as Error).message;
   } finally {
@@ -82,13 +93,19 @@ async function load() {
 let refetchTimer: ReturnType<typeof setInterval> | null = null;
 
 onMounted(async () => {
+  widgetViewStateStore.setBucket(props.widget.id, selectedBucket.value);
   // In LED mode LedView owns all data fetching.
   if (props.ledMode) return;
   await load();
   refetchTimer = setInterval(load, 60_000);
 });
 
+onUnmounted(() => {
+  widgetViewStateStore.remove(props.widget.id);
+});
+
 watch([selectedBucket, skuFilter, statusFilter], load);
+watch(selectedBucket, (b) => widgetViewStateStore.setBucket(props.widget.id, b));
 
 // ── Live mode — 30-minute rolling window ─────────────────────────────────────
 const liveMode = ref(false);

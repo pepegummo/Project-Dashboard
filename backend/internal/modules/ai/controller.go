@@ -20,8 +20,22 @@ import (
 // gpt-oss-20b: confirmed via bake-off (see eval_test.go) — 12/13, beats 120b (11/13) and qwen.
 // 120b fails preview-edit intent (calls preview_dashboard instead of preview_update_widget).
 // 20b is also cheaper and Groq prompt-caches the stable base prefix.
-const groqModel = "openai/gpt-oss-20b"
+const groqModel = "openai/gpt-oss-120b"
 const groqBaseURL = "https://api.groq.com/openai/v1/chat/completions"
+
+// systemPromptMinimal is sent on the no-tool path (greetings, chit-chat, "what
+// can you do?"). It carries only identity + the language rule — the full
+// TOOL SELECTION / SLOT FILLING / WIDGET rules are useless without tools, so a
+// bare greeting no longer pays for them (~300 tokens saved vs systemPromptBase).
+const systemPromptMinimal = `You are IotVision AI, assistant for an industrial IoT platform. Language: match the user's latest message exactly — Thai or English, never mix. Reply in one short, natural sentence.`
+
+// systemPromptInlineData replaces systemPromptContextExt when the frontend has
+// already injected the focused widget's full series into the context. The model
+// answers straight from that data in a single no-tool call — no redundant
+// get_telemetry_series / get_production_count round (which double-billed tokens
+// and tripped the 8k/min rate limit).
+const systemPromptInlineData = `You are IotVision AI, assistant for an industrial IoT platform. Language: match the user's latest message exactly — Thai or English, never mix.
+The context contains the focused widget's full on-screen data series. Answer the user's trend/analysis question directly from that data in 2-4 natural sentences — state direction (up/down/stable) and min/max, and give a simple extrapolation if they ask to predict. Do NOT call any tool. Never print raw JSON or a bare list of numbers.`
 // systemPromptBase is always sent. It covers the no-preview path (pure reads, dashboard
 // creation, existing-dashboard edits, greetings). Kept stable so Groq can cache it.
 const systemPromptBase = `You are IotVision AI, assistant for an industrial IoT platform. Language: match the user's latest message exactly — Thai or English, never mix.
@@ -33,6 +47,7 @@ TOOL SELECTION:
 - "Create a dashboard" / "สร้าง dashboard" → call preview_dashboard (default template: machine_overview). Never ask which template. Never call create_custom_dashboard — the user confirms via a button, not by typing.
 - User names an existing dashboard to modify → add_widget_to_dashboard / remove_widget.
 - "Show / add a widget for X" without naming a dashboard → show_metric (renders a card the user can add themselves). Never ask which dashboard.
+- "List SKUs" / which SKUs are available for a machine or count widget → call get_skus(machine).
 - Active alerts → get_active_alerts.
 - Alert rule management (create / resolve / acknowledge) → plain text: "Alert rules are managed on the Alerts page." Offer get_active_alerts instead.
 
@@ -53,14 +68,23 @@ Editing the current preview canvas → use preview_add_widget / preview_update_w
 
 CONTEXT: An authoritative dashboard state may be injected.
 - Structural questions (widget count, names, layout) → answer from context.
-- Live value questions ("what is X", "speed of CW-01") → always call show_metric.
-@Widget Title tokens identify the exact widget the user is referring to. Find it in context by title, then:
+- Live value questions with NO widget mentioned ("what is X", "speed of CW-01") → call show_metric.
+@Widget Title tokens identify the exact widget the user is referring to — this OVERRIDES the generic
+live-value rule above. Any question about a mentioned widget (status, "how's it doing now",
+"what is this", vague follow-ups) must route by that widget's ACTUAL type from context, never by
+guessing a metric from conversation history:
 - Edit/remove intent → use the title verbatim as widget_title in preview_update_widget / preview_remove_widget.
-- Descriptive question ("what is this?", "what does this show?", "explain this", "นี้คืออะไร", "แสดงอะไร") → read the widget's type/machine/metric from context, then:
-  • daily-count → call get_daily_count(machine_id from context); describe the widget's bucket/sku/status filters.
-  • gauge / kpi-card / line-chart / status-card / table → call show_metric(machine and metric from context); describe what the metric represents.
+- Simple current-value question ("what is it now", "ตอนนี้เท่าไหร่") → read the widget's type/machine/metric from context, then:
+  • daily-count / count-style widget → call get_production_count(machine_id, bucket, sku, status — all from context); never call get_daily_count or show_metric for a mentioned count widget, they don't honor its bucket/sku/status filters. If context lists a "bucket" for this widget, copy it verbatim — never substitute a different one. If context has no bucket line at all, default to "1h", never "1d", unless the user explicitly asks for a daily/monthly view.
+  • gauge / kpi-card / line-chart / status-card / table → call show_metric(machine and metric from context).
   • alarm-panel → call get_active_alerts; describe what alerts it monitors.
-  Never fabricate machine or metric — always read them from the context entry for that widget.`
+- Analytical question about a mentioned widget (trend, "how's it doing", vague follow-ups like "ข้อมูลตอนนี้เป็นอย่างไร", แนวโน้ม, วิเคราะห์, ทำนาย, predict, analyze, forecast) → NEVER answer from a single current value — fetch the full series instead:
+  • daily-count / count-style widget → call get_production_count(machine_id, bucket, sku, status from context).
+  • gauge / kpi-card / line-chart / status-card / table → call get_telemetry_series(machine_id, metric from context, time_range "24h" unless the user implies a different window).
+  • alarm-panel → call get_active_alerts.
+  Then summarize the trend across ALL returned points — direction (up/down/stable), min/max — and if asked to predict, give a simple extrapolation from the pattern. This overrides the "one short sentence" rule above: use 2-4 natural sentences, never a raw list of numbers or JSON.
+  Never fabricate machine or metric — always read them from the context entry's "metric" field for that widget. The widget's "title" (e.g. "Trend", "Speed Gauge") is a display label, NEVER a metric value — never pass it as the metric argument.
+  If multiple widgets are mentioned, answer each from its own context entry — do not reuse one widget's metric for another.`
 
 // ── Groq / OpenAI-compatible API types ───────────────────────────────────────
 
@@ -136,6 +160,8 @@ func (ctrl *Controller) dispatch(c *fiber.Ctx, toolName string, rawArgs json.Raw
 		return ctrl.tk.GetTelemetrySeries(ctx, user.OrgId, rawArgs)
 	case "get_production_count":
 		return ctrl.tk.GetProductionCount(ctx, user.OrgId, rawArgs)
+	case "get_skus":
+		return ctrl.tk.GetSkus(ctx, user.OrgId, rawArgs)
 	case "list_dashboards":
 		return ctrl.tk.ListDashboards(ctx, user.OrgId, user.Sub)
 	case "preview_dashboard":
@@ -339,10 +365,27 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	}
 
 	// Build Groq messages: system prompt + capped history.
-	// Append the context extension only when a preview/dashboard is open — saves ~100
-	// tokens on pure read/greeting requests and keeps the base prefix cache-stable.
+	hasContext := body.Context != ""
+	// A message only pays for the context extension / dashboard-state block / tool list when
+	// it actually looks like it needs one — a bare greeting with a preview open shouldn't cost
+	// any more than a greeting with nothing open. needsTools already matches @WidgetTitle
+	// mentions, so the "click a widget then ask something vague" flow is unaffected.
+	needsToolsFlag := needsTools(body.Message)
+
+	// The frontend injects the focused widget's full series (marked "on-screen data")
+	// only for analytical questions. When present, answer from it in one no-tool call
+	// instead of re-fetching via a tool — that redundant round doubled tokens and hit
+	// the 8k/min rate limit.
+	inlineData := hasContext && strings.Contains(body.Context, "on-screen data")
+
+	// No-tool path (greetings, chit-chat) gets the minimal prompt — the full
+	// rule set is dead weight without tools to act on.
 	sp := systemPromptBase
-	if body.Context != "" {
+	if !needsToolsFlag {
+		sp = systemPromptMinimal
+	} else if inlineData {
+		sp = systemPromptInlineData
+	} else if hasContext {
 		sp += systemPromptContextExt
 	}
 	msgs := []groqMessage{{Role: "system", Content: &sp}}
@@ -350,23 +393,27 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	// Inject the on-screen dashboard preview AFTER history so the current state is
 	// the last thing the model sees — recency makes it win over any stale earlier
 	// turn that named the old config (e.g. a metric the user has since changed).
-	if body.Context != "" {
+	if hasContext && needsToolsFlag {
 		ctxContent := "Authoritative current dashboard state (overrides anything said earlier):\n" + body.Context
 		msgs = append(msgs, groqMessage{Role: "system", Content: &ctxContent})
 	}
 
-	hasContext := body.Context != ""
 	tools := buildGroqTools(middleware.GetUser(c).Role, hasContext)
 
 	// Pure conversational messages (greetings, "what can you do?") get no tools —
 	// the model answers in plain text and tools are sent on the next actionable message.
-	if !hasContext && !needsTools(body.Message) {
+	// The inline-data path likewise needs no tools: the series is already in context.
+	if !needsToolsFlag || inlineData {
 		tools = nil
 	}
 
-	// Force a tool call only when the message looks like a live-data or action request.
+	// Force a tool call only when an @WidgetTitle mention is present — the one signal that
+	// guarantees the model has a concrete widget (and its context block) to act on. Forcing
+	// on a broader keyword guess risks the model emitting an invalid function call when the
+	// message is too vague, which Groq rejects (400) and triggers a costly full retry.
+	// Never force on the inline-data path — we want a plain-text answer from the series.
 	firstToolChoice := ""
-	if hasContext && needsTools(body.Message) {
+	if hasContext && !inlineData && strings.Contains(body.Message, "@") {
 		firstToolChoice = "required"
 	}
 
@@ -440,8 +487,10 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 			})
 		}
 
-		// Allow one chained tool round (e.g. get_machines → show_metric × N), then force summary.
-		if i >= 1 {
+		// Allow up to 3 chained tool rounds so the model can escalate to a better
+		// tool mid-answer (e.g. get_telemetry_trend → get_telemetry_series for a
+		// full graph), then force a text summary. Outer loop cap is the hard stop.
+		if i >= 3 {
 			callTools = nil
 		}
 	}
@@ -466,9 +515,10 @@ func toGroqTool(t map[string]any) map[string]any {
 // The description embeds arg hints so the model knows what JSON to produce.
 // Saves ~50–80 tokens per simple tool vs the full schema form.
 var slimToolDescriptions = map[string]string{
-	"show_metric":         "Show a live metric widget. Args: machine (name, e.g. CW-01), metric (field key, e.g. speed/temp/weight), viz (value|gauge|trend).",
+	"show_metric":         "Show a live metric widget. Args: machine (name, e.g. CW-01), metric (a REAL sensor field key like speed/weight/rejects/throughput — NEVER a display style word), viz (OPTIONAL display style only: value|gauge|trend — never put these words in metric).",
 	"get_telemetry_trend": "Get avg/min/max of one metric. Args: machine_id (name), metric (field key), time_range (5m|15m|30m|1h|6h|24h|7d|15d|30d).",
 	"get_daily_count":     "Per-day production count. Args: machine_id (name), days (integer, default 7).",
+	"get_skus":            "List the SKU values available for a machine. Args: machine_id (name).",
 	"preview_dashboard":   "Preview a template dashboard. Args: machine (name), template (machine_overview|machine_production|machine_maintenance).",
 	"remove_widget":       "Remove a widget from a named dashboard. Args: dashboard_name, widget_title.",
 }
@@ -591,9 +641,11 @@ func callGroqModel(model string, messages []groqMessage, tools []map[string]any,
 			return nil, fmt.Errorf("failed to parse Groq response: %w", err)
 		}
 		if result.Error != nil {
-			// Groq's function-call parser failed (malformed generation). Retry once
+			// Groq's function-call parser failed (malformed generation, e.g. gpt-oss
+			// leaking a "<|channel|>commentary" token into the tool name). Retry once
 			// without tools so the user gets a plain-text reply instead of an error.
-			if strings.Contains(result.Error.Message, "Failed to call a function") && len(tools) > 0 {
+			if (strings.Contains(result.Error.Message, "Failed to call a function") ||
+				strings.Contains(result.Error.Message, "Tool call validation failed")) && len(tools) > 0 {
 				return callGroqModel(model, messages, nil, "")
 			}
 			return nil, fmt.Errorf("Groq API: %s", result.Error.Message)
@@ -630,12 +682,12 @@ func parseRetryAfter(header string, body []byte) time.Duration {
 func strPtr(s string) *string { return &s }
 
 // needsTools returns true when the message likely needs a tool — a metric read, action request,
-// or reference to a machine/dashboard. Used to gate tool_choice:"required" on context-present
-// requests, and to zero-out tools for pure greetings so they don't pay for the full tool list.
+// or reference to a machine/dashboard. Used only to zero-out tools for pure greetings on
+// no-context requests, so they don't pay for the full tool list.
 var needsToolsRe = regexp.MustCompile(`(?i)@|\b(` +
 	`speed|temp(erature)?|weight|pressure|humidity|voltage|current|power|flow|level|count|status|` +
 	`ดู|แสดง|เร็ว|อุณห|น้ำหนัก|ความดัน|กระแส|กำลัง|` +
-	`show|create|dashboard|add|widget|remove|alert|machine|trend|gauge|kpi|production|` +
+	`show|create|dashboard|add|widget|remove|alert|machine|trend|gauge|kpi|production|sku|` +
 	`สร้าง|เพิ่ม|ลบ|แก้|เปลี่ยน|เครื่อง|แจ้งเตือน|ผลิต` +
 	`)\b`)
 
@@ -644,6 +696,13 @@ func needsTools(msg string) bool { return needsToolsRe.MatchString(msg) }
 // buildGroqMessages converts the last 8 DB messages to Groq/OpenAI format.
 // GetMessages now returns DESC order (newest first) to avoid a full table scan;
 // reverse here so Groq receives oldest-first conversation order.
+//
+// Past tool calls/results are deliberately NOT reconstructed here — only the
+// user/assistant text rows are. The assistant's final reply already summarizes
+// whatever the tool returned, so replaying the raw tool JSON on every later turn
+// (until it ages out of the 8-row window) just re-pays its token cost for no
+// benefit; a follow-up that genuinely needs fresh data makes its own tool call
+// in the current turn anyway, which is more correct than reusing a stale one.
 func buildGroqMessages(msgs []Message) []groqMessage {
 	// reverse DESC→ASC
 	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
@@ -659,30 +718,6 @@ func buildGroqMessages(msgs []Message) []groqMessage {
 			result = append(result, groqMessage{Role: "user", Content: strPtr(m.Content)})
 		case "assistant":
 			result = append(result, groqMessage{Role: "assistant", Content: strPtr(m.Content)})
-		case "tool":
-			if m.ToolName != nil {
-				// Reconstruct assistant tool_calls message
-				var tc groqToolCall
-				tc.ID = "call_" + m.ID
-				tc.Type = "function"
-				tc.Function.Name = *m.ToolName
-				tc.Function.Arguments = string(m.ToolInput)
-
-				tcMsg := groqMessage{
-					Role:      "assistant",
-					ToolCalls: []groqToolCall{tc},
-				}
-
-				// Reconstruct tool result message
-				trStr := string(m.ToolResult)
-				trMsg := groqMessage{
-					Role:       "tool",
-					ToolCallID: tc.ID,
-					Content:    &trStr,
-				}
-
-				result = append(result, tcMsg, trMsg)
-			}
 		}
 	}
 	return result

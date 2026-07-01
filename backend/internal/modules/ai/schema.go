@@ -53,8 +53,8 @@ var ShowMetricTool = map[string]any{
 		"required": []string{"machine", "metric"},
 		"properties": map[string]any{
 			"machine": machineIDProp,
-			"metric":  map[string]any{"type": "string", "description": "The English field key (e.g. speed, weight, temp). Map the user's word in any language to it."},
-			"viz":     map[string]any{"type": "string", "enum": []string{"value", "gauge", "trend"}, "description": "value = current number, gauge = dial, trend = line chart over time."},
+			"metric":  map[string]any{"type": "string", "description": "The English sensor field key (e.g. speed, weight, temp, rejects, throughput). Map the user's word in any language to it. Never pass a display-style word here (value/gauge/trend) — those belong in viz, not metric."},
+			"viz":     map[string]any{"type": "string", "enum": []string{"value", "gauge", "trend"}, "description": "OPTIONAL display style only — value = current number, gauge = dial, trend = line chart over time. Never confuse this with metric."},
 		},
 	},
 }
@@ -94,7 +94,7 @@ var GetDailyCountTool = map[string]any{
 
 var GetTelemetrySeriesTool = map[string]any{
 	"name":        "get_telemetry_series",
-	"description": "Get all time-bucketed data points (avg/min/max per bucket) for a metric — use this to read what a line chart is showing.",
+	"description": "Get all time-bucketed data points (avg/min/max per bucket) for a metric — use this to read what a line chart is showing. Result's \"data\" is compact rows ordered oldest→newest; \"columns\" names each row's fields in order, e.g. columns:[\"time\",\"avg\",\"min\",\"max\"], data:[[\"2026-06-27T10:00\",55.2,50.1,60.3],...].",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"machine_id", "metric"},
@@ -108,7 +108,7 @@ var GetTelemetrySeriesTool = map[string]any{
 
 var GetProductionCountTool = map[string]any{
 	"name":        "get_production_count",
-	"description": "Get production/piece counts bucketed over time — use to read what a daily-count widget is showing. bucket: '30m','1h','1d'; points: how many buckets back (default 48).",
+	"description": "Get production/piece counts bucketed over time — use to read what a daily-count widget is showing. bucket: '30m','1h','1d'; points: how many buckets back (default 48). Result's \"data\" is compact [time, count] rows ordered oldest→newest, e.g. data:[[\"2026-06-27T10:00\",123],...].",
 	"input_schema": map[string]any{
 		"type":     "object",
 		"required": []string{"machine_id", "bucket"},
@@ -118,6 +118,18 @@ var GetProductionCountTool = map[string]any{
 			"points":     map[string]any{"type": "integer", "description": "Number of buckets to return (default 48, max 500)."},
 			"sku":        map[string]any{"type": "string", "description": "SKU filter (empty = all SKUs)."},
 			"status":     map[string]any{"type": "string", "enum": []string{"all", "good", "reject"}},
+		},
+	},
+}
+
+var GetSkusTool = map[string]any{
+	"name":        "get_skus",
+	"description": "List the SKU values available for a machine (so the user can pick one, or to map a loose SKU name to a real one).",
+	"input_schema": map[string]any{
+		"type":     "object",
+		"required": []string{"machine_id"},
+		"properties": map[string]any{
+			"machine_id": machineIDProp,
 		},
 	},
 }
@@ -219,6 +231,7 @@ func AllTools() []map[string]any {
 		GetActiveAlertsTool,
 		GetDailyCountTool,
 		GetProductionCountTool,
+		GetSkusTool,
 		ListDashboardsTool,
 		PreviewDashboardTool,
 		PreviewAddWidgetTool,
