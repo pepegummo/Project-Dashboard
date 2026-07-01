@@ -29,13 +29,13 @@ const groqBaseURL = "https://api.groq.com/openai/v1/chat/completions"
 // bare greeting no longer pays for them (~300 tokens saved vs systemPromptBase).
 const systemPromptMinimal = `You are IotVision AI, assistant for an industrial IoT platform. Language: match the user's latest message exactly — Thai or English, never mix. Reply in one short, natural sentence.`
 
-// systemPromptInlineData replaces systemPromptContextExt when the frontend has
-// already injected the focused widget's full series into the context. The model
-// answers straight from that data in a single no-tool call — no redundant
-// get_telemetry_series / get_production_count round (which double-billed tokens
-// and tripped the 8k/min rate limit).
-const systemPromptInlineData = `You are IotVision AI, assistant for an industrial IoT platform. Language: match the user's latest message exactly — Thai or English, never mix.
-The context contains the focused widget's full on-screen data series. Answer the user's trend/analysis question directly from that data in 2-4 natural sentences — state direction (up/down/stable) and min/max, and give a simple extrapolation if they ask to predict. Do NOT call any tool. Never print raw JSON or a bare list of numbers.`
+// systemPromptContextAnswer replaces systemPromptContextExt for focused-widget
+// READS the on-screen context already answers — analytical questions (the full
+// series is injected) and plain current-value / window / config questions. The
+// model answers in one no-tool call, avoiding the redundant fetch+summarize round
+// that double-billed tokens and tripped the 8k/min rate limit.
+const systemPromptContextAnswer = `You are IotVision AI, assistant for an industrial IoT platform. Language: match the user's latest message exactly — Thai or English, never mix.
+Answer from the focused widget's on-screen context (its current value, shown time window, bucket/sku/config, and any data series present). For a trend/analysis question, state direction (up/down/stable) and min/max, and extrapolate simply if asked to predict. Do NOT call any tool. If the requested number is not in the context, say you can fetch it — never fabricate. Reply in 1-4 natural sentences, never raw JSON or a bare list of numbers.`
 // systemPromptBase is always sent. It covers the no-preview path (pure reads, dashboard
 // creation, existing-dashboard edits, greetings). Kept stable so Groq can cache it.
 const systemPromptBase = `You are IotVision AI, assistant for an industrial IoT platform. Language: match the user's latest message exactly — Thai or English, never mix.
@@ -378,13 +378,21 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	// the 8k/min rate limit.
 	inlineData := hasContext && strings.Contains(body.Context, "on-screen data")
 
+	// A focused-widget read the injected context already answers (current value,
+	// shown window, bucket/sku/config) needs no tool round either. Guardrail: edits
+	// and aggregate/range questions still take the tool path.
+	focused := hasContext && strings.Contains(body.Message, "@")
+	contextRead := focused && !editRe.MatchString(body.Message) && !rangeRe.MatchString(body.Message) && !skuRe.MatchString(body.Message)
+	// answerFromContext = one no-tool call from the on-screen context.
+	answerFromContext := inlineData || contextRead
+
 	// No-tool path (greetings, chit-chat) gets the minimal prompt — the full
 	// rule set is dead weight without tools to act on.
 	sp := systemPromptBase
 	if !needsToolsFlag {
 		sp = systemPromptMinimal
-	} else if inlineData {
-		sp = systemPromptInlineData
+	} else if answerFromContext {
+		sp = systemPromptContextAnswer
 	} else if hasContext {
 		sp += systemPromptContextExt
 	}
@@ -402,8 +410,8 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 
 	// Pure conversational messages (greetings, "what can you do?") get no tools —
 	// the model answers in plain text and tools are sent on the next actionable message.
-	// The inline-data path likewise needs no tools: the series is already in context.
-	if !needsToolsFlag || inlineData {
+	// answerFromContext likewise needs no tools: the on-screen context already has the answer.
+	if !needsToolsFlag || answerFromContext {
 		tools = nil
 	}
 
@@ -411,9 +419,9 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	// guarantees the model has a concrete widget (and its context block) to act on. Forcing
 	// on a broader keyword guess risks the model emitting an invalid function call when the
 	// message is too vague, which Groq rejects (400) and triggers a costly full retry.
-	// Never force on the inline-data path — we want a plain-text answer from the series.
+	// Never force when we're answering from context — we want a plain-text answer.
 	firstToolChoice := ""
-	if hasContext && !inlineData && strings.Contains(body.Message, "@") {
+	if focused && !answerFromContext {
 		firstToolChoice = "required"
 	}
 
@@ -487,10 +495,15 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 			})
 		}
 
-		// Allow up to 3 chained tool rounds so the model can escalate to a better
-		// tool mid-answer (e.g. get_telemetry_trend → get_telemetry_series for a
-		// full graph), then force a text summary. Outer loop cap is the hard stop.
-		if i >= 3 {
+		// Cap chained tool rounds, then force a text summary. A focused-widget
+		// message gets 1 round (2 calls) — each round re-sends the full ~3k context,
+		// so more rounds blow the 8k/min limit. Non-focused keeps 2 rounds for the
+		// get_machines → show_metric ×N fan-out. Outer loop cap is the hard stop.
+		roundCap := 1
+		if focused {
+			roundCap = 0
+		}
+		if i >= roundCap {
 			callTools = nil
 		}
 	}
@@ -693,23 +706,38 @@ var needsToolsRe = regexp.MustCompile(`(?i)@|\b(` +
 
 func needsTools(msg string) bool { return needsToolsRe.MatchString(msg) }
 
-// buildGroqMessages converts the last 8 DB messages to Groq/OpenAI format.
+// editRe / rangeRe classify a focused-widget message so we know whether the
+// on-screen context can answer it without a tool:
+//   - editIntent  → the user wants to mutate the widget (needs preview_update_widget etc.).
+//   - rangeIntent → the answer needs an aggregate/time-range fetch not guaranteed in context.
+// A focused read that is neither can be answered straight from the injected context.
+var editRe = regexp.MustCompile(`(?i)\b(change|set|update|rename|move|remove|delete|add)\b|เปลี่ยน|แก้|ตั้ง|ลบ|เพิ่ม|ย้าย`)
+var rangeRe = regexp.MustCompile(`(?i)\b(avg|average|mean|sum|total|min|max|peak|trend|forecast|predict|analy\w*|over|last|past|hour|day|week|month|yesterday|today)\b|เฉลี่ย|รวม|สูงสุด|ต่ำสุด|ย้อนหลัง|เมื่อวาน|วันนี้|แนวโน้ม|วิเคราะห์|ทำนาย`)
+
+// skuRe: a SKU question needs get_skus — the available-SKU list is never in the
+// injected context, so it must NOT take the no-tool contextRead path.
+var skuRe = regexp.MustCompile(`(?i)sku`)
+
+// buildGroqMessages converts the last few DB messages to Groq/OpenAI format.
 // GetMessages now returns DESC order (newest first) to avoid a full table scan;
 // reverse here so Groq receives oldest-first conversation order.
+//
+// Capped to the last 3 rows: after a long chat the transcript was the single
+// biggest input-token cost per call, and inflating every request pushed focused
+// follow-ups over the 8k/min rate limit. 3 keeps the immediate back-and-forth.
 //
 // Past tool calls/results are deliberately NOT reconstructed here — only the
 // user/assistant text rows are. The assistant's final reply already summarizes
 // whatever the tool returned, so replaying the raw tool JSON on every later turn
-// (until it ages out of the 8-row window) just re-pays its token cost for no
-// benefit; a follow-up that genuinely needs fresh data makes its own tool call
-// in the current turn anyway, which is more correct than reusing a stale one.
+// just re-pays its token cost for no benefit; a follow-up that genuinely needs
+// fresh data makes its own tool call in the current turn anyway.
 func buildGroqMessages(msgs []Message) []groqMessage {
 	// reverse DESC→ASC
 	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
 		msgs[i], msgs[j] = msgs[j], msgs[i]
 	}
-	if len(msgs) > 8 {
-		msgs = msgs[len(msgs)-8:]
+	if len(msgs) > 3 {
+		msgs = msgs[len(msgs)-3:]
 	}
 	var result []groqMessage
 	for _, m := range msgs {

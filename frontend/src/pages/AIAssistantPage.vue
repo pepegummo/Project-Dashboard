@@ -451,6 +451,14 @@ function buildDashboardContext(text = '', focusedIds: string[] = []): string {
     // Last ~24 points is enough to read a trend — half the tokens of the full 48.
     return `\n  on-screen data — columns ${JSON.stringify(s.columns)}, data ${JSON.stringify(s.data.slice(-24))}`;
   };
+  // Shown time window of a focused chart, so "what range is shown?" answers from
+  // context with no tool. Cheap (two timestamps); focused widgets only.
+  const windowLine = (id: string): string => {
+    if (!focusedIds.includes(id)) return '';
+    const d = widgetViewStateStore.datetimeStates[id];
+    if (!d?.startDateTime || !d?.endDateTime) return '';
+    return `, window ${d.startDateTime} → ${d.endDateTime}`;
+  };
 
   const card = canvasCards.value.find(c => c.kind === 'preview' || c.kind === 'dashboard') as any;
   const widgets = card?.result?.widgets ?? [];
@@ -473,7 +481,7 @@ function buildDashboardContext(text = '', focusedIds: string[] = []): string {
       if (bucket) parts.push(`bucket ${bucket}`);
       if (w.sku) parts.push(`sku ${w.sku}`);
       if (w.status) parts.push(`status ${w.status}`);
-      return parts.join(', ') + seriesLine(`preview-${i}`, w.type);
+      return parts.join(', ') + windowLine(`preview-${i}`) + seriesLine(`preview-${i}`, w.type);
     });
     const label = card.kind === 'dashboard' ? 'Active dashboard' : 'Current dashboard preview';
     return `${label} "${card.result.dashboardName}" on screen:\n${lines.join('\n')}`;
@@ -498,7 +506,7 @@ function buildDashboardContext(text = '', focusedIds: string[] = []): string {
       if (bucket) parts.push(`bucket ${bucket}`);
       if (w.sku) parts.push(`sku ${w.sku}`);
       if (w.status) parts.push(`status ${w.status}`);
-      return parts.join(', ') + seriesLine(`preview-${i}`, w.type);
+      return parts.join(', ') + windowLine(`preview-${i}`) + seriesLine(`preview-${i}`, w.type);
     });
     return `Metric focus card on screen (call show_metric to highlight/refresh):\n${lines.join('\n')}`;
   }
@@ -523,7 +531,7 @@ function buildDashboardContext(text = '', focusedIds: string[] = []): string {
       if (bucket) parts.push(`bucket ${bucket}`);
       if (w.config?.sku) parts.push(`sku ${w.config.sku}`);
       if (w.config?.status) parts.push(`status ${w.config.status}`);
-      return parts.join(', ') + seriesLine(w.id, w.widgetType);
+      return parts.join(', ') + windowLine(w.id) + seriesLine(w.id, w.widgetType);
     });
     return `Dashboard "${dashboardStore.currentDashboard?.name ?? ''}" is active on screen with widgets:\n${lines.join('\n')}`;
   }
@@ -742,8 +750,10 @@ async function sendMessage() {
     if (!aiSelectedIds.value.length && !aiSelectedPreviewIds.value.length) {
       const assistantText = messages.find(m => m.role === 'assistant')?.content?.toLowerCase() ?? '';
       if (assistantText) {
-        // Extract all numbers from the AI reply — works regardless of response language
-        const nums = (assistantText.match(/[\d,]+(?:\.\d+)?/g) ?? [])
+        // Extract standalone numbers from the AI reply — works regardless of language.
+        // Boundary guards ignore digits glued to letters/hyphens so SKU/ID codes like
+        // "cw-1001" don't create a false value match against some widget's reading.
+        const nums = (assistantText.match(/(?<![\w-])\d[\d,]*(?:\.\d+)?(?![\w-])/g) ?? [])
           .map(s => parseFloat(s.replace(/,/g, ''))).filter(n => !isNaN(n));
 
         // Resolve a preview widget's UUID: prefer machineUuid on the widget,
@@ -772,8 +782,11 @@ async function sendMessage() {
             });
           }
 
-          // 3. Machine name fallback (least specific — highlights first widget for that machine)
-          if (!match) {
+          // 3. Machine name fallback (least specific — highlights first widget for that machine).
+          // Skipped when a widget is focused: the focused-widget fallback below is a better
+          // signal than "first widget for the machine" (e.g. a SKU answer that only names the
+          // machine shouldn't grab the reject KPI over the clicked count widget).
+          if (!match && !mentionSnapshot.length) {
             match = candidates.find(({ w }) =>
               w.machine && assistantText.includes((w.machine as string).toLowerCase())
             );
