@@ -16,6 +16,7 @@ export const widgetComponents: Record<WidgetType, Component> = {
   'table':       defineAsyncComponent(() => import('@/components/widgets/TableWidget.vue')),
   'alarm-panel': defineAsyncComponent(() => import('@/components/widgets/AlarmPanelWidget.vue')),
   'daily-count': defineAsyncComponent(() => import('@/components/widgets/MachineDailyCountWidget.vue')),
+  'chart':       defineAsyncComponent(() => import('@/components/widgets/CustomChartWidget.vue')),
 };
 
 export function useWidgetComponents() {

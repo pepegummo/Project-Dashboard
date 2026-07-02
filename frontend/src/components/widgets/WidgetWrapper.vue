@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { GripVertical, Settings, X, TrendingUp, Gauge, CreditCard, Activity, Table2, Bell, BarChart2 } from 'lucide-vue-next';
+import { GripVertical, Settings, X, TrendingUp, Gauge, CreditCard, Activity, Table2, Bell, BarChart2, LineChart } from 'lucide-vue-next';
 import type { DashboardWidget } from '@/types';
 import { useWidgetComponents } from '@/composables/useWidgetComponents';
 
@@ -28,7 +28,7 @@ const typeIcon = computed(() => {
   const map: Record<string, any> = {
     'line-chart': TrendingUp, 'gauge': Gauge, 'kpi-card': CreditCard,
     'status-card': Activity, 'table': Table2, 'alarm-panel': Bell,
-    'daily-count': BarChart2,
+    'daily-count': BarChart2, 'chart': LineChart,
   };
   return map[props.widget.widgetType] ?? CreditCard;
 });

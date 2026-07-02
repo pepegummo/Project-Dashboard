@@ -136,10 +136,14 @@ class ApiService {
   async getTelemetrySeries(
     machineId: string,
     field: string,
-    options: { timeRange?: string; startTime?: string; endTime?: string } = {},
+    options: { timeRange?: string; startTime?: string; endTime?: string; bucket?: string; points?: number } = {},
   ) {
     const params: Record<string, string> = { field };
-    if (options.startTime && options.endTime) {
+    if (options.bucket) {
+      // Explicit bucket size + bar count → exactly `points` gap-filled buckets.
+      params.bucket = options.bucket;
+      if (options.points) params.points = String(options.points);
+    } else if (options.startTime && options.endTime) {
       params.startTime = options.startTime;
       params.endTime   = options.endTime;
     } else {

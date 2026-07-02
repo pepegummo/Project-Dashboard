@@ -99,11 +99,39 @@ func calculateBucketForDuration(d time.Duration) string {
 	}
 }
 
-func (s *Service) GetSeries(ctx context.Context, machineID, field, timeRange, startTimeStr, endTimeStr string, orgID *string) (map[string]interface{}, error) {
+func (s *Service) GetSeries(ctx context.Context, machineID, field, timeRange, startTimeStr, endTimeStr, bucketOverride string, points int, orgID *string) (map[string]interface{}, error) {
 	if orgID != nil {
 		if err := s.requireMachineInOrg(ctx, machineID, *orgID); err != nil {
 			return nil, err
 		}
+	}
+
+	// Explicit bucket + points: return exactly N gap-filled buckets of the chosen size
+	// (window = every * points). Used by the custom chart widget.
+	if bucketOverride != "" {
+		interval, every, err := parseBucket(bucketOverride)
+		if err != nil {
+			return nil, err
+		}
+		if points < 1 {
+			points = 48
+		}
+		if points > 500 {
+			points = 500
+		}
+		to := time.Now()
+		from := to.Add(-every * time.Duration(points))
+		data, err := s.repo.GetTimescaleAggregateGapfilled(ctx, machineID, field, interval, from, to)
+		if err != nil {
+			return nil, err
+		}
+		if len(data) > points {
+			data = data[len(data)-points:]
+		}
+		return map[string]interface{}{
+			"machineId": machineID, "field": field,
+			"from": from, "to": to, "data": data,
+		}, nil
 	}
 
 	var from, to time.Time

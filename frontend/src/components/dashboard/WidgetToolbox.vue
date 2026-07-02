@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
-import { X, TrendingUp, Gauge, CreditCard, Activity, Table2, Bell, Search,BarChart2 } from 'lucide-vue-next';
+import { X, TrendingUp, Gauge, CreditCard, Activity, Table2, Bell, Search,BarChart2, LineChart } from 'lucide-vue-next';
 import type { WidgetType } from '@/types';
 
 defineEmits<{ select: [type: WidgetType]; close: [] }>();
@@ -54,6 +54,13 @@ const widgetTypes: Array<{ type: WidgetType; label: string; description: string;
     description: 'Sum a field per time bucket — minute / hour / day',
     icon: BarChart2,
     color: 'from-sky-500/20 to-sky-600/10 border-sky-500/30',
+  },
+  {
+    type: 'chart',
+    label: 'Custom Chart',
+    description: 'Overlay multiple fields — line, bar or area',
+    icon: LineChart,
+    color: 'from-indigo-500/20 to-indigo-600/10 border-indigo-500/30',
   },
 ];
 

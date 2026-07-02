@@ -112,6 +112,57 @@ func (r *Repository) GetTimescaleAggregate(ctx context.Context, machineID, field
 	return points, nil
 }
 
+// GetTimescaleAggregateGapfilled averages an arbitrary numeric field per bucket over a
+// generate_series grid, so every bucket in [from, to) is present — empty buckets come back
+// with a NULL avg (rendered as a gap by the chart) instead of being dropped, giving a
+// fixed-width series of exactly N buckets. `interval` is service-validated and interpolated;
+// `field` is passed as a bind param ($4). Both injection-safe. Same grid technique as
+// GetSkuCount (generate_series + time_bucket, since gapfill rejects bind params under pgx).
+func (r *Repository) GetTimescaleAggregateGapfilled(ctx context.Context, machineID, field, interval string, from, to time.Time) ([]TelemetryPoint, error) {
+	query := fmt.Sprintf(`
+		WITH grid AS (
+			SELECT generate_series(
+				time_bucket('%[1]s'::interval, $2::timestamptz),
+				time_bucket('%[1]s'::interval, $3::timestamptz),
+				'%[1]s'::interval
+			) AS bucket
+		)
+		SELECT
+			g.bucket,
+			AVG((t.data->>$4)::float) AS avg,
+			MIN((t.data->>$4)::float) AS min,
+			MAX((t.data->>$4)::float) AS max,
+			COUNT(t.*)                AS count
+		FROM grid g
+		LEFT JOIN telemetry_raw t
+			ON time_bucket('%[1]s'::interval, t.timestamp) = g.bucket
+		   AND t.machine_id = $1
+		   AND t.timestamp >= $2
+		   AND t.timestamp < $3
+		   AND t.data ? $4
+		GROUP BY g.bucket
+		ORDER BY g.bucket ASC
+	`, interval)
+
+	rows, err := database.Pool.Query(ctx, query, machineID, from, to, field)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var points []TelemetryPoint
+	for rows.Next() {
+		var p TelemetryPoint
+		var count int64
+		if err := rows.Scan(&p.Bucket, &p.Avg, &p.Min, &p.Max, &count); err != nil {
+			return nil, err
+		}
+		p.Count = int(count)
+		points = append(points, p)
+	}
+	return points, nil
+}
+
 func (r *Repository) GetFieldSeries(ctx context.Context, machineID, field string, from, to time.Time, limit int) ([]TelemetryPoint, error) {
 	query := fmt.Sprintf(`
 		SELECT

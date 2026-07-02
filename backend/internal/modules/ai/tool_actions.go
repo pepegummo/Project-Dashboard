@@ -267,7 +267,7 @@ func (tk *ToolKit) GetTelemetrySeries(ctx context.Context, orgID string, raw jso
 	if tr == "" {
 		tr = "1h"
 	}
-	result, err := tk.tel.GetSeries(ctx, id, args.Metric, tr, "", "", &orgID)
+	result, err := tk.tel.GetSeries(ctx, id, args.Metric, tr, "", "", "", 0, &orgID)
 	if err != nil {
 		return nil, err
 	}

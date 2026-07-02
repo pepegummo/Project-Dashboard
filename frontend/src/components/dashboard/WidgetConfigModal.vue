@@ -22,6 +22,7 @@ const ALL_WIDGET_TYPES: { value: WidgetType; label: string }[] = [
   { value: 'table',       label: 'Data Table' },
   { value: 'alarm-panel', label: 'Alarm Panel' },
   { value: 'daily-count', label: 'Count' },
+  { value: 'chart',       label: 'Custom Chart' },
 ];
 
 const title = ref(props.widget.title ?? '');
@@ -43,17 +44,39 @@ const status = ref<'all' | 'good' | 'reject'>((props.widget.config?.status as 'a
 const skuOptions = ref<string[]>([]);
 const statusOptions: Array<'all' | 'good' | 'reject'> = ['all', 'good', 'reject'];
 
+// Custom chart: overlaid fields, render style, window (bucket × bars), and y-axis scaling.
+// Reuses bucketValue/bucketUnit above (same '<n><m|h|d>' encoding as the Count widget).
+const selectedFields = ref<string[]>((props.widget.config?.fields as string[]) ?? []);
+const chartType = ref<'line' | 'bar' | 'area'>((props.widget.config?.chartType as 'line' | 'bar' | 'area') ?? 'line');
+const chartPoints = ref<number>((props.widget.config?.points as number) ?? 20);
+const chartScaling = ref<'shared' | 'dual' | 'normalized'>(
+  (props.widget.config?.scaling as any) ?? (props.widget.config?.normalize ? 'normalized' : 'shared'),
+);
+const chartTypeOptions: Array<'line' | 'bar' | 'area'> = ['line', 'bar', 'area'];
+const scalingOptions: Array<'shared' | 'dual' | 'normalized'> = ['shared', 'dual', 'normalized'];
+
 const selectedMachine = computed(() => props.machines.find(m => m.id === selectedMachineId.value));
 const availableFields = computed(() => selectedMachine.value?.fields ?? []);
 
-watch(() => selectedMachineId.value, () => { selectedField.value = ''; sku.value = ''; });
-watch(selectedWidgetType, () => { selectedField.value = ''; });
+watch(() => selectedMachineId.value, () => { selectedField.value = ''; sku.value = ''; selectedFields.value = []; });
+watch(selectedWidgetType, () => { selectedField.value = ''; selectedFields.value = []; });
 
-const needsMachine = (type: WidgetType) => ['line-chart', 'gauge', 'kpi-card', 'status-card', 'table', 'daily-count', 'alarm-panel'].includes(type);
-const needsField   = (type: WidgetType) => ['line-chart', 'gauge', 'kpi-card'].includes(type);
-const needsMinMax  = (type: WidgetType) => type === 'gauge';
-const needsBucket  = (type: WidgetType) => type === 'daily-count';
-const needsSku     = (type: WidgetType) => type === 'daily-count';
+// 3+ fields can't be read on a shared or 2-axis chart — force Normalized and lock it.
+const scalingLocked = computed(() => selectedFields.value.length >= 3);
+watch(scalingLocked, locked => { if (locked) chartScaling.value = 'normalized'; });
+
+const needsMachine    = (type: WidgetType) => ['line-chart', 'gauge', 'kpi-card', 'status-card', 'table', 'daily-count', 'alarm-panel', 'chart'].includes(type);
+const needsField      = (type: WidgetType) => ['line-chart', 'gauge', 'kpi-card'].includes(type);
+const needsMinMax     = (type: WidgetType) => type === 'gauge';
+const needsBucket     = (type: WidgetType) => type === 'daily-count';
+const needsSku        = (type: WidgetType) => type === 'daily-count';
+const needsMultiField = (type: WidgetType) => type === 'chart';
+
+function toggleField(key: string) {
+  const i = selectedFields.value.indexOf(key);
+  if (i === -1) selectedFields.value.push(key);
+  else selectedFields.value.splice(i, 1);
+}
 
 // Load the machine's distinct SKUs for the Count widget's dropdown.
 async function loadSkus() {
@@ -79,6 +102,13 @@ function save() {
   if (needsSku(selectedWidgetType.value)) {
     if (sku.value) config.sku = sku.value;
     config.status = status.value;
+  }
+  if (needsMultiField(selectedWidgetType.value)) {
+    config.fields = selectedFields.value;
+    config.chartType = chartType.value;
+    config.bucket = `${Math.max(1, Math.floor(bucketValue.value || 1))}${bucketUnit.value}`;
+    config.points = Math.min(500, Math.max(1, Math.floor(chartPoints.value || 20)));
+    config.scaling = chartScaling.value;
   }
 
   emit('save', {
@@ -143,6 +173,83 @@ function save() {
               </option>
             </select>
           </div>
+
+          <!-- Custom Chart: multiple fields + chart type + range -->
+          <template v-if="needsMultiField(selectedWidgetType) && selectedMachineId">
+            <div>
+              <label class="label">Data Fields</label>
+              <div class="max-h-40 overflow-y-auto space-y-1 rounded border border-white/10 bg-surface-300/40 p-2">
+                <label
+                  v-for="f in availableFields"
+                  :key="f.key"
+                  class="flex items-center gap-2 px-1 py-0.5 rounded cursor-pointer hover:bg-white/5 text-sm text-gray-200"
+                >
+                  <input
+                    type="checkbox"
+                    :checked="selectedFields.includes(f.key)"
+                    @change="toggleField(f.key)"
+                  />
+                  {{ f.label }} <span class="text-gray-500 text-xs">({{ f.unit ?? 'no unit' }})</span>
+                </label>
+                <p v-if="availableFields.length === 0" class="text-xs text-gray-500">No fields for this machine.</p>
+              </div>
+            </div>
+            <div>
+              <label class="label">Chart Type</label>
+              <div class="flex gap-2">
+                <button
+                  v-for="opt in chartTypeOptions"
+                  :key="opt"
+                  type="button"
+                  class="flex-1 px-2 py-1.5 rounded text-xs font-medium border capitalize transition-colors"
+                  :class="chartType === opt
+                    ? 'bg-blue-600 text-white border-blue-500'
+                    : 'bg-surface-300 text-gray-400 border-gray-700 hover:text-gray-200'"
+                  @click="chartType = opt"
+                >{{ opt }}</button>
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="label">Bucket Size</label>
+                <div class="flex gap-2">
+                  <input v-model.number="bucketValue" type="number" min="1" max="1000" class="input w-16" />
+                  <select v-model="bucketUnit" class="input flex-1">
+                    <option value="m">min</option>
+                    <option value="h">hours</option>
+                    <option value="d">days</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label class="label">Bars</label>
+                <input v-model.number="chartPoints" type="number" min="1" max="500" class="input" />
+              </div>
+            </div>
+            <p class="text-[11px] text-gray-500 -mt-2">Window = bucket × bars (e.g. 1h × 20 = last 20 hours).</p>
+            <div>
+              <label class="label">Scaling</label>
+              <div class="flex gap-2">
+                <button
+                  v-for="opt in scalingOptions"
+                  :key="opt"
+                  type="button"
+                  :disabled="scalingLocked && opt !== 'normalized'"
+                  class="flex-1 px-2 py-1.5 rounded text-xs font-medium border capitalize transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  :class="chartScaling === opt
+                    ? 'bg-blue-600 text-white border-blue-500'
+                    : 'bg-surface-300 text-gray-400 border-gray-700 hover:text-gray-200'"
+                  @click="chartScaling = opt"
+                >{{ opt }}</button>
+              </div>
+              <p v-if="scalingLocked" class="text-[11px] text-amber-400/80 mt-1">
+                3+ fields → locked to Normalized (Shared/Dual can't display more than 2 scales).
+              </p>
+              <p v-else class="text-[11px] text-gray-500 mt-1">
+                Shared: one axis · Dual: left/right axes grouped by unit (max 2 units) · Normalized: 0–100% (any number).
+              </p>
+            </div>
+          </template>
 
           <!-- SKU + status (Count widget) -->
           <div v-if="needsSku(selectedWidgetType) && selectedMachineId" class="space-y-3">

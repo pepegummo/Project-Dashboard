@@ -108,7 +108,7 @@ export interface TelemetrySeries {
 }
 
 // ─── Dashboard ───────────────────────────────────────────────────────────────
-export type WidgetType = 'line-chart' | 'gauge' | 'kpi-card' | 'status-card' | 'table' | 'alarm-panel' | 'daily-count';
+export type WidgetType = 'line-chart' | 'gauge' | 'kpi-card' | 'status-card' | 'table' | 'alarm-panel' | 'daily-count' | 'chart';
 
 export interface WidgetLayout {
   x: number;
@@ -143,6 +143,12 @@ export interface WidgetConfig {
   status?: 'all' | 'good' | 'reject';     // count widget: piece status filter
   aggregationPeriod?: AggregationPeriod;  // 'live' = real-time; anything else = periodic avg
   color?: string;
+  fields?: string[];                      // custom chart: multiple field keys to overlay
+  chartType?: 'line' | 'bar' | 'area';    // custom chart: render style
+  colors?: string[];                      // custom chart: per-series colors
+  points?: number;                        // custom chart: number of buckets/bars (window = bucket × points)
+  scaling?: 'shared' | 'dual' | 'normalized'; // custom chart: y-axis scaling mode
+  normalize?: boolean;                    // custom chart: deprecated — superseded by scaling='normalized'
   min?: number;
   max?: number;
   unit?: string;

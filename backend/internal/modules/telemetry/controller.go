@@ -56,7 +56,9 @@ func (ctrl *Controller) GetSeries(c *fiber.Ctx) error {
 	timeRange := c.Query("timeRange", "1h")
 	startTime := c.Query("startTime", "")
 	endTime := c.Query("endTime", "")
-	result, err := ctrl.svc.GetSeries(c.Context(), c.Params("machineId"), field, timeRange, startTime, endTime, nil)
+	bucket := c.Query("bucket", "")
+	points, _ := strconv.Atoi(c.Query("points", "0"))
+	result, err := ctrl.svc.GetSeries(c.Context(), c.Params("machineId"), field, timeRange, startTime, endTime, bucket, points, nil)
 	if err != nil {
 		return err
 	}
