@@ -92,8 +92,17 @@ async function load() {
     // count widget shows when it's focused — same columns/data shape the backend uses.
     widgetViewStateStore.setSeries(props.widget.id, {
       columns: ["time", "count"],
-      data: rows.value.map((r) => [r.bucket, r.count]),
+      data: rows.value.map((r) => [toLocalStamp(r.bucket), r.count]),
     });
+    // Publish the real window (POINTS buckets ≈ POINTS × bucket) so the AI doesn't
+    // read the bucket size as the whole span. Reuses windowLine in the AI context.
+    if (rows.value.length) {
+      widgetViewStateStore.setDatetime(
+        props.widget.id,
+        toLocalStamp(rows.value[0].bucket),
+        toLocalStamp(rows.value[rows.value.length - 1].bucket),
+      );
+    }
   } catch (e) {
     error.value = (e as Error).message;
   } finally {
@@ -168,6 +177,13 @@ const emptyMessage = computed(() =>
 );
 
 // ── Format helpers ────────────────────────────────────────────────────────────
+// UTC bucket → plant-local YYYY-MM-DDTHH:mm so the AI quotes the same times the widget shows.
+function toLocalStamp(iso: string): string {
+  const d = new Date(iso);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 // Day buckets read as a date; sub-day buckets read as a clock time.
 function fmtBucketLabel(iso: string) {
   const d = new Date(iso);

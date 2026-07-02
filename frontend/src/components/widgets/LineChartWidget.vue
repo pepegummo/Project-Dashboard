@@ -134,9 +134,10 @@ watch(chartData, (pts) => {
   const hasBand = recent.some(p => p.min != null || p.max != null);
   widgetViewStateStore.setSeries(props.widget.id, {
     columns: hasBand ? ['time', 'value', 'min', 'max'] : ['time', 'value'],
+    // ts → plant-local wall-clock so the AI quotes the same times the chart axis shows.
     data: recent.map(p => hasBand
-      ? [p.ts, p.value, p.min ?? p.value, p.max ?? p.value]
-      : [p.ts, p.value]),
+      ? [toDatetimeLocal(p.ts), p.value, p.min ?? p.value, p.max ?? p.value]
+      : [toDatetimeLocal(p.ts), p.value]),
   });
 }, { immediate: true });
 

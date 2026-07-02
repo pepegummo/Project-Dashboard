@@ -452,8 +452,12 @@ function buildDashboardContext(text = '', focusedIds: string[] = []): string {
     if (type !== 'line-chart' && type !== 'daily-count') return '';
     const s = widgetViewStateStore.seriesStates[id];
     if (!s?.data?.length) return '';
-    // Last ~24 points is enough to read a trend — half the tokens of the full 48.
-    return `\n  on-screen data — columns ${JSON.stringify(s.columns)}, data ${JSON.stringify(s.data.slice(-24))}`;
+    // Stride-sample the WHOLE series down to ~24 points (keep first + last) so the AI
+    // reads the full window's shape, not just the last-12h tail that made it call a
+    // multi-day chart "flat". Same token budget as the old slice(-24).
+    const step = Math.max(1, Math.ceil(s.data.length / 24));
+    const sampled = s.data.filter((_, i) => i % step === 0 || i === s.data.length - 1);
+    return `\n  on-screen data — columns ${JSON.stringify(s.columns)}, data ${JSON.stringify(sampled)}`;
   };
   // Shown time window of a focused chart, so "what range is shown?" answers from
   // context with no tool. Cheap (two timestamps); focused widgets only.

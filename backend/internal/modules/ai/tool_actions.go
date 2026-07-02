@@ -324,9 +324,13 @@ func (tk *ToolKit) GetSkus(ctx context.Context, orgID string, raw json.RawMessag
 // Reshape into [time, values...] tuples + a "columns" legend here, tool-side
 // only, so the shared telemetry service (and the REST API) are untouched.
 
+// bkkZone: telemetry is stored UTC but the chart renders in plant-local time.
+// ponytail: Thailand-only, no DST — a fixed +7 offset needs no tzdata.
+var bkkZone = time.FixedZone("+07", 7*3600)
+
 func shortTime(v any) string {
 	if t, ok := v.(time.Time); ok {
-		return t.UTC().Format("2006-01-02T15:04")
+		return t.In(bkkZone).Format("2006-01-02T15:04")
 	}
 	return ""
 }
@@ -335,7 +339,7 @@ func shortTimePtr(t *time.Time) string {
 	if t == nil {
 		return ""
 	}
-	return t.UTC().Format("2006-01-02T15:04")
+	return t.In(bkkZone).Format("2006-01-02T15:04")
 }
 
 func round2(f float64) float64 { return math.Round(f*100) / 100 }
@@ -391,7 +395,7 @@ func compactBucketResult(result map[string]interface{}) map[string]any {
 	rows, _ := result["data"].([]telemetry.BucketCount)
 	data := make([][2]any, 0, len(rows))
 	for _, r := range rows {
-		data = append(data, [2]any{r.Bucket.UTC().Format("2006-01-02T15:04"), r.Count})
+		data = append(data, [2]any{r.Bucket.In(bkkZone).Format("2006-01-02T15:04"), r.Count})
 	}
 	return map[string]any{
 		"sku":     result["sku"],
