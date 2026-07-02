@@ -45,7 +45,7 @@ TOOL SELECTION:
 - "What is X?" / "Show me X" / "ดู X" / any metric read → ALWAYS call show_metric. You have no live sensor data without it. Never fabricate a value. After the tool returns, reply with one short natural sentence — never print raw JSON.
 - User asks to see ALL metrics of a machine → get_machines first, then show_metric once per field.
 - "Create a dashboard" / "สร้าง dashboard" → call preview_dashboard (default template: machine_overview). Never ask which template. Never call create_custom_dashboard — the user confirms via a button, not by typing.
-- User names an existing dashboard to modify → add_widget_to_dashboard / remove_widget.
+- Modify an existing dashboard → it must be OPEN on screen (an "Active dashboard" context). Stage the change with preview_add_widget / preview_update_widget / preview_remove_widget — NOTHING is saved until the user clicks Save. If the dashboard the user names is not the one on screen, ask them to open it in the AI page first; never write without it.
 - "Show / add a widget for X" without naming a dashboard → show_metric (renders a card the user can add themselves). Never ask which dashboard.
 - "List SKUs" / which SKUs are available for a machine or count widget → call get_skus(machine).
 - Active alerts → get_active_alerts.
@@ -64,7 +64,7 @@ Line charts support absolute date ranges — convert any DD/MM/YYYY the user giv
 const systemPromptContextExt = `
 
 Compound message (read + write intent) → serve the read first, then ask about the write.
-Editing the current preview canvas → use preview_add_widget / preview_update_widget / preview_remove_widget. For count/production widgets always use type "daily-count".
+Editing the current preview canvas OR an open Active dashboard → use preview_add_widget / preview_update_widget / preview_remove_widget (staged, no DB write). For count/production widgets always use type "daily-count". The change is not persisted until the user clicks Save (Active dashboard) or Confirm (new preview) — after staging, tell them to do so; never claim it is saved.
 
 CONTEXT: An authoritative dashboard state may be injected.
 - A context line marked [FOCUSED] is the widget the user clicked — route the answer to THAT widget (its machine/type/metric/bucket/sku), ignoring other widgets unless the user names one; never let another widget's title (e.g. "Trend") pull you off it.
@@ -180,10 +180,6 @@ func (ctrl *Controller) dispatch(c *fiber.Ctx, toolName string, rawArgs json.Raw
 	// the user clicks Confirm on a preview. This enforces the preview-then-confirm flow.
 	case "create_custom_dashboard":
 		return ctrl.action.Handle(ctx, user.OrgId, user.Sub, rawArgs)
-	case "add_widget_to_dashboard":
-		return ctrl.tk.AddWidget(ctx, user.OrgId, rawArgs)
-	case "remove_widget":
-		return ctrl.tk.RemoveWidget(ctx, user.OrgId, rawArgs)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", toolName)
 	}
@@ -531,7 +527,6 @@ var slimToolDescriptions = map[string]string{
 	"get_telemetry_trend": "Get avg/min/max of one metric. Args: machine_id (name), metric (field key), time_range (5m|15m|30m|1h|6h|24h|7d|15d|30d).",
 	"get_skus":            "List the SKU values available for a machine. Args: machine_id (name).",
 	"preview_dashboard":   "Preview a template dashboard. Args: machine (name), template (machine_overview|machine_production|machine_maintenance).",
-	"remove_widget":       "Remove a widget from a named dashboard. Args: dashboard_name, widget_title.",
 }
 
 func toGroqToolSlim(t map[string]any) map[string]any {
@@ -558,10 +553,9 @@ func toGroqToolSlim(t map[string]any) map[string]any {
 // complexSchemaTools keep their full input_schema because they have nested objects
 // (widgetItemSchema) or many optional patch fields that the model needs to see.
 var complexSchemaTools = map[string]bool{
-	"add_widget_to_dashboard": true,
-	"preview_add_widget":      true,
-	"preview_remove_widget":   true,
-	"preview_update_widget":   true,
+	"preview_add_widget":    true,
+	"preview_remove_widget": true,
+	"preview_update_widget": true,
 }
 
 // previewOnlyTools are only useful when a dashboard/preview context is present.

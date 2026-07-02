@@ -11,7 +11,7 @@ var machineIDProp = map[string]any{
 	"description": "Machine name (e.g. CW-01). Ask user if unknown — never guess.",
 }
 
-// widgetItemSchema is used by add_widget_to_dashboard only.
+// widgetItemSchema is the nested widget object used by preview_add_widget.
 var widgetItemSchema = map[string]any{
 	"type":     "object",
 	"required": []string{"type"},
@@ -182,32 +182,6 @@ var PreviewUpdateWidgetTool = map[string]any{
 	},
 }
 
-var AddWidgetTool = map[string]any{
-	"name":        "add_widget_to_dashboard",
-	"description": "Add one widget to an EXISTING dashboard (by name).",
-	"input_schema": map[string]any{
-		"type":     "object",
-		"required": []string{"dashboard_name", "widget"},
-		"properties": map[string]any{
-			"dashboard_name": map[string]any{"type": "string"},
-			"widget":         widgetItemSchema,
-		},
-	},
-}
-
-var RemoveWidgetTool = map[string]any{
-	"name":        "remove_widget",
-	"description": "Remove a widget from a dashboard by its title.",
-	"input_schema": map[string]any{
-		"type":     "object",
-		"required": []string{"dashboard_name", "widget_title"},
-		"properties": map[string]any{
-			"dashboard_name": map[string]any{"type": "string"},
-			"widget_title":   map[string]any{"type": "string"},
-		},
-	},
-}
-
 // AllTools is the complete set handed to the LLM and exposed via GET /api/ai/tools.
 func AllTools() []map[string]any {
 	return []map[string]any{
@@ -223,16 +197,14 @@ func AllTools() []map[string]any {
 		PreviewAddWidgetTool,
 		PreviewRemoveWidgetTool,
 		PreviewUpdateWidgetTool,
-		AddWidgetTool,
-		RemoveWidgetTool,
 	}
 }
 
-// writeTools are the mutating tools that require admin/editor role.
+// writeTools are the mutating tools that require admin/editor role. Editing dashboards is
+// now staged via the preview_* tools (persisted only on the user's Save/Confirm), so the
+// only remaining write tool is the post-Confirm dashboard creation.
 var writeTools = map[string]bool{
 	"create_custom_dashboard": true,
-	"add_widget_to_dashboard": true,
-	"remove_widget":           true,
 }
 
 func isWriteTool(name string) bool { return writeTools[name] }
@@ -284,16 +256,6 @@ type ProductionCountArgs struct {
 	Points    int    `json:"points"`
 	Sku       string `json:"sku"`
 	Status    string `json:"status"`
-}
-
-type AddWidgetArgs struct {
-	DashboardName string     `json:"dashboard_name"`
-	Widget        ToolWidget `json:"widget"`
-}
-
-type RemoveWidgetArgs struct {
-	DashboardName string `json:"dashboard_name"`
-	WidgetTitle   string `json:"widget_title"`
 }
 
 // ── Preview types ─────────────────────────────────────────────────────────────

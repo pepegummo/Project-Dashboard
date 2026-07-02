@@ -702,7 +702,6 @@ async function sendMessage() {
     const builderToolNames = new Set([
       'preview_dashboard', 'create_custom_dashboard',
       'preview_add_widget', 'preview_remove_widget', 'preview_update_widget',
-      'add_widget_to_dashboard', 'remove_widget',
       'create_alert', 'manage_alert_event',
       'show_metric', // its own loop handler owns the highlight/focus decision
     ]);
