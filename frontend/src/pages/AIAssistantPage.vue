@@ -475,17 +475,16 @@ function buildDashboardContext(text = '', focusedIds: string[] = []): string {
       if (!inScope(`preview-${i}`)) return null;
       const focus = focusedIds.includes(`preview-${i}`) ? '[FOCUSED] ' : '';
       const parts = [`- ${focus}${w.type} "${w.title || ''}" — machine ${w.machine}`];
+      // Metric is the source of truth — the title is free-text and may lie (a card
+      // named "Weights" can actually show reject count). Send it so the AI stops
+      // guessing meaning from the title, matching the focus/live-dashboard branches.
+      if (w.metric) parts.push(`metric ${w.metric}`);
       if (w.machineUuid) {
-
-          const val = telemetryStore.getFieldValue(w.machineUuid, w.metric);
-
-          if (val !== undefined && val !== null) {
-
-            parts.push(`current value: ${val}${w.unit || ''}`);
-
-          }
-
+        const val = telemetryStore.getFieldValue(w.machineUuid, w.metric);
+        if (val !== undefined && val !== null) {
+          parts.push(`current value: ${val}${w.unit || ''}`);
         }
+      }
       // Bucket chip is local widget state, not persisted config — read the live selection.
       const bucket = widgetViewStateStore.bucketStates[`preview-${i}`] ?? w.bucket;
       if (bucket) parts.push(`bucket ${bucket}`);
