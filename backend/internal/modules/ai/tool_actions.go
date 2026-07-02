@@ -252,21 +252,6 @@ func (tk *ToolKit) GetActiveAlerts(ctx context.Context, orgID string) (any, erro
 	return map[string]any{"count": len(out), "alerts": out}, nil
 }
 
-// GetDailyCount returns per-day production counts for one machine.
-func (tk *ToolKit) GetDailyCount(ctx context.Context, orgID string, raw json.RawMessage) (any, error) {
-	var args DailyCountArgs
-	_ = json.Unmarshal(raw, &args)
-	id, ok := resolveMachineID(ctx, orgID, strings.TrimSpace(args.MachineID))
-	if !ok {
-		return nil, fmt.Errorf("machine %q not found", args.MachineID)
-	}
-	days := args.Days
-	if days <= 0 {
-		days = 7
-	}
-	return tk.tel.GetDailyCount(ctx, id, days, &orgID)
-}
-
 // GetTelemetrySeries returns time-bucketed avg/min/max data points — mirrors what a line chart shows.
 func (tk *ToolKit) GetTelemetrySeries(ctx context.Context, orgID string, raw json.RawMessage) (any, error) {
 	var args SeriesArgs

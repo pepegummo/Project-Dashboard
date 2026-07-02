@@ -79,19 +79,6 @@ var GetActiveAlertsTool = map[string]any{
 	"input_schema": map[string]any{"type": "object", "properties": map[string]any{}},
 }
 
-var GetDailyCountTool = map[string]any{
-	"name":        "get_daily_count",
-	"description": "Get per-day production count for one machine.",
-	"input_schema": map[string]any{
-		"type":     "object",
-		"required": []string{"machine_id"},
-		"properties": map[string]any{
-			"machine_id": machineIDProp,
-			"days":       map[string]any{"type": "integer"},
-		},
-	},
-}
-
 var GetTelemetrySeriesTool = map[string]any{
 	"name":        "get_telemetry_series",
 	"description": "Get all time-bucketed data points (avg/min/max per bucket) for a metric — use this to read what a line chart is showing. Result's \"data\" is compact rows ordered oldest→newest; \"columns\" names each row's fields in order, e.g. columns:[\"time\",\"avg\",\"min\",\"max\"], data:[[\"2026-06-27T10:00\",55.2,50.1,60.3],...].",
@@ -229,7 +216,6 @@ func AllTools() []map[string]any {
 		GetTelemetryTrendTool,
 		GetTelemetrySeriesTool,
 		GetActiveAlertsTool,
-		GetDailyCountTool,
 		GetProductionCountTool,
 		GetSkusTool,
 		ListDashboardsTool,
@@ -284,11 +270,6 @@ type TrendArgs struct {
 	MachineID string `json:"machine_id"`
 	Metric    string `json:"metric"`
 	TimeRange string `json:"time_range"`
-}
-
-type DailyCountArgs struct {
-	MachineID string `json:"machine_id"`
-	Days      int    `json:"days"`
 }
 
 type SeriesArgs struct {

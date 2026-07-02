@@ -4,8 +4,8 @@ import VChart from "vue-echarts";
 import type { EChartsOption } from "echarts";
 import type { DashboardWidget } from "@/types";
 import { api } from "@/services/api.service";
-import { wsService } from "@/services/ws.service";
 import { useWidgetViewStateStore } from "@/stores/widget-view-state.store";
+import { useDashboardStore } from "@/stores/dashboard.store";
 
 // ── LED mode data shape ───────────────────────────────────────────────────────
 export interface LedWeekDay {
@@ -41,13 +41,26 @@ const statusFilter = computed(
 // User-selectable bucket size. Presets act as quick toggles; a custom config value (e.g. '7m')
 // is shown as an extra chip alongside the presets.
 const BUCKET_PRESETS = ["1m", "5m", "15m", "30m", "1h", "1d"];
-const POINTS = 48; // number of recent buckets to fetch
+const POINTS = 20; // number of recent buckets to fetch
 const configBucket = (props.widget.config?.bucket as string) || "";
 const selectedBucket = ref<string>(configBucket || "1h");
 // Bucket choice is local-only (not persisted to config) — mirror it into widget-view-state
 // so the AI assistant's context can see what the widget is actually showing (see LineChartWidget's
 // startDateTime/endDateTime sync for the same pattern).
 const widgetViewStateStore = useWidgetViewStateStore();
+const dashboardStore = useDashboardStore();
+
+// Picking a bucket chip should also update the saved widget setting — but only for a real,
+// editable dashboard widget (preview/focus cards in the AI page use "preview-N" ids).
+const persistable = !props.ledMode && !!props.widget.id && !props.widget.id.startsWith("preview-");
+async function persistBucket(b: string) {
+  if (!persistable || (props.widget.config?.bucket ?? "") === b) return;
+  try {
+    await dashboardStore.updateWidget(props.widget.id, {
+      config: { ...props.widget.config, bucket: b },
+    });
+  } catch { /* keep the local selection even if the save fails */ }
+}
 const bucketChips = computed(() =>
   configBucket && !BUCKET_PRESETS.includes(configBucket)
     ? [configBucket, ...BUCKET_PRESETS]
@@ -105,16 +118,10 @@ onUnmounted(() => {
 });
 
 watch([selectedBucket, skuFilter, statusFilter], load);
-watch(selectedBucket, (b) => widgetViewStateStore.setBucket(props.widget.id, b));
-
-// ── Live mode — 30-minute rolling window ─────────────────────────────────────
-const liveMode = ref(false);
-const liveLoading = ref(false);
-const livePoints = ref<Array<{ ts: string; count: number }>>([]);
-const LIVE_WINDOW_MS = 30 * 60 * 1000;
-
-let offTelemetry: (() => void) | null = null;
-let liveTimer: ReturnType<typeof setInterval> | null = null;
+watch(selectedBucket, (b) => {
+  widgetViewStateStore.setBucket(props.widget.id, b);
+  persistBucket(b);
+});
 
 // ── ResizeObserver — keeps ECharts in sync with CSS-grid cell size changes ────
 const chartContainerRef = ref<HTMLElement | null>(null);
@@ -132,98 +139,33 @@ watch(chartContainerRef, (el) => {
   }
 });
 
-async function loadLiveSeed() {
-  const seedField = props.widget.machine?.fields?.[0]?.key;
-  if (!machineId.value || !seedField) return;
-  liveLoading.value = true;
-  try {
-    const series = await api.getTelemetrySeries(machineId.value, seedField, {
-      timeRange: "30m",
-    });
-    livePoints.value = (series?.data ?? []).map((p: any) => ({
-      ts: p.bucket ?? p.ts,
-      count: (p.avg ?? p.value) != null ? 1 : 0,
-    }));
-  } catch {
-    /* ok */
-  } finally {
-    liveLoading.value = false;
-  }
-}
-
-function enterLive() {
-  if (!machineId.value) return;
-  livePoints.value = [];
-  loadLiveSeed();
-  wsService.subscribe([machineId.value]);
-  offTelemetry = wsService.onTelemetry(machineId.value, (payload) => {
-    const d = new Date(payload.timestamp);
-    d.setSeconds(0, 0);
-    const bucket = d.toISOString();
-    const cutoff = Date.now() - LIVE_WINDOW_MS;
-    const existing = livePoints.value.find((p) => p.ts === bucket);
-    if (existing) {
-      existing.count++;
-    } else {
-      livePoints.value.push({ ts: bucket, count: 1 });
-    }
-    livePoints.value = livePoints.value.filter(
-      (p) => new Date(p.ts).getTime() > cutoff,
-    );
-  });
-  liveTimer = setInterval(loadLiveSeed, 5 * 60_000);
-}
-
-function exitLive() {
-  offTelemetry?.();
-  offTelemetry = null;
-  if (liveTimer) {
-    clearInterval(liveTimer);
-    liveTimer = null;
-  }
-  if (machineId.value) wsService.unsubscribe([machineId.value]);
-  livePoints.value = [];
-}
-
-watch(liveMode, (isLive) => {
-  if (isLive) enterLive();
-  else exitLive();
-});
 onUnmounted(() => {
   if (refetchTimer) clearInterval(refetchTimer);
-  exitLive();
   resizeObserver?.disconnect();
 });
 
-// ── Sample data — shown only when a configured widget has no rows yet ─────────
-const SAMPLE_COUNTS = [1200, 1300, 1400, 1800, 1100, 1200, 900];
-
-const mockRows = computed<BucketPoint[]>(() => {
-  const now = Date.now();
-  return SAMPLE_COUNTS.map((count, i) => ({
-    bucket: new Date(now - (SAMPLE_COUNTS.length - 1 - i) * 3_600_000).toISOString(),
-    count,
-  }));
-});
-
-const isMockData = computed(() => !loading.value && rows.value.length === 0);
-const displayRows = computed(() =>
-  isMockData.value ? mockRows.value : rows.value,
-);
-
 // ── Derived stats (per bucket) ────────────────────────────────────────────────
 const totalCount = computed(() =>
-  displayRows.value.reduce((s, r) => s + r.count, 0),
+  rows.value.reduce((s, r) => s + r.count, 0),
 );
 const avgPerBucket = computed(() =>
-  displayRows.value.length
-    ? Math.round(totalCount.value / displayRows.value.length)
+  rows.value.length
+    ? Math.round(totalCount.value / rows.value.length)
     : 0,
 );
 const peakBucket = computed(() => {
-  if (!displayRows.value.length) return null;
-  return displayRows.value.reduce((a, b) => (a.count >= b.count ? a : b));
+  if (!rows.value.length) return null;
+  return rows.value.reduce((a, b) => (a.count >= b.count ? a : b));
 });
+
+// With gap-filled buckets the window is never "missing" — it's just all zeros when this
+// SKU/status produced nothing. Report that in the SKU's own terms rather than "no data".
+const nothingProduced = computed(() => !rows.value.length || totalCount.value === 0);
+const emptyMessage = computed(() =>
+  skuFilter.value
+    ? `No ${skuFilter.value} was produced during this period.`
+    : "Nothing was produced during this period.",
+);
 
 // ── Format helpers ────────────────────────────────────────────────────────────
 // Day buckets read as a date; sub-day buckets read as a clock time.
@@ -304,8 +246,8 @@ function hourBarPct(count: number): number {
 
 // ── ECharts option (per-bucket bar chart) ─────────────────────────────────────
 const option = computed<EChartsOption>(() => {
-  const labels = displayRows.value.map((r) => fmtBucketLabel(r.bucket));
-  const data = displayRows.value.map((r) => r.count);
+  const labels = rows.value.map((r) => fmtBucketLabel(r.bucket));
+  const data = rows.value.map((r) => r.count);
 
   return {
     backgroundColor: "transparent",
@@ -397,149 +339,6 @@ const option = computed<EChartsOption>(() => {
   };
 });
 
-// ── Live chart option (30-min rolling cumulative area chart) ─────────────────
-const liveOption = computed<EChartsOption>(() => {
-  const labels = livePoints.value.map((p) => {
-    const d = new Date(p.ts);
-    return d.toLocaleTimeString("en-US", {
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    });
-  });
-
-  // Running cumulative total across the 30-min window
-  let running = 0;
-  const cumul = livePoints.value.map((p) => {
-    running += p.count;
-    return running;
-  });
-  const finalVal = cumul[cumul.length - 1] ?? 0;
-  const liveAvg = livePoints.value.length
-    ? Math.round(running / livePoints.value.length)
-    : 0;
-
-  return {
-    backgroundColor: "transparent",
-    grid: { left: 36, right: 20, top: 16, bottom: 28, containLabel: false },
-
-    xAxis: {
-      type: "category",
-      data: labels,
-      axisLabel: { color: "#6b7280", fontSize: 9, interval: "auto" },
-      axisLine: { lineStyle: { color: "#374151" } },
-      splitLine: { show: false },
-    },
-
-    yAxis: {
-      type: "value",
-      minInterval: 1,
-      axisLabel: {
-        color: "#6b7280",
-        fontSize: 9,
-        formatter: (v: number) => fmtCount(v),
-      },
-      splitLine: { lineStyle: { color: "#1f2937", type: "dashed" } },
-      min: 0,
-    },
-
-    tooltip: {
-      trigger: "axis",
-      backgroundColor: "#1e2130",
-      borderColor: "#374151",
-      textStyle: { color: "#e5e7eb", fontSize: 12 },
-      formatter: (params: any) => {
-        const arr = Array.isArray(params) ? params : [params];
-        const time = arr[0]?.name ?? "";
-        const cumulVal = arr[0]?.value ?? 0;
-        const idx = arr[0]?.dataIndex ?? 0;
-        const perMin = livePoints.value[idx]?.count ?? 0;
-        return `<div style="font-family:monospace;line-height:1.8;font-size:11px">
-          <span style="color:#9ca3af">${time}</span><br/>
-          <span style="color:#60a5fa">Cumulative</span>: <b>${(cumulVal as number).toLocaleString()}</b><br/>
-          <span style="color:#6b7280">This min</span>: +${perMin}
-        </div>`;
-      },
-    },
-
-    series: [
-      {
-        type: "line",
-        data: cumul,
-        smooth: 0.3,
-        symbol: "circle",
-        symbolSize: 4,
-        showSymbol: false,
-        lineStyle: { color: "#3b82f6", width: 2 },
-        itemStyle: { color: "#3b82f6", borderColor: "#1e40af", borderWidth: 2 },
-        emphasis: {
-          showSymbol: true,
-          itemStyle: {
-            color: "#60a5fa",
-            borderColor: "#93c5fd",
-            borderWidth: 2,
-          },
-        },
-        areaStyle: {
-          color: {
-            type: "linear",
-            x: 0,
-            y: 0,
-            x2: 0,
-            y2: 1,
-            colorStops: [
-              { offset: 0, color: "rgba(59,130,246,0.35)" },
-              { offset: 0.6, color: "rgba(59,130,246,0.08)" },
-              { offset: 1, color: "rgba(59,130,246,0.00)" },
-            ],
-          },
-        },
-        markLine:
-          liveAvg > 0
-            ? {
-                silent: true,
-                symbol: "none",
-                animation: false,
-                data: [
-                  {
-                    yAxis: liveAvg,
-                    lineStyle: { color: "#6366f1", type: "dashed", width: 1 },
-                    label: {
-                      formatter: `avg ${fmtCount(liveAvg)}`,
-                      color: "#6366f1",
-                      fontSize: 9,
-                      position: "end",
-                    },
-                  },
-                ],
-              }
-            : undefined,
-        markPoint: cumul.length
-          ? {
-              symbol: "circle",
-              symbolSize: 6,
-              data: [{ type: "max" as const, name: "Total" }],
-              label: {
-                formatter: (p: any) => `Total ${fmtCount(p.value)}`,
-                color: "#93c5fd",
-                fontSize: 9,
-                position: "top",
-                distance: 8,
-                backgroundColor: "rgba(14,17,30,0.85)",
-                padding: [2, 5] as [number, number],
-                borderRadius: 3,
-              },
-              itemStyle: {
-                color: "#3b82f6",
-                borderColor: "#93c5fd",
-                borderWidth: 1,
-              },
-            }
-          : undefined,
-      } as any,
-    ],
-  };
-});
 </script>
 
 <template>
@@ -668,41 +467,21 @@ const liveOption = computed<EChartsOption>(() => {
         class="flex items-center justify-between px-1 pt-0.5 pb-1 flex-shrink-0"
       >
         <div class="flex gap-3 text-[10px] text-gray-500 items-center">
-          <!-- Live mode stats -->
-          <template v-if="liveMode">
-            <span
-              class="flex items-center gap-1 px-1.5 py-0.5 rounded-full font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/20"
-            >
-              <span
-                class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse inline-block"
-              />
-              LIVE · 30 min
-            </span>
-            <span>
-              <span class="text-emerald-400 font-mono">{{
-                livePoints.reduce((s, p) => s + p.count, 0)
-              }}</span>
-              <span class="ml-1">events</span>
-            </span>
-          </template>
-          <!-- Historical stats -->
-          <template v-else>
-            <span class="px-1.5 py-0.5 rounded bg-surface-300 text-gray-300 font-mono">
-              {{ skuFilter || 'All SKUs' }}<span v-if="statusFilter !== 'all'" class="text-gray-500"> · {{ statusFilter }}</span>
-            </span>
-            <span>
-              <span class="text-blue-400 font-mono">{{ fmtCount(totalCount) }}</span>
-              <span class="ml-1">total</span>
-            </span>
-            <span>
-              <span class="text-indigo-400 font-mono">{{ fmtCount(avgPerBucket) }}</span>
-              <span class="ml-1">avg/{{ selectedBucket }}</span>
-            </span>
-            <span v-if="peakBucket">
-              <span class="text-violet-400 font-mono">{{ fmtCount(peakBucket.count) }}</span>
-              <span class="ml-1">peak</span>
-            </span>
-          </template>
+          <span class="px-1.5 py-0.5 rounded bg-surface-300 text-gray-300 font-mono">
+            {{ skuFilter || 'All SKUs' }}<span v-if="statusFilter !== 'all'" class="text-gray-500"> · {{ statusFilter }}</span>
+          </span>
+          <span>
+            <span class="text-blue-400 font-mono">{{ fmtCount(totalCount) }}</span>
+            <span class="ml-1">total</span>
+          </span>
+          <span>
+            <span class="text-indigo-400 font-mono">{{ fmtCount(avgPerBucket) }}</span>
+            <span class="ml-1">avg/{{ selectedBucket }}</span>
+          </span>
+          <span v-if="peakBucket">
+            <span class="text-violet-400 font-mono">{{ fmtCount(peakBucket.count) }}</span>
+            <span class="ml-1">peak</span>
+          </span>
         </div>
 
         <div class="flex gap-0.5 items-center">
@@ -719,54 +498,41 @@ const liveOption = computed<EChartsOption>(() => {
           >
             {{ b }}
           </button>
-          <button
-            class="ml-1 px-1.5 py-0.5 rounded font-medium border transition-colors text-[9px]"
-            :class="
-              liveMode
-                ? 'bg-emerald-600/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-600/30'
-                : 'bg-surface-300 text-gray-400 border-gray-700 hover:text-emerald-400 hover:border-emerald-500/30'
-            "
-            @click="liveMode = !liveMode"
-          >
-            {{ liveMode ? "Exit Live" : "⊙ Live" }}
-          </button>
         </div>
       </div>
 
       <!-- Loading -->
       <div
-        v-if="liveMode ? liveLoading : loading"
+        v-if="loading"
         class="flex-1 flex items-center justify-center"
       >
         <div class="spinner" />
       </div>
 
-      <!-- Error (historical only) -->
+      <!-- Error -->
       <div
-        v-else-if="!liveMode && error"
+        v-else-if="error"
         class="flex-1 flex items-center justify-center text-xs text-red-400 px-3 text-center"
       >
         {{ error }}
+      </div>
+
+      <!-- Empty — every bucket in the window is 0 (this SKU/status produced nothing) -->
+      <div
+        v-else-if="nothingProduced"
+        class="flex-1 flex flex-col items-center justify-center gap-1 px-3 text-center"
+      >
+        <span class="text-xs text-gray-400">{{ emptyMessage }}</span>
+        <span class="text-[10px] text-gray-600">Try a larger bucket or a different SKU.</span>
       </div>
 
       <!-- Chart -->
       <div v-else ref="chartContainerRef" class="relative flex-1 min-h-0" style="min-height:80px">
         <VChart
           ref="vchart"
-          :option="liveMode ? liveOption : option"
+          :option="option"
           class="w-full h-full"
         />
-
-        <div
-          v-if="!liveMode && isMockData"
-          class="absolute inset-0 flex items-center justify-center pointer-events-none"
-        >
-          <span
-            class="text-[10px] font-medium tracking-widest uppercase text-gray-600 opacity-40"
-          >
-            SAMPLE DATA
-          </span>
-        </div>
       </div>
     </template>
   </div>

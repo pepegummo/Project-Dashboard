@@ -253,6 +253,11 @@ func (s *Service) GetBucketCount(ctx context.Context, machineID, sku, status, bu
 	if err != nil {
 		return nil, err
 	}
+	// gapfill aligns to bucket boundaries and can emit one extra leading partial bucket —
+	// keep the most recent `points` so the widget always gets exactly the window it asked for.
+	if len(data) > points {
+		data = data[len(data)-points:]
+	}
 	return map[string]interface{}{
 		"machineId": machineID, "sku": sku, "status": status, "bucket": bucket,
 		"from": from, "to": to, "data": data,

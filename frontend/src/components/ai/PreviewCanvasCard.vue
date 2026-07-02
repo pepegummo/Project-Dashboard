@@ -6,6 +6,7 @@ import GridStackCanvas from '@/components/dashboard/GridStackCanvas.vue';
 import WidgetConfigModal from '@/components/dashboard/WidgetConfigModal.vue';
 import WidgetToolbox from '@/components/dashboard/WidgetToolbox.vue';
 import { useMachineStore } from '@/stores/machine.store';
+import { useWidgetViewStateStore } from '@/stores/widget-view-state.store';
 
 interface PreviewWidget {
   type: string; title: string; machine: string; machineUuid?: string;
@@ -40,6 +41,21 @@ const emit = defineEmits<{
 
 const machineStore = useMachineStore();
 onMounted(() => machineStore.fetchMachines());
+
+// A count widget's in-grid bucket chips are local to the mounted widget; it publishes the pick
+// to widget-view-state keyed by its preview id. Mirror that back into result.widgets so the
+// widget's Configure modal, Save, and draft persistence all see the chosen bucket.
+const viewState = useWidgetViewStateStore();
+watch(
+  () => viewState.bucketStates,
+  (states) => {
+    props.result.widgets.forEach((w, i) => {
+      const b = states[`preview-${i}`];
+      if (b && w.bucket !== b) w.bucket = b;
+    });
+  },
+  { deep: true },
+);
 
 const localName = ref(props.result.dashboardName);
 

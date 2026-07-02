@@ -35,7 +35,7 @@ const systemPromptMinimal = `You are IotVision AI, assistant for an industrial I
 // model answers in one no-tool call, avoiding the redundant fetch+summarize round
 // that double-billed tokens and tripped the 8k/min rate limit.
 const systemPromptContextAnswer = `You are IotVision AI, assistant for an industrial IoT platform. Language: match the user's latest message exactly — Thai or English, never mix.
-Answer from the focused widget's on-screen context (its current value, shown time window, bucket/sku/config, and any data series present). For a trend/analysis question, state direction (up/down/stable) and min/max, and extrapolate simply if asked to predict. Do NOT call any tool. If the requested number is not in the context, say you can fetch it — never fabricate. Reply in 1-4 natural sentences, never raw JSON or a bare list of numbers.`
+Answer from the focused widget's on-screen context (its current value, shown time window, bucket/sku/config, and any data series present). A context line marked [FOCUSED] is the widget the user clicked — answer about THAT widget and ignore the others unless the user names one; never let another widget's title (e.g. "Trend") or value pull you off it. For a [FOCUSED] daily-count widget, read its "on-screen data" count series — never substitute another widget's current value. For a trend/analysis question, state direction (up/down/stable) and min/max, and extrapolate simply if asked to predict. Do NOT call any tool. If the requested number is not in the context, say you can fetch it — never fabricate. Reply in 1-4 natural sentences, never raw JSON or a bare list of numbers.`
 // systemPromptBase is always sent. It covers the no-preview path (pure reads, dashboard
 // creation, existing-dashboard edits, greetings). Kept stable so Groq can cache it.
 const systemPromptBase = `You are IotVision AI, assistant for an industrial IoT platform. Language: match the user's latest message exactly — Thai or English, never mix.
@@ -67,6 +67,7 @@ Compound message (read + write intent) → serve the read first, then ask about 
 Editing the current preview canvas → use preview_add_widget / preview_update_widget / preview_remove_widget. For count/production widgets always use type "daily-count".
 
 CONTEXT: An authoritative dashboard state may be injected.
+- A context line marked [FOCUSED] is the widget the user clicked — route the answer to THAT widget (its machine/type/metric/bucket/sku), ignoring other widgets unless the user names one; never let another widget's title (e.g. "Trend") pull you off it.
 - Structural questions (widget count, names, layout) → answer from context.
 - Live value questions with NO widget mentioned ("what is X", "speed of CW-01") → call show_metric.
 @Widget Title tokens identify the exact widget the user is referring to — this OVERRIDES the generic
@@ -75,7 +76,7 @@ live-value rule above. Any question about a mentioned widget (status, "how's it 
 guessing a metric from conversation history:
 - Edit/remove intent → use the title verbatim as widget_title in preview_update_widget / preview_remove_widget.
 - Simple current-value question ("what is it now", "ตอนนี้เท่าไหร่") → read the widget's type/machine/metric from context, then:
-  • daily-count / count-style widget → call get_production_count(machine_id, bucket, sku, status — all from context); never call get_daily_count or show_metric for a mentioned count widget, they don't honor its bucket/sku/status filters. If context lists a "bucket" for this widget, copy it verbatim — never substitute a different one. If context has no bucket line at all, default to "1h", never "1d", unless the user explicitly asks for a daily/monthly view.
+  • daily-count / count-style widget → call get_production_count(machine_id, bucket, sku, status — all from context); never call show_metric for a mentioned count widget, it doesn't honor the widget's bucket/sku/status filters. If context lists a "bucket" for this widget, copy it verbatim — never substitute a different one. If context has no bucket line at all, default to "1h", never "1d", unless the user explicitly asks for a daily/monthly view.
   • gauge / kpi-card / line-chart / status-card / table → call show_metric(machine and metric from context).
   • alarm-panel → call get_active_alerts; describe what alerts it monitors.
 - Analytical question about a mentioned widget (trend, "how's it doing", vague follow-ups like "ข้อมูลตอนนี้เป็นอย่างไร", แนวโน้ม, วิเคราะห์, ทำนาย, predict, analyze, forecast) → NEVER answer from a single current value — fetch the full series instead:
@@ -154,8 +155,6 @@ func (ctrl *Controller) dispatch(c *fiber.Ctx, toolName string, rawArgs json.Raw
 		return ctrl.tk.GetTelemetryTrend(ctx, user.OrgId, rawArgs)
 	case "get_active_alerts":
 		return ctrl.tk.GetActiveAlerts(ctx, user.OrgId)
-	case "get_daily_count":
-		return ctrl.tk.GetDailyCount(ctx, user.OrgId, rawArgs)
 	case "get_telemetry_series":
 		return ctrl.tk.GetTelemetrySeries(ctx, user.OrgId, rawArgs)
 	case "get_production_count":
@@ -530,7 +529,6 @@ func toGroqTool(t map[string]any) map[string]any {
 var slimToolDescriptions = map[string]string{
 	"show_metric":         "Show a live metric widget. Args: machine (name, e.g. CW-01), metric (a REAL sensor field key like speed/weight/rejects/throughput — NEVER a display style word), viz (OPTIONAL display style only: value|gauge|trend — never put these words in metric).",
 	"get_telemetry_trend": "Get avg/min/max of one metric. Args: machine_id (name), metric (field key), time_range (5m|15m|30m|1h|6h|24h|7d|15d|30d).",
-	"get_daily_count":     "Per-day production count. Args: machine_id (name), days (integer, default 7).",
 	"get_skus":            "List the SKU values available for a machine. Args: machine_id (name).",
 	"preview_dashboard":   "Preview a template dashboard. Args: machine (name), template (machine_overview|machine_production|machine_maintenance).",
 	"remove_widget":       "Remove a widget from a named dashboard. Args: dashboard_name, widget_title.",

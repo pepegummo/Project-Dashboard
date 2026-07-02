@@ -262,26 +262,41 @@ func (r *Repository) GetSkuCount(ctx context.Context, machineID, sku, status, in
 		args = append(args, sku)
 		// Case-insensitive so "cw-1001" and "CW-1001" match the same pieces.
 		// ponytail: no index on LOWER(...); count already scans, fine at this scale.
-		skuFilter = "  AND LOWER(data->>'sku') = LOWER($4)"
+		// Sits in the LEFT JOIN's ON clause so a non-matching bucket stays 0, not dropped.
+		skuFilter = "   AND LOWER(t.data->>'sku') = LOWER($4)"
 	}
 
+	// Generate the full bucket grid and LEFT JOIN the data, so every bucket in [from, to)
+	// emits a row — buckets with no matching pieces (e.g. a SKU not produced that hour) come
+	// back as 0 instead of being dropped, giving a fixed-width bar series per bucket size.
+	// (generate_series + time_bucket, not time_bucket_gapfill — gapfill rejects bind params
+	// for its start/finish under pgx's parameterized queries.)
 	query := fmt.Sprintf(`
+		WITH grid AS (
+			SELECT generate_series(
+				time_bucket('%[1]s'::interval, $2::timestamptz),
+				time_bucket('%[1]s'::interval, $3::timestamptz),
+				'%[1]s'::interval
+			) AS bucket
+		)
 		SELECT
-			time_bucket('%s'::interval, timestamp) AS bucket,
-			COALESCE(SUM(%s), 0)                    AS count
-		FROM telemetry_raw
-		WHERE machine_id = $1
-		  AND timestamp >= $2
-		  AND timestamp <= $3
-		  AND data ? 'good'
-		%s
-		GROUP BY bucket
-		ORDER BY bucket ASC
+			g.bucket,
+			COALESCE(SUM(%[2]s), 0) AS count
+		FROM grid g
+		LEFT JOIN telemetry_raw t
+			ON time_bucket('%[1]s'::interval, t.timestamp) = g.bucket
+		   AND t.machine_id = $1
+		   AND t.timestamp >= $2
+		   AND t.timestamp < $3
+		   AND t.data ? 'good'
+		%[3]s
+		GROUP BY g.bucket
+		ORDER BY g.bucket ASC
 	`, interval, expr, skuFilter)
 
 	rows, err := database.Pool.Query(ctx, query, args...)
 	if err != nil {
-		return []BucketCount{}, nil
+		return nil, err
 	}
 	defer rows.Close()
 

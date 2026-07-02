@@ -440,6 +440,10 @@ const ANALYTICAL_RE = /trend|analy|predict|forecast|how'?s it doing|over time|hi
 // widget on an analytical question, also inject the exact series it's rendering.
 function buildDashboardContext(text = '', focusedIds: string[] = []): string {
   const analytical = ANALYTICAL_RE.test(text);
+  // When the user has clicked/mentioned specific widgets, scope the context to just
+  // those. Otherwise a salient sibling (e.g. a "Trend" line-chart's current value)
+  // pulls the model off the widget the user actually focused. No focus → send all.
+  const inScope = (id: string) => !focusedIds.length || focusedIds.includes(id);
   // For a focused chart/count widget on an analytical question, append the exact
   // series the widget already rendered (from widget-view-state) so the AI reads
   // on-screen data with no tool call. Empty for anything else.
@@ -464,7 +468,9 @@ function buildDashboardContext(text = '', focusedIds: string[] = []): string {
   const widgets = card?.result?.widgets ?? [];
   if (widgets.length) {
     const lines = widgets.map((w: any, i: number) => {
-      const parts = [`- ${w.type} "${w.title || ''}" — machine ${w.machine}`];
+      if (!inScope(`preview-${i}`)) return null;
+      const focus = focusedIds.includes(`preview-${i}`) ? '[FOCUSED] ' : '';
+      const parts = [`- ${focus}${w.type} "${w.title || ''}" — machine ${w.machine}`];
       if (w.machineUuid) {
 
           const val = telemetryStore.getFieldValue(w.machineUuid, w.metric);
@@ -482,7 +488,7 @@ function buildDashboardContext(text = '', focusedIds: string[] = []): string {
       if (w.sku) parts.push(`sku ${w.sku}`);
       if (w.status) parts.push(`status ${w.status}`);
       return parts.join(', ') + windowLine(`preview-${i}`) + seriesLine(`preview-${i}`, w.type);
-    });
+    }).filter(Boolean);
     const label = card.kind === 'dashboard' ? 'Active dashboard' : 'Current dashboard preview';
     return `${label} "${card.result.dashboardName}" on screen:\n${lines.join('\n')}`;
   }
@@ -492,7 +498,9 @@ function buildDashboardContext(text = '', focusedIds: string[] = []): string {
   const focusWidgets = focusCard?.result?.widgets ?? [];
   if (focusWidgets.length) {
     const lines = focusWidgets.map((w: any, i: number) => {
-      const parts = [`- ${w.type} "${w.title || ''}" — machine ${w.machine}`];
+      if (!inScope(`preview-${i}`)) return null;
+      const focus = focusedIds.includes(`preview-${i}`) ? '[FOCUSED] ' : '';
+      const parts = [`- ${focus}${w.type} "${w.title || ''}" — machine ${w.machine}`];
       if (w.metric) {
         parts.push(`metric ${w.metric}`);
         if (w.machineUuid) {
@@ -507,7 +515,7 @@ function buildDashboardContext(text = '', focusedIds: string[] = []): string {
       if (w.sku) parts.push(`sku ${w.sku}`);
       if (w.status) parts.push(`status ${w.status}`);
       return parts.join(', ') + windowLine(`preview-${i}`) + seriesLine(`preview-${i}`, w.type);
-    });
+    }).filter(Boolean);
     return `Metric focus card on screen (call show_metric to highlight/refresh):\n${lines.join('\n')}`;
   }
 
@@ -515,7 +523,9 @@ function buildDashboardContext(text = '', focusedIds: string[] = []): string {
   const live = dashboardStore.widgets;
   if (live.length) {
     const lines = live.map((w: any) => {
-      const parts = [`- ${w.widgetType} "${w.title || ''}"`];
+      if (!inScope(w.id)) return null;
+      const focus = focusedIds.includes(w.id) ? '[FOCUSED] ' : '';
+      const parts = [`- ${focus}${w.widgetType} "${w.title || ''}"`];
       const uuid = w.machineId || w.machine?.id;
       if (w.machine?.name) parts.push(`machine ${w.machine.name}`);
       if (w.config?.field) {
@@ -532,7 +542,7 @@ function buildDashboardContext(text = '', focusedIds: string[] = []): string {
       if (w.config?.sku) parts.push(`sku ${w.config.sku}`);
       if (w.config?.status) parts.push(`status ${w.config.status}`);
       return parts.join(', ') + windowLine(w.id) + seriesLine(w.id, w.widgetType);
-    });
+    }).filter(Boolean);
     return `Dashboard "${dashboardStore.currentDashboard?.name ?? ''}" is active on screen with widgets:\n${lines.join('\n')}`;
   }
 
@@ -657,11 +667,20 @@ async function sendMessage() {
       }
       if (msg.toolName === 'preview_update_widget') {
         const r = msg.toolResult as any;
-        const previewCard = canvasCards.value.find(c => c.kind === 'preview' || c.kind === 'dashboard') as any;
+        const previewCard = canvasCards.value.find(c => c.kind === 'preview' || c.kind === 'focus' || c.kind === 'dashboard') as any;
         if (r?.widgetTitle && r.changes && previewCard) {
           const idx = findPreviewWidgetIdx(previewCard, r.widgetTitle);
           if (idx >= 0) {
-            Object.assign(previewCard.result.widgets[idx], r.changes);
+            const changes = { ...r.changes };
+            // Canonicalize SKU casing against the machine's real SKUs so the chip shows the
+            // stored value (e.g. "CW-1001") regardless of how the user typed it to the AI.
+            const machineUuid = previewCard.result.widgets[idx]?.machineUuid;
+            if (changes.sku && machineUuid) {
+              const skus = await api.getMachineSkus(machineUuid).catch(() => [] as string[]);
+              const canon = skus.find(s => s.toLowerCase() === String(changes.sku).toLowerCase());
+              if (canon) changes.sku = canon;
+            }
+            Object.assign(previewCard.result.widgets[idx], changes);
             // Flash the edited widget so the change is visible. Clear first so re-editing
             // the same widget still triggers the highlight watch; set after the remount settles.
             previewHighlightId.value = undefined;

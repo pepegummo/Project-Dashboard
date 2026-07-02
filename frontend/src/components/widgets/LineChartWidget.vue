@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted, type Ref } from 'vue';
 import VChart from 'vue-echarts';
 import type { EChartsOption } from 'echarts';
 import type { DashboardWidget } from '@/types';
@@ -48,6 +48,38 @@ watch(endDateTime, v => {
   localStorage.setItem(storageKeyEnd, v);
   widgetViewStateStore.setDatetime(props.widget.id, startDateTime.value, v);
 });
+
+// invalidRange drives the warning. Native min/max on the inputs blocks bad dates,
+// but not times on the same day (the native picker can't constrain time), so a
+// user can still pick start >= end — show a warning rather than silently reverting.
+// String compare is chronological for the fixed-width "YYYY-MM-DDTHH:mm" format.
+const invalidRange = computed(() =>
+  !liveMode.value && !!startDateTime.value && !!endDateTime.value && startDateTime.value >= endDateTime.value,
+);
+
+// ── Split date/time controls ─────────────────────────────────────────────────
+// Native datetime-local shows locale 12h time (midnight = "12 AM"). Use a native
+// date input + custom 24h hour/minute <select>s (00–23 / 00–59) instead.
+// startDateTime/endDateTime stay canonical; these read/write their date/hour/minute
+// parts. Same-day overlaps aren't blocked here — invalidRange flags them.
+const HOURS = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
+const MINUTES = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0'));
+
+function dtParts(dt: string) {
+  const [date, time = '00:00'] = dt.split('T');
+  const [h = '00', m = '00'] = time.split(':');
+  return { date, h, m };
+}
+const splitField = (r: Ref<string>, key: 'date' | 'h' | 'm') => computed({
+  get: () => dtParts(r.value)[key],
+  set: (v: string) => { const p = dtParts(r.value); p[key] = v; r.value = `${p.date}T${p.h}:${p.m}`; },
+});
+const startDate = splitField(startDateTime, 'date');
+const startHour = splitField(startDateTime, 'h');
+const startMin  = splitField(startDateTime, 'm');
+const endDate = splitField(endDateTime, 'date');
+const endHour = splitField(endDateTime, 'h');
+const endMin  = splitField(endDateTime, 'm');
 
 onMounted(() => {
   widgetViewStateStore.setDatetime(props.widget.id, startDateTime.value, endDateTime.value);
@@ -418,22 +450,42 @@ const option = computed<EChartsOption>(() => {
 
       <!-- Date range / Live toggle row -->
       <div class="flex items-center gap-1 px-1 pb-0.5 flex-shrink-0 flex-wrap text-[9px] text-gray-400">
-        <!-- Historical datetime picker -->
+        <!-- Historical date picker (native) + 24h time selects (custom) -->
         <template v-if="!liveMode">
           <span>From</span>
           <input
-            v-model="startDateTime"
-            type="datetime-local"
+            v-model="startDate"
+            type="date"
+            :max="endDate"
             class="bg-surface-300 text-gray-200 rounded px-1 py-0.5 border border-gray-700 focus:outline-none focus:border-blue-500 text-[9px]"
             style="color-scheme: dark"
           />
+          <select v-model="startHour" class="bg-surface-300 text-gray-200 rounded px-1 py-0.5 border border-gray-700 focus:outline-none focus:border-blue-500 text-[9px]">
+            <option v-for="h in HOURS" :key="h" :value="h">{{ h }}</option>
+          </select>
+          <span>:</span>
+          <select v-model="startMin" class="bg-surface-300 text-gray-200 rounded px-1 py-0.5 border border-gray-700 focus:outline-none focus:border-blue-500 text-[9px]">
+            <option v-for="m in MINUTES" :key="m" :value="m">{{ m }}</option>
+          </select>
           <span>To</span>
           <input
-            v-model="endDateTime"
-            type="datetime-local"
+            v-model="endDate"
+            type="date"
+            :min="startDate"
             class="bg-surface-300 text-gray-200 rounded px-1 py-0.5 border border-gray-700 focus:outline-none focus:border-blue-500 text-[9px]"
             style="color-scheme: dark"
           />
+          <select v-model="endHour" class="bg-surface-300 text-gray-200 rounded px-1 py-0.5 border border-gray-700 focus:outline-none focus:border-blue-500 text-[9px]">
+            <option v-for="h in HOURS" :key="h" :value="h">{{ h }}</option>
+          </select>
+          <span>:</span>
+          <select v-model="endMin" class="bg-surface-300 text-gray-200 rounded px-1 py-0.5 border border-gray-700 focus:outline-none focus:border-blue-500 text-[9px]">
+            <option v-for="m in MINUTES" :key="m" :value="m">{{ m }}</option>
+          </select>
+          <span
+            v-if="invalidRange"
+            class="flex items-center gap-1 px-1.5 py-0.5 rounded text-red-400 font-medium bg-red-500/15 border border-red-500/30"
+          >⚠ Start must be before End</span>
         </template>
 
         <!-- Live mode badge -->
