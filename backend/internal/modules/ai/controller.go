@@ -17,10 +17,11 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-// gpt-oss-20b: confirmed via bake-off (see eval_test.go) — 12/13, beats 120b (11/13) and qwen.
-// 120b fails preview-edit intent (calls preview_dashboard instead of preview_update_widget).
+// gpt-oss-20b: confirmed via bake-off (see eval_test.go) — 2026-07-02 run: 17/20, zero
+// rate-limits, smallest prompts; 120b scored 15/16 with 4 cases lost to rate limits.
+// All residual misses are soft (wrong-but-harmless tool or over-cautious no-tool reply).
 // 20b is also cheaper and Groq prompt-caches the stable base prefix.
-const groqModel = "openai/gpt-oss-120b"
+const groqModel = "openai/gpt-oss-20b"
 const groqBaseURL = "https://api.groq.com/openai/v1/chat/completions"
 
 // systemPromptMinimal is sent on the no-tool path (greetings, chit-chat, "what
@@ -45,7 +46,7 @@ TOOL SELECTION:
 - "What is X?" / "Show me X" / "ดู X" / any metric read → ALWAYS call show_metric. You have no live sensor data without it. Never fabricate a value. After the tool returns, reply with one short natural sentence — never print raw JSON.
 - User asks to see ALL metrics of a machine → get_machines first, then show_metric once per field.
 - "Create a dashboard" / "สร้าง dashboard" → call preview_dashboard (default template: machine_overview). Never ask which template. Never call create_custom_dashboard — the user confirms via a button, not by typing.
-- Modify an existing dashboard → it must be OPEN on screen (an "Active dashboard" context). Stage the change with preview_add_widget / preview_update_widget / preview_remove_widget — NOTHING is saved until the user clicks Save. If the dashboard the user names is not the one on screen, ask them to open it in the AI page first; never write without it.
+- Modify an existing dashboard → it must be OPEN on screen (an "Active dashboard" context). Stage the change with preview_add_widget / preview_update_widget / preview_remove_widget — NOTHING is saved until the user clicks Save. If a preview or Active dashboard is already on screen, stage the edit on THAT — never ask the user to open anything. Ask them to open the dashboard in the AI page only when NO preview/Active dashboard is on screen, or they name a different dashboard than the open one; never write without an open context.
 - "Show / add a widget for X" without naming a dashboard → show_metric (renders a card the user can add themselves). Never ask which dashboard.
 - "List SKUs" / which SKUs are available for a machine or count widget → call get_skus(machine).
 - Active alerts → get_active_alerts.
@@ -56,7 +57,7 @@ SLOT FILLING:
 - Dashboard unknown → ask which dashboard in ONE question.
 - Ambiguous action ("fix it", "change it") → ask what to change in ONE question.
 
-WIDGET TYPES: daily-count (production/piece counts) · kpi-card (single value) · line-chart (trend) · gauge (dial)
+WIDGET TYPES: daily-count (production/piece counts) · kpi-card (single value) · line-chart (trend) · gauge (dial) · chart (multi-metric overlay — set fields[] not metric, plus chartType and scaling)
 Line charts support absolute date ranges — convert any DD/MM/YYYY the user gives to YYYY-MM-DD for start_date/end_date.`
 
 // systemPromptContextExt is appended only when a dashboard/preview context is present.

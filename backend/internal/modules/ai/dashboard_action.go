@@ -189,6 +189,23 @@ func (a *DashboardAction) Handle(ctx context.Context, orgID, userID string, rawA
 					cfg["status"] = pw.Status
 				}
 			}
+			if pw.Type == "chart" {
+				if len(pw.Fields) > 0 {
+					cfg["fields"] = pw.Fields
+				}
+				if pw.ChartType != "" {
+					cfg["chartType"] = pw.ChartType
+				}
+				if pw.Points != 0 {
+					cfg["points"] = pw.Points
+				}
+				if pw.Scaling != "" {
+					cfg["scaling"] = pw.Scaling
+				}
+				if pw.Bucket != "" {
+					cfg["bucket"] = pw.Bucket
+				}
+			}
 			cfgJSON, _ := json.Marshal(cfg)
 			var mid *string
 			if pw.MachineUUID != "" {
@@ -279,6 +296,10 @@ func (a *DashboardAction) PreviewAddWidget(ctx context.Context, orgID string, ra
 		Bucket:      args.Widget.Bucket,
 		Sku:         args.Widget.Sku,
 		Status:      args.Widget.Status,
+		Fields:      args.Widget.Fields,
+		ChartType:   args.Widget.ChartType,
+		Points:      args.Widget.Points,
+		Scaling:     args.Widget.Scaling,
 	}
 	if args.Widget.Min != nil {
 		pw.Min = *args.Widget.Min
@@ -306,6 +327,10 @@ func (a *DashboardAction) PreviewUpdateWidget(ctx context.Context, orgID string,
 		Bucket      string   `json:"bucket"`
 		SKU         string   `json:"sku"`
 		Status      string   `json:"status"`
+		Fields      []string `json:"fields"`
+		ChartType   string   `json:"chartType"`
+		Points      int      `json:"points"`
+		Scaling     string   `json:"scaling"`
 	}
 	if err := json.Unmarshal(rawArgs, &args); err != nil {
 		return nil, middleware.NewAppError(400, "VALIDATION_ERROR", "Malformed tool arguments")
@@ -356,6 +381,18 @@ func (a *DashboardAction) PreviewUpdateWidget(ctx context.Context, orgID string,
 	}
 	if s := strings.TrimSpace(args.Status); s != "" {
 		changes["status"] = s
+	}
+	if len(args.Fields) > 0 {
+		changes["fields"] = args.Fields
+	}
+	if c := strings.TrimSpace(args.ChartType); c != "" {
+		changes["chartType"] = c
+	}
+	if args.Points != 0 {
+		changes["points"] = args.Points
+	}
+	if s := strings.TrimSpace(args.Scaling); s != "" {
+		changes["scaling"] = s
 	}
 
 	return map[string]any{

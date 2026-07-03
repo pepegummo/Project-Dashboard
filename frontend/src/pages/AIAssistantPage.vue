@@ -155,6 +155,12 @@ function toPreviewWidgets(dbWidgets: DashboardWidget[]) {
     ...(w.config.bucket ? { bucket: w.config.bucket as string } : {}),
     ...(w.config.sku    ? { sku:    w.config.sku    as string } : {}),
     ...(w.config.status ? { status: w.config.status as 'all' | 'good' | 'reject' } : {}),
+    ...(w.widgetType === 'chart' ? {
+      fields:    (w.config.fields as string[]) ?? [],
+      chartType: w.config.chartType,
+      points:    w.config.points,
+      scaling:   w.config.scaling,
+    } : {}),
   }));
 }
 
@@ -185,6 +191,12 @@ async function saveDashboardCard(card: any, layouts: Record<string, WidgetLayout
         ...(pw.status        ? { status:       pw.status        } : {}),
         ...(pw.startDateTime ? { startDateTime:pw.startDateTime } : {}),
         ...(pw.endDateTime   ? { endDateTime:  pw.endDateTime   } : {}),
+        ...(pw.type === 'chart' ? {
+          fields: pw.fields ?? [],
+          ...(pw.chartType ? { chartType: pw.chartType } : {}),
+          ...(pw.points !== undefined ? { points: pw.points } : {}),
+          ...(pw.scaling ? { scaling: pw.scaling } : {}),
+        } : {}),
       };
       if (pw.widgetId) {
         await api.updateWidget(dashboardId, pw.widgetId, { widgetType: pw.type, machineId: pw.machineUuid, title: pw.title, config } as any);

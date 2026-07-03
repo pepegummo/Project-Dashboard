@@ -1,7 +1,7 @@
 package ai
 
 var allowedWidgetTypes = []string{
-	"line-chart", "gauge", "kpi-card", "status-card", "table", "alarm-panel", "daily-count",
+	"line-chart", "gauge", "kpi-card", "status-card", "table", "alarm-panel", "daily-count", "chart",
 }
 
 // machineIDProp is the shared schema for a required machine_id slot. Read-only and
@@ -16,16 +16,20 @@ var widgetItemSchema = map[string]any{
 	"type":     "object",
 	"required": []string{"type"},
 	"properties": map[string]any{
-		"type":       map[string]any{"type": "string", "description": "Widget type. Use 'daily-count' for production/piece counts, 'kpi-card' for single numeric metric, 'line-chart' for trend, 'gauge' for dials."},
+		"type":       map[string]any{"type": "string", "description": "Widget type. Use 'daily-count' for production/piece counts, 'kpi-card' for single numeric metric, 'line-chart' for trend, 'gauge' for dials, 'chart' for a multi-metric overlay chart (set 'fields' array, not 'metric')."},
 		"title":      map[string]any{"type": "string"},
 		"machine_id": map[string]any{"type": "string"},
 		"metric":     map[string]any{"type": "string"},
 		"min":        map[string]any{"type": "number"},
 		"max":        map[string]any{"type": "number"},
 		"unit":       map[string]any{"type": "string"},
-		"bucket":     map[string]any{"type": "string", "description": "Time bucket size for daily-count widgets, e.g. '30m', '1h', '1d'."},
+		"bucket":     map[string]any{"type": "string", "description": "Time bucket size for daily-count and chart widgets, e.g. '30m', '1h', '1d'."},
 		"sku":        map[string]any{"type": "string", "description": "SKU filter for daily-count widgets (empty = all SKUs)."},
 		"status":     map[string]any{"type": "string", "enum": []string{"all", "good", "reject"}, "description": "Piece status filter for daily-count widgets."},
+		"fields":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Chart widget: metric field keys to overlay (e.g. ['speed','throughput'])."},
+		"chartType":  map[string]any{"type": "string", "enum": []string{"line", "bar", "area"}, "description": "Chart widget render style."},
+		"points":     map[string]any{"type": "integer", "description": "Chart widget: number of buckets/bars to show (window = bucket × points)."},
+		"scaling":    map[string]any{"type": "string", "enum": []string{"shared", "dual", "normalized"}, "description": "Chart widget y-axis scaling. Use 'normalized' when overlaying 3+ fields or mixed units."},
 	},
 }
 
@@ -175,9 +179,13 @@ var PreviewUpdateWidgetTool = map[string]any{
 			"max":          map[string]any{"type": "number"},
 			"start_date":   map[string]any{"type": "string", "description": "Absolute window start as YYYY-MM-DD (chart widgets). Convert any DD/MM/YYYY the user gives."},
 			"end_date":     map[string]any{"type": "string", "description": "Absolute window end as YYYY-MM-DD (chart widgets)."},
-			"bucket":       map[string]any{"type": "string", "description": "Time bucket size for count widgets, e.g. '25m', '1h', '1d'. Format: <number><m|h|d>."},
+			"bucket":       map[string]any{"type": "string", "description": "Time bucket size for count/chart widgets, e.g. '25m', '1h', '1d'. Format: <number><m|h|d>."},
 			"sku":          map[string]any{"type": "string", "description": "SKU filter for count widgets (empty = all SKUs)."},
 			"status":       map[string]any{"type": "string", "enum": []string{"all", "good", "reject"}, "description": "Piece status filter for count widgets."},
+			"fields":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Chart widget: replace the overlaid metric field keys, e.g. ['speed','throughput']."},
+			"chartType":    map[string]any{"type": "string", "enum": []string{"line", "bar", "area"}, "description": "Chart widget render style."},
+			"points":       map[string]any{"type": "integer", "description": "Chart widget: number of buckets/bars to show."},
+			"scaling":      map[string]any{"type": "string", "enum": []string{"shared", "dual", "normalized"}, "description": "Chart widget y-axis scaling."},
 		},
 	},
 }
@@ -222,6 +230,10 @@ type ToolWidget struct {
 	Bucket    string   `json:"bucket,omitempty"`
 	Sku       string   `json:"sku,omitempty"`
 	Status    string   `json:"status,omitempty"`
+	Fields    []string `json:"fields,omitempty"`    // chart widget: metric keys to overlay
+	ChartType string   `json:"chartType,omitempty"` // chart widget: line | bar | area
+	Points    int      `json:"points,omitempty"`    // chart widget: number of buckets/bars
+	Scaling   string   `json:"scaling,omitempty"`   // chart widget: shared | dual | normalized
 }
 
 // TemplateDashboardArgs is the minimal payload for preview/create via template.
@@ -271,9 +283,13 @@ type PreviewWidget struct {
 	Max           float64 `json:"max,omitempty"`
 	StartDateTime string  `json:"startDateTime,omitempty"` // absolute window start (datetime-local) for chart widgets
 	EndDateTime   string  `json:"endDateTime,omitempty"`
-	Bucket        string         `json:"bucket,omitempty"` // count widget: bucket size, e.g. "30m"
+	Bucket        string         `json:"bucket,omitempty"` // count/chart widget: bucket size, e.g. "30m"
 	Sku           string         `json:"sku,omitempty"`    // count widget: SKU filter ("" = all)
 	Status        string         `json:"status,omitempty"` // count widget: all | good | reject
+	Fields        []string       `json:"fields,omitempty"`    // chart widget: metric keys to overlay
+	ChartType     string         `json:"chartType,omitempty"` // chart widget: line | bar | area
+	Points        int            `json:"points,omitempty"`    // chart widget: number of buckets/bars
+	Scaling       string         `json:"scaling,omitempty"`   // chart widget: shared | dual | normalized
 	Layout        map[string]any `json:"layout,omitempty"` // optional grid position from preview
 }
 

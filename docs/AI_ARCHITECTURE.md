@@ -19,7 +19,7 @@ All references below point at the real code under `backend/internal/modules/ai/`
 | **UI** | Vue 3 chat page; sends the message plus the on-screen dashboard/widget context | `frontend/src/pages/AIAssistantPage.vue`, `frontend/src/services/api.service.ts` |
 | **API / Backend** | Fiber routes under `/api/ai` (JWT-gated); the `Chat` handler orchestrates the tool loop | `routes.go`, `controller.go` |
 | **Tool layer** | read / preview / write tools exposed to the model (`AllTools()`); a dispatch switch runs each against the DB | `schema.go`, `tool_actions.go`, `dashboard_action.go` |
-| **LLM (external)** | Groq, OpenAI-compatible chat-completions API | `https://api.groq.com/openai/v1/chat/completions`, model `openai/gpt-oss-120b` |
+| **LLM (external)** | Groq, OpenAI-compatible chat-completions API | `https://api.groq.com/openai/v1/chat/completions`, model `openai/gpt-oss-20b` |
 | **Database** | TimescaleDB / Postgres — telemetry + dashboards + AI conversation history | shared `database.Pool` |
 
 **External services / secrets:** the only AI secret is `GROQ_API_KEY` (`config/env.go`).
@@ -79,7 +79,7 @@ flowchart LR
     end
 
     subgraph External
-        GROQ["Groq LLM<br/>openai/gpt-oss-120b"]
+        GROQ["Groq LLM<br/>openai/gpt-oss-20b"]
     end
 
     subgraph Data["TimescaleDB / Postgres"]
@@ -325,8 +325,8 @@ free-tier rate-limit victim (6 of 20 lost).
 | Model | Score | Completed / 20 | Avg prompt tok/call | Verdict |
 |-------|-------|----------------|---------------------|---------|
 | `qwen/qwen3-32b` | **13 / 14** | 14 (6 ⏳) | ~2,930 | **replaced** — heaviest tokens, most rate-limited |
-| `openai/gpt-oss-20b` | **17 / 20** | 20 (0 ⏳) | ~2,450 | **recommended** — cheapest, completed clean, only soft misses |
-| `openai/gpt-oss-120b` | **15 / 16** | 16 (4 ⏳) | ~2,460 | **currently live** (`controller.go:23`) |
+| `openai/gpt-oss-20b` | **17 / 20** | 20 (0 ⏳) | ~2,450 | **now live** (`controller.go:23`) — cheapest, completed clean, only soft misses |
+| `openai/gpt-oss-120b` | **15 / 16** | 16 (4 ⏳) | ~2,460 | previous default, replaced by `20b` |
 
 #### Full per-case results
 
@@ -400,20 +400,19 @@ zero rate-limits, at the lowest token cost, and every one of its misses is soft.
 - **Tool calling** — all candidates support OpenAI-compatible function calling, which is
   why the OpenAI-compatible Groq endpoint is used unchanged.
 
-### Open decision (documented honestly)
+### Decision (applied)
 
-There is a live discrepancy worth flagging: the **code runs `openai/gpt-oss-120b`**
-(`controller.go:23`), while the bake-off **and** the code comment above the constant point to
-`gpt-oss-20b`. With the direct-write tools now retired, the old decisive argument (120b's
-destructive mis-route) is **moot** — no model can make that mistake any more. The case for
-`20b` now rests on **cost and cache-friendliness at parity intent quality**: it is the
-cheapest and, in this run, completed all 20 cases cleanly with only soft misses. **The data
-still supports switching the live constant to `openai/gpt-oss-20b`** — a one-line change
-(`controller.go:23`).
+Both follow-ups from this run have been applied (2026-07-03):
 
-A separate prompt follow-up surfaced by this run: scope the "ask the user to open the
-dashboard" rule so it does **not** fire when a preview/active-dashboard context is already on
-screen (it caused `20b`'s #10 miss).
+- The live constant (`controller.go:23`) now runs **`openai/gpt-oss-20b`**. With the
+  direct-write tools retired, the old decisive argument (120b's destructive mis-route) was
+  moot; the case for `20b` rests on **cost and cache-friendliness at parity intent quality**
+  — cheapest, and the only model that completed all 20 cases with zero rate-limits and only
+  soft misses.
+- The "ask the user to open the dashboard" rule in `systemPromptBase` is now **scoped**: it
+  fires only when no preview/Active-dashboard context is on screen (or the user names a
+  different dashboard), fixing the prompt side-effect behind `20b`'s #10 miss. Re-run
+  `TestBakeOff` to confirm the case now passes.
 
 > Reproduce: `GROQ_API_KEY=… go test ./internal/modules/ai/ -run TestBakeOff -v -timeout 1200s`.
 > The harness sleeps 10 s between cases and prints a per-model scoreboard. Because it hits

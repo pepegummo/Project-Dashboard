@@ -13,6 +13,7 @@ interface PreviewWidget {
   metric: string; unit: string; min?: number; max?: number;
   startDateTime?: string; endDateTime?: string;
   bucket?: string; sku?: string; status?: 'all' | 'good' | 'reject';
+  fields?: string[]; chartType?: 'line' | 'bar' | 'area'; points?: number; scaling?: 'shared' | 'dual' | 'normalized';
   widgetId?: string;
   layout?: WidgetLayout;
 }
@@ -109,6 +110,12 @@ const previewWidgets = computed<DashboardWidget[]>(() =>
         ...(w.bucket ? { bucket: w.bucket } : {}),
         ...(w.sku ? { sku: w.sku } : {}),
         ...(w.status ? { status: w.status } : {}),
+        ...(w.type === 'chart' ? {
+          fields: w.fields ?? [],
+          ...(w.chartType ? { chartType: w.chartType } : {}),
+          ...(w.points !== undefined ? { points: w.points } : {}),
+          ...(w.scaling ? { scaling: w.scaling } : {}),
+        } : {}),
       },
       machineId: w.machineUuid || undefined,
       machine: w.machine ? { id: w.machineUuid || '', name: w.machine, type: 'sensor' as any, fields: [] } : undefined,
@@ -206,6 +213,16 @@ function onSaveWidget(data: { machineId?: string; widgetType: WidgetType; title?
     pw.bucket = (data.config.bucket as string) ?? '';
     pw.sku = (data.config.sku as string) ?? '';
     pw.status = (data.config.status as 'all' | 'good' | 'reject') ?? 'all';
+  }
+
+  // Custom chart: set fields/chartType/points/scaling/bucket explicitly so an edit
+  // (via update-widget Object.assign) overwrites prior values.
+  if (data.widgetType === 'chart') {
+    pw.fields = (data.config.fields as string[]) ?? [];
+    pw.chartType = (data.config.chartType as 'line' | 'bar' | 'area') ?? 'line';
+    pw.points = (data.config.points as number) ?? 20;
+    pw.scaling = (data.config.scaling as 'shared' | 'dual' | 'normalized') ?? 'shared';
+    pw.bucket = (data.config.bucket as string) ?? '';
   }
 
   if (editingPreviewIdx.value === -1) {
