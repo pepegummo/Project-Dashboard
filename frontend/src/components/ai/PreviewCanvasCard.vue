@@ -59,7 +59,6 @@ watch(
 
 const localName = ref(props.result.dashboardName);
 
-const localLayouts = ref<Record<string, WidgetLayout>>({});
 // preview widget id -> the exact mention token appended to the AI input (so removal is exact)
 const selected = ref<Record<string, string>>({});
 const selectedIds = computed(() => [
@@ -87,10 +86,7 @@ function buildAllLayouts(): Record<string, WidgetLayout> {
     return Object.fromEntries(fromGrid.map(({ id, layout }) => [id, layout]));
   }
   return Object.fromEntries(
-    props.result.widgets.map((_, i) => {
-      const id = `preview-${i}`;
-      return [id, localLayouts.value[id] ?? flowLayout(i)];
-    })
+    props.result.widgets.map((w, i) => [`preview-${i}`, w.layout ?? flowLayout(i)])
   );
 }
 
@@ -102,7 +98,7 @@ const previewWidgets = computed<DashboardWidget[]>(() =>
       dashboardId: 'preview',
       widgetType: w.type as DashboardWidget['widgetType'],
       title: w.title || (w.machine ? `${w.machine}${w.metric ? ' — ' + w.metric : ''}` : w.type),
-      layout: localLayouts.value[id] ?? w.layout ?? flowLayout(i),
+      layout: w.layout ?? flowLayout(i),
       config: {
         field: w.metric || '',
         unit: w.unit || '',
@@ -121,8 +117,19 @@ const previewWidgets = computed<DashboardWidget[]>(() =>
   })
 );
 
-function onLayoutChange(layouts: Array<{ id: string; layout: WidgetLayout }>) {
-  for (const { id, layout } of layouts) localLayouts.value[id] = layout;
+// Write drag positions into card state so they flow into the page's undo history
+// and draft persistence. Programmatic changes (remount compaction, undo restores)
+// are skipped — recording them would pollute the history stack.
+function onLayoutChange(layouts: Array<{ id: string; layout: WidgetLayout }>, programmatic: boolean) {
+  if (programmatic) return;
+  for (const { id, layout } of layouts) {
+    const w = props.result.widgets[parseInt(id.replace('preview-', ''), 10)];
+    if (!w) continue;
+    const l = w.layout;
+    if (!l || l.x !== layout.x || l.y !== layout.y || l.w !== layout.w || l.h !== layout.h) {
+      w.layout = { ...layout };
+    }
+  }
 }
 
 function onSelectPreviewWidget(widget: DashboardWidget) {
@@ -158,10 +165,7 @@ function onEditPreviewWidget(widget: DashboardWidget) {
 
 function onRemovePreviewWidget(widgetId: string) {
   const idx = parseInt(widgetId.replace('preview-', ''), 10);
-  if (!isNaN(idx)) {
-    delete localLayouts.value[widgetId];
-    emit('remove-widget', idx);
-  }
+  if (!isNaN(idx)) emit('remove-widget', idx);
 }
 
 function onAddWidget(type: WidgetType) {
@@ -208,7 +212,6 @@ function onSaveWidget(data: { machineId?: string; widgetType: WidgetType; title?
     emit('add-widget', pw);
   } else {
     emit('update-widget', editingPreviewIdx.value, pw);
-    delete localLayouts.value[`preview-${editingPreviewIdx.value}`];
   }
   showConfigModal.value = false;
   editingWidget.value = null;
@@ -251,6 +254,7 @@ function onSaveWidget(data: { machineId?: string; widgetType: WidgetType; title?
           :widgets="previewWidgets"
           :selected-ids="selectedIds"
           :highlighted-id="props.highlightId"
+          :sync-layout="true"
           @edit-widget="onEditPreviewWidget"
           @remove-widget="onRemovePreviewWidget"
           @select-widget="onSelectPreviewWidget"

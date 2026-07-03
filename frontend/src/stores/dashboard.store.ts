@@ -78,8 +78,15 @@ export const useDashboardStore = defineStore('dashboards', () => {
     if (!currentDashboard.value) return;
     const dashId = currentDashboard.value.id;
     await api.updateWidget(dashId, widgetId, payload);
-    // Re-fetch to get fresh joined machine data and trigger widget remount
-    currentDashboard.value = await api.getDashboard(dashId);
+    // Re-fetch to get fresh joined machine data and trigger widget remount,
+    // but keep unsaved local layouts (drags are client-buffered until Save).
+    const prevLayouts = new Map((currentDashboard.value.widgets ?? []).map(w => [w.id, w.layout]));
+    const fresh = await api.getDashboard(dashId);
+    (fresh.widgets ?? []).forEach(w => {
+      const l = prevLayouts.get(w.id);
+      if (l) w.layout = l;
+    });
+    currentDashboard.value = fresh;
   }
 
   async function saveLayout(widgetLayouts: Array<{ id: string; layout: WidgetLayout }>) {

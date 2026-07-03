@@ -13,9 +13,11 @@ const props = withDefaults(defineProps<{
   readonly?: boolean;
   highlightedId?: string;
   selectedIds?: string[];
-}>(), { readonly: false });
+  /** Sync widget.layout prop changes into mounted grid nodes (enables prop-driven layout restore). */
+  syncLayout?: boolean;
+}>(), { readonly: false, syncLayout: false });
 const emit = defineEmits<{
-  'layout-change': [layouts: Array<{ id: string; layout: WidgetLayout }>];
+  'layout-change': [layouts: Array<{ id: string; layout: WidgetLayout }>, programmatic: boolean];
   'edit-widget': [widget: DashboardWidget];
   'remove-widget': [widgetId: string];
   'select-widget': [widget: DashboardWidget];
@@ -24,6 +26,10 @@ const emit = defineEmits<{
 const gridRef = ref<HTMLElement | null>(null);
 let grid: GridStack | null = null;
 const mountedApps = new Map<string, App>();
+
+// GridStack fires 'change' on programmatic updates (grid.update / removeWidget compaction)
+// too — this flag lets listeners tell those apart from user drags/resizes.
+let programmatic = false;
 
 // Fingerprint tracks non-layout props so we know when to remount a widget
 const fingerprints = new Map<string, string>();
@@ -70,7 +76,7 @@ onMounted(async () => {
         id: String(node.id),
         layout: { x: node.x ?? 0, y: node.y ?? 0, w: node.w ?? 6, h: node.h ?? 4 },
       }));
-    emit('layout-change', layouts);
+    emit('layout-change', layouts, programmatic);
   });
 });
 
@@ -184,6 +190,7 @@ watch(
   () => props.widgets,
   async (newWidgets, oldWidgets) => {
     if (!grid) return;
+    programmatic = true;
 
     const newMap = new Map(newWidgets.map(w => [w.id, w]));
 
@@ -215,6 +222,29 @@ watch(
         }
       }
     }
+
+    // ── Layout sync (opt-in) ──────────────────────────────────────────────
+    // Push widget.layout prop changes into mounted nodes so restoring layouts
+    // in reactive state (undo/redo) visibly moves the grid.
+    if (props.syncLayout) {
+      const updates: Array<[HTMLElement, WidgetLayout]> = [];
+      for (const widget of newWidgets) {
+        const node = grid.engine?.nodes?.find(n => String(n.id) === widget.id);
+        if (!node) continue;
+        const l = widget.layout;
+        if (node.x !== l.x || node.y !== l.y || node.w !== l.w || node.h !== l.h) {
+          const el = gridRef.value?.querySelector(`[gs-id="${widget.id}"]`) as HTMLElement | null;
+          if (el) updates.push([el, l]);
+        }
+      }
+      if (updates.length) {
+        grid.batchUpdate();
+        for (const [el, l] of updates) grid.update(el, { ...l });
+        grid.batchUpdate(false);
+      }
+    }
+
+    setTimeout(() => { programmatic = false; });
   },
   { deep: true },
 );

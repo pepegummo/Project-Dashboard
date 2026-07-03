@@ -7,7 +7,8 @@ import { useAuthStore } from '@/stores/auth.store';
 import { useWidgetViewStateStore } from '@/stores/widget-view-state.store';
 import { useLedExport } from '@/composables/useLedExport';
 import { useToast } from '@/composables/useToast';
-import { Save, Plus, ArrowLeft, Loader2, LayoutGrid, Monitor, ExternalLink, Upload, Trash2, Edit2 } from 'lucide-vue-next';
+import { useUndoHistory } from '@/composables/useUndoHistory';
+import { Save, Plus, ArrowLeft, Loader2, LayoutGrid, Monitor, ExternalLink, Upload, Trash2, Edit2, Undo2, Redo2 } from 'lucide-vue-next';
 import GridStackCanvas from '@/components/dashboard/GridStackCanvas.vue';
 import WidgetToolbox from '@/components/dashboard/WidgetToolbox.vue';
 import WidgetConfigModal from '@/components/dashboard/WidgetConfigModal.vue';
@@ -31,6 +32,87 @@ const saving = ref(false);
 const gridCanvasRef = ref<InstanceType<typeof GridStackCanvas> | null>(null);
 
 const dashboardId = computed(() => route.params.id as string);
+
+// ── Undo/redo (command pattern: add/remove/update replay inverse API calls,
+//    layout changes stay client-buffered until Save) ──────────────────────────
+type EditorCmd =
+  | { type: 'add'; widget: DashboardWidget }
+  | { type: 'remove'; widget: DashboardWidget; layouts: Record<string, WidgetLayout> }
+  | { type: 'update'; widgetId: string; before: Partial<DashboardWidget>; after: Partial<DashboardWidget> }
+  | { type: 'layout'; before: Record<string, WidgetLayout>; after: Record<string, WidgetLayout> };
+
+const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v));
+const sameLayout = (a: WidgetLayout, b: WidgetLayout) =>
+  a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
+
+function widgetPayload(w: DashboardWidget) {
+  return { machineId: w.machineId, widgetType: w.widgetType, title: w.title, layout: w.layout, config: w.config };
+}
+
+function applyLayoutsToStore(map: Record<string, WidgetLayout>) {
+  for (const w of dashboardStore.widgets) {
+    if (map[w.id] && !sameLayout(w.layout, map[w.id])) w.layout = { ...map[w.id] };
+  }
+}
+
+// Undoing a delete / redoing an add re-creates the widget with a NEW server id;
+// rewrite every stack entry that still references the old one.
+function remapId(oldId: string, newId: string, inFlight: EditorCmd) {
+  for (const c of [...history.undoStack.value, ...history.redoStack.value, inFlight]) {
+    if ((c.type === 'add' || c.type === 'remove') && c.widget.id === oldId) c.widget = { ...c.widget, id: newId };
+    if (c.type === 'update' && c.widgetId === oldId) c.widgetId = newId;
+    const maps = c.type === 'remove' ? [c.layouts] : c.type === 'layout' ? [c.before, c.after] : [];
+    for (const m of maps) if (m[oldId]) { m[newId] = m[oldId]; delete m[oldId]; }
+  }
+}
+
+async function applyCmd(cmd: EditorCmd, dir: 'undo' | 'redo'): Promise<EditorCmd> {
+  switch (cmd.type) {
+    case 'add':
+      if (dir === 'undo') await dashboardStore.removeWidget(cmd.widget.id);
+      else {
+        const w = await dashboardStore.addWidget(widgetPayload(cmd.widget));
+        remapId(cmd.widget.id, w.id, cmd);
+      }
+      break;
+    case 'remove':
+      if (dir === 'undo') {
+        const w = await dashboardStore.addWidget(widgetPayload(cmd.widget));
+        remapId(cmd.widget.id, w.id, cmd);
+        applyLayoutsToStore(cmd.layouts); // restore neighbors shifted by float compaction
+      } else {
+        await dashboardStore.removeWidget(cmd.widget.id);
+      }
+      break;
+    case 'update':
+      await dashboardStore.updateWidget(cmd.widgetId, dir === 'undo' ? cmd.before : cmd.after);
+      break;
+    case 'layout':
+      applyLayoutsToStore(dir === 'undo' ? cmd.before : cmd.after); // no API call — persisted on Save
+      break;
+  }
+  return cmd;
+}
+
+const history = useUndoHistory<EditorCmd>({
+  applyUndo: c => applyCmd(c, 'undo'),
+  applyRedo: c => applyCmd(c, 'redo'),
+  onError: () => toast.show('Undo failed', 'error'),
+});
+const { canUndo, canRedo } = history;
+
+function onLayoutChange(layouts: Array<{ id: string; layout: WidgetLayout }>, programmatic: boolean) {
+  const before: Record<string, WidgetLayout> = {};
+  const after: Record<string, WidgetLayout> = {};
+  for (const { id, layout } of layouts) {
+    const w = dashboardStore.widgets.find(x => x.id === id);
+    if (!w || sameLayout(w.layout, layout)) continue;
+    before[id] = { ...w.layout };
+    after[id] = { ...layout };
+    w.layout = { ...layout }; // mirror grid → store (client-side only)
+  }
+  if (!programmatic && Object.keys(after).length) history.push({ type: 'layout', before, after });
+}
 
 onMounted(async () => {
   await Promise.all([
@@ -139,15 +221,23 @@ async function onSaveWidget(widget: { machineId?: string; widgetType: WidgetType
   try {
     if (editingWidget.value.id) {
       // Update existing
-      await dashboardStore.updateWidget(editingWidget.value.id, {
+      const id = editingWidget.value.id;
+      const cur = dashboardStore.widgets.find(w => w.id === id);
+      const before = cur
+        ? clone({ widgetType: cur.widgetType, machineId: cur.machineId, title: cur.title, config: cur.config })
+        : null;
+      const after = {
         widgetType: widget.widgetType,
         machineId: widget.machineId,
         title: widget.title,
         config: widget.config,
-      });
+      };
+      await dashboardStore.updateWidget(id, after);
+      if (before) history.push({ type: 'update', widgetId: id, before, after: clone(after) });
     } else {
       // Add new
-      await dashboardStore.addWidget(widget);
+      const w = await dashboardStore.addWidget(widget);
+      history.push({ type: 'add', widget: clone(w) });
     }
   } catch (e: any) {
     toast.show(e?.message ?? 'Could not save widget', 'error');
@@ -165,7 +255,10 @@ function onEditWidget(widget: DashboardWidget) {
 
 async function onRemoveWidget(widgetId: string) {
   if (!confirm('Remove this widget?')) return;
+  const cur = dashboardStore.widgets.find(w => w.id === widgetId);
+  const layouts = Object.fromEntries(dashboardStore.widgets.map(w => [w.id, { ...w.layout }]));
   await dashboardStore.removeWidget(widgetId);
+  if (cur) history.push({ type: 'remove', widget: clone(cur), layouts });
 }
 </script>
 
@@ -204,6 +297,23 @@ async function onRemoveWidget(widgetId: string) {
       </div>
 
       <div class="flex items-center gap-2">
+        <button
+          class="btn-ghost btn-icon"
+          :disabled="!canUndo"
+          title="Undo (Ctrl+Z)"
+          @click="history.undo()"
+        >
+          <Undo2 class="w-4 h-4" />
+        </button>
+        <button
+          class="btn-ghost btn-icon"
+          :disabled="!canRedo"
+          title="Redo (Ctrl+Y)"
+          @click="history.redo()"
+        >
+          <Redo2 class="w-4 h-4" />
+        </button>
+
         <button class="btn-secondary" @click="showToolbox = !showToolbox">
           <Plus class="w-4 h-4" />
           Add Widget
@@ -302,8 +412,10 @@ async function onRemoveWidget(widgetId: string) {
           v-else
           ref="gridCanvasRef"
           :widgets="dashboardStore.widgets"
+          :sync-layout="true"
           @edit-widget="onEditWidget"
           @remove-widget="onRemoveWidget"
+          @layout-change="onLayoutChange"
         />
       </div>
     </div>

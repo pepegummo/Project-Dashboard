@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { Sparkles, Send, Loader2, Bot, Save, Plus, Trash2, LayoutGrid } from 'lucide-vue-next';
+import { Sparkles, Send, Loader2, Bot, Save, Plus, Trash2, LayoutGrid, Undo2, Redo2 } from 'lucide-vue-next';
+import { useUndoHistory } from '@/composables/useUndoHistory';
 import { api } from '@/services/api.service';
 import { useDashboardStore } from '@/stores/dashboard.store';
 import { useMachineStore } from '@/stores/machine.store';
@@ -109,6 +110,36 @@ let toastTimer: ReturnType<typeof setTimeout> | null = null;
 // True while restoring the saved draft on mount, so the save-watcher doesn't echo it back.
 const restoring = ref(false);
 
+// ── Undo/redo (snapshot stack over canvasCards — preview edits only) ─────────
+let lastCards: CanvasCard[] = [];
+let suppressHistory = false;
+// Cards are JSON-safe API payloads; JSON round-trip avoids structuredClone choking on reactive proxies.
+const cloneCards = (c: CanvasCard[]): CanvasCard[] => JSON.parse(JSON.stringify(c));
+
+const history = useUndoHistory<CanvasCard[]>({
+  applyUndo: (snap) => { const cur = cloneCards(canvasCards.value); restoreCards(snap); return cur; },
+  applyRedo: (snap) => { const cur = cloneCards(canvasCards.value); restoreCards(snap); return cur; },
+  onError: () => showToast('Undo failed'),
+});
+const { canUndo, canRedo } = history;
+
+function restoreCards(snap: CanvasCard[]) {
+  suppressHistory = true;
+  canvasCards.value = cloneCards(snap);
+  lastCards = cloneCards(snap);
+  aiSelectedPreviewIds.value = []; // preview-N indices may be stale after restore
+  previewHighlightId.value = undefined;
+  if (!snap.some(c => c.kind === 'preview' || c.kind === 'focus')) api.deletePreviewDraft().catch(() => {});
+  nextTick(() => { suppressHistory = false; });
+}
+
+// Applied DB changes are not undoable — apply/clear paths wipe the stacks.
+function resetHistory() {
+  suppressHistory = true;
+  history.clear();
+  nextTick(() => { suppressHistory = false; });
+}
+
 function toPreviewWidgets(dbWidgets: DashboardWidget[]) {
   return dbWidgets.map(w => ({
     widgetId:    w.id,
@@ -185,6 +216,7 @@ async function saveDashboardCard(card: any, layouts: Record<string, WidgetLayout
         result: { dashboardName: freshDash?.name ?? '', widgets: toPreviewWidgets(freshDash?.widgets ?? []), summary: '' },
       };
     }
+    resetHistory();
     showToast('Dashboard saved.');
   } catch (e: any) {
     showToast(`Error: ${e?.message ?? 'Save failed'}`);
@@ -227,6 +259,14 @@ watch(canvasCards, () => {
   if (card) {
     api.putPreviewDraft({ conversationId: conversationId.value, data: { kind: card.kind, result: card.result, args: card.args } }).catch(() => {});
   }
+}, { deep: true });
+
+// Snapshot history capture: one choke point for every canvasCards mutation
+// (AI tool handlers, manual add/update/remove, preview drags).
+watch(canvasCards, () => {
+  if (restoring.value || suppressHistory) { lastCards = cloneCards(canvasCards.value); return; }
+  history.push(lastCards);
+  lastCards = cloneCards(canvasCards.value);
 }, { deep: true });
 
 function showToast(msg: string) {
@@ -421,6 +461,7 @@ async function confirmFocusCreate(card: any, name: string, layouts: Record<strin
       });
     }
     canvasCards.value = canvasCards.value.filter(c => c !== card);
+    resetHistory();
     router.push(`/dashboards/${dash.id}`);
   } catch (e) {
     console.error('Failed to create dashboard from focus card', e);
@@ -885,6 +926,7 @@ function clearChat() {
   aiSelectedIds.value = [];
   aiSelectedPreviewIds.value = [];
   api.deletePreviewDraft().catch(() => {});
+  resetHistory();
 }
 
 async function confirmCreate(dashboardName: string, layouts: Record<string, WidgetLayout> = {}) {
@@ -908,6 +950,7 @@ async function confirmCreate(dashboardName: string, layouts: Record<string, Widg
       aiSelectedIds.value = [];
       aiSelectedPreviewIds.value = [];
       api.deletePreviewDraft().catch(() => {});
+      resetHistory();
       showToast(`Dashboard "${dashboardName}" created! Find it in the Dashboards list.`);
       router.push(`/dashboards/${r.dashboardId}`);
     }
@@ -1092,6 +1135,22 @@ function handleKeydown(e: KeyboardEvent) {
 
       <div class="spotlight-bar">
         <Sparkles class="w-4 h-4 text-gray-500 flex-shrink-0" />
+        <button
+          :disabled="!canUndo"
+          title="Undo (Ctrl+Z)"
+          class="w-8 h-8 rounded-xl hover:bg-white/5 disabled:opacity-30 flex items-center justify-center transition-colors flex-shrink-0 text-gray-500 hover:text-gray-300"
+          @click="history.undo()"
+        >
+          <Undo2 class="w-4 h-4" />
+        </button>
+        <button
+          :disabled="!canRedo"
+          title="Redo (Ctrl+Y)"
+          class="w-8 h-8 rounded-xl hover:bg-white/5 disabled:opacity-30 flex items-center justify-center transition-colors flex-shrink-0 text-gray-500 hover:text-gray-300"
+          @click="history.redo()"
+        >
+          <Redo2 class="w-4 h-4" />
+        </button>
         <button
           v-if="canvasCards.length || conversationId || dashboardStore.widgets.length"
           :disabled="processing"
