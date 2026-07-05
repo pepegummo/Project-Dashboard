@@ -23,8 +23,8 @@ import (
 )
 
 var bakeModels = []string{
-	"qwen/qwen3-32b",     // current
-	"openai/gpt-oss-20b", // cache-supported + cheap
+	"qwen/qwen3-32b",      // heaviest tokens, most rate-limited — replaced
+	"openai/gpt-oss-20b",  // now live (controller.go:23) — cheapest + cache-supported
 	"openai/gpt-oss-120b", // cache-supported step-up (kimi-k2 not accessible on this account)
 }
 
@@ -106,6 +106,13 @@ var bakeCases = []bakeCase{
 		expect:  "preview_remove_widget (stage removal — persisted only on Save)",
 		want:    "preview_remove_widget",
 	},
+	{
+		label:   "add-custom-chart",
+		message: "เพิ่มกราฟรวม speed กับ throughput ของ CW-01",
+		context: `{"activeDashboard":"Production Line","widgets":[{"type":"gauge","title":"Speed Gauge","machine":"CW-01","metric":"speed"}]}`,
+		expect:  "preview_add_widget (custom chart overlaying 2 metrics — stage, no direct write)",
+		want:    "preview_add_widget",
+	},
 	{label: "create", message: "สร้าง dashboard ของ CW-01 ให้หน่อย", expect: "preview_dashboard (NOT create)", want: "preview_dashboard"},
 
 	// ── Other (list / skus) ──────────────────────────────────────────────────
@@ -131,10 +138,17 @@ func TestBakeOff(t *testing.T) {
 
 	tools := buildGroqTools("admin", true) // full tool set for bake-off
 
-	type tally struct{ score, total int }
+	type tally struct {
+		score, total int
+		latSum       time.Duration // sum of wall time over completed (non-error) calls
+		latN         int
+	}
 	scores := map[string]tally{}
 
-	for _, model := range bakeModels {
+	for mi, model := range bakeModels {
+		if mi > 0 {
+			time.Sleep(120 * time.Second) // let the shared 8k-tok/min budget recover between models
+		}
 		fmt.Printf("\n========== MODEL: %s ==========\n", model)
 		for _, tc := range bakeCases {
 			sp := systemPromptBase + systemPromptContextExt // bake-off always uses full prompt
@@ -149,7 +163,9 @@ func TestBakeOff(t *testing.T) {
 			fmt.Printf("\n[%s] %q\n  expect: %s\n", tc.label, tc.message, tc.expect)
 
 			time.Sleep(10 * time.Second) // dodge free-tier rate limits (8k tokens/min)
+			t0 := time.Now()
 			resp, err := callGroqModel(model, msgs, tools, "")
+			elapsed := time.Since(t0)
 			if err != nil {
 				fmt.Printf("  ERROR: %v\n", err)
 				continue
@@ -176,6 +192,8 @@ func TestBakeOff(t *testing.T) {
 			}
 			t := scores[model]
 			t.total++
+			t.latSum += elapsed
+			t.latN++
 			status := "FAIL"
 			if got == tc.want {
 				status = "PASS"
@@ -183,6 +201,7 @@ func TestBakeOff(t *testing.T) {
 			}
 			scores[model] = t
 			fmt.Printf("  %s (want %q, got %q)\n", status, tc.want, got)
+			fmt.Printf("  latency: %.2fs\n", elapsed.Seconds())
 			if resp.Usage != nil {
 				fmt.Printf("  tokens: prompt=%d completion=%d total=%d\n",
 					resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
@@ -193,6 +212,10 @@ func TestBakeOff(t *testing.T) {
 	fmt.Printf("\n========== SCOREBOARD ==========\n")
 	for _, model := range bakeModels {
 		t := scores[model]
-		fmt.Printf("%-24s %d/%d\n", model, t.score, t.total)
+		avgLat := 0.0
+		if t.latN > 0 {
+			avgLat = t.latSum.Seconds() / float64(t.latN)
+		}
+		fmt.Printf("%-24s %d/%d   avg latency %.2fs (n=%d)\n", model, t.score, t.total, avgLat, t.latN)
 	}
 }
