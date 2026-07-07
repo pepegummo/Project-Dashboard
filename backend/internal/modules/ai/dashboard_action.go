@@ -357,6 +357,13 @@ func (a *DashboardAction) PreviewUpdateWidget(ctx context.Context, orgID string,
 	}
 	if m := strings.TrimSpace(args.Metric); m != "" {
 		changes["metric"] = m
+		// Metric changed but LLM omitted unit: pull the new field's unit from
+		// machine_fields so the widget doesn't keep the old metric's unit.
+		if args.Unit == "" {
+			if u, ok := lookupFieldUnit(ctx, orgID, strings.TrimSpace(args.Machine), m); ok {
+				changes["unit"] = u
+			}
+		}
 	}
 	if args.Unit != "" {
 		changes["unit"] = args.Unit
@@ -560,6 +567,34 @@ func getMachinesForOrg(ctx context.Context, orgID string) ([]machineInfo, error)
 		machines = append(machines, m)
 	}
 	return machines, nil
+}
+
+// lookupFieldUnit finds the unit of a field key within the org (optionally
+// narrowed by machine name). ok=true with u=="" means the field exists but has
+// no unit — the caller should clear any stale unit.
+// ponytail: without a machine name this is org-wide LIMIT 1, so keys with
+// per-machine units (e.g. speed: bpm/mm/s/ppm) may pick the wrong one; pass
+// the widget's machine from the frontend if that starts to matter.
+func lookupFieldUnit(ctx context.Context, orgID, machine, metric string) (string, bool) {
+	var unit *string
+	err := database.Pool.QueryRow(ctx, `
+		SELECT mf.unit
+		FROM machine_fields mf
+		JOIN machines m ON m.id = mf.machine_id
+		JOIN production_lines pl ON pl.id = m.production_line_id
+		JOIN factories f ON f.id = pl.factory_id
+		WHERE f.organization_id = $1
+		  AND mf.key = $2
+		  AND ($3 = '' OR LOWER(m.name) LIKE '%' || LOWER($3) || '%')
+		LIMIT 1
+	`, orgID, metric, machine).Scan(&unit)
+	if err != nil {
+		return "", false
+	}
+	if unit == nil {
+		return "", true
+	}
+	return *unit, true
 }
 
 func resolveMachineID(ctx context.Context, orgID, name string) (string, bool) {

@@ -22,7 +22,7 @@ import (
 // rate-limits, smallest prompts (~2.7k tok), fastest (~0.83s median); 120b scored 21/22
 // (one nondeterministic preview_* slip) and buys no accuracy edge. 20b is also cheaper and
 // Groq prompt-caches the stable base prefix. See docs/AI_ARCHITECTURE.md §3.
-const groqModel = "openai/gpt-oss-20b"
+const groqModel = "openai/gpt-oss-120b"
 const groqBaseURL = "https://api.groq.com/openai/v1/chat/completions"
 
 // systemPromptMinimal is sent on the no-tool path (greetings, chit-chat, "what

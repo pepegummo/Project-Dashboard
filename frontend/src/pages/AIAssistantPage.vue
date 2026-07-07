@@ -364,7 +364,7 @@ function confirmDashboard(dashboardId: string) {
 }
 
 // ── Focus preview (ephemeral single-metric answer card) ─────────────────────
-const readToolNames = new Set(['get_latest_telemetry', 'get_telemetry_trend', 'get_daily_count']);
+const readToolNames = new Set(['get_telemetry_series', 'get_telemetry_trend', 'get_production_count']);
 
 // Match a machine against a tool's machine_id token the same way the backend does:
 // id equals, or the machine NAME contains the token (e.g. "CW-01" ⊂ "Checkweigher CW-01").
@@ -406,8 +406,8 @@ function deriveFocusWidget(messages: any[], rawText: string): any | null {
     : machine.fields.find(f => hay.includes(f.key.toLowerCase()) || hay.includes(f.label.toLowerCase()));
   if (!field) return null;
 
-  const trend = messages.some((m: any) => m.toolName === 'get_telemetry_trend') || /trend|history|กราฟ|ย้อนหลัง|เทรนด์/.test(hay);
-  const daily = messages.some((m: any) => m.toolName === 'get_daily_count') || /daily|count|รายวัน|ต่อวัน|จำนวน/.test(hay);
+  const trend = messages.some((m: any) => m.toolName === 'get_telemetry_trend' || m.toolName === 'get_telemetry_series') || /trend|history|กราฟ|ย้อนหลัง|เทรนด์/.test(hay);
+  const daily = messages.some((m: any) => m.toolName === 'get_production_count') || /daily|count|รายวัน|ต่อวัน|จำนวน/.test(hay);
   const type = trend ? 'line-chart'
     : daily ? 'daily-count'
     : (field.min !== undefined && field.max !== undefined) ? 'gauge' : 'kpi-card';
@@ -777,7 +777,9 @@ async function sendMessage() {
 
         // Live canvas — match the machine the same substring way the backend resolves it
         // (tool machine_id "CW-01" ⊂ name "Checkweigher CW-01"), not exact equality.
-        const liveCandidates = dashboardStore.widgets.filter(dw =>
+        // Skipped while a preview/dashboard card is on screen: the grid is hidden then
+        // (v-if !hasPreview), so a live-widget ring would be invisible — badge but no highlight.
+        const liveCandidates = hasPreview.value ? [] : dashboardStore.widgets.filter(dw =>
           dw.machineId === machineId || (!!dw.machine?.name && dw.machine.name.toLowerCase().includes(machineId))
         );
         if (liveCandidates.length) {
@@ -786,7 +788,7 @@ async function sendMessage() {
           // highlighting the machine's first widget (e.g. Speed) for a status query is wrong.
           const w = metric
             ? liveCandidates.find(dw => dw.config.field === metric)
-            : msg.toolName === 'get_daily_count'
+            : msg.toolName === 'get_production_count'
               ? liveCandidates.find(dw => dw.widgetType === 'daily-count')
               : liveCandidates.find(dw => dw.config.field && assistantText.includes(dw.config.field.toLowerCase()));
           if (w) {
@@ -803,7 +805,12 @@ async function sendMessage() {
           const pws: any[] = previewCard.result.widgets;
           const previewCandidates = pws
             .map((w, i) => ({ w, id: `preview-${i}` }))
-            .filter(({ w }) => (w.machine as string)?.toLowerCase() === machineId);
+            // Substring both ways: card machine may be short ("CW-01") or full
+            // ("Checkweigher CW-01") depending on card kind, and so may the tool arg.
+            .filter(({ w }) => {
+              const wm = ((w.machine as string) ?? '').toLowerCase();
+              return !!machineId && !!wm && (wm.includes(machineId) || machineId.includes(wm));
+            });
           if (previewCandidates.length) {
             const match = metric
               ? previewCandidates.find(({ w }) => w.metric === metric)
@@ -874,7 +881,7 @@ async function sendMessage() {
           }
         }
 
-        if (!aiSelectedPreviewIds.value.length) {
+        if (!aiSelectedPreviewIds.value.length && !hasPreview.value) {
           const liveCandidates = dashboardStore.widgets;
           let liveMatch = liveCandidates.find(dw =>
             (dw.config.field && assistantText.includes(dw.config.field.toLowerCase())) ||
