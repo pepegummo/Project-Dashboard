@@ -922,6 +922,7 @@ async function sendMessage() {
     }
   } catch (e: any) {
     showToast(`Error: ${e?.message ?? 'Something went wrong. Please try again.'}`);
+    if (!input.value) input.value = rawText;   // restore the message so the user can just resend (e.g. after a rate limit)
   } finally {
     processing.value = false;
     scrollToBottom();

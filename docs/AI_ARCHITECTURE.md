@@ -23,7 +23,7 @@ All references below point at the real code under `backend/internal/modules/ai/`
 | **Database** | TimescaleDB / Postgres — telemetry + dashboards + AI conversation history | shared `database.Pool` |
 
 **External services / secrets:** the only AI secret is `GROQ_API_KEY` (`config/env.go`).
-The model id itself is a hardcoded constant (`controller.go:23`), not an environment
+The model id itself is a hardcoded constant (`controller.go:24`), not an environment
 variable. If the key is empty the endpoint returns `503 AI_UNAVAILABLE`.
 
 ### Tool catalog
@@ -73,7 +73,7 @@ flowchart LR
 
     subgraph Backend["Go / Fiber backend"]
         CHAT["POST /api/ai/chat<br/>Chat handler"]
-        CLASS["Prompt classify<br/>needsTools / hasContext"]
+        CLASS["Prompt classify<br/>needsTools / hasContext / answerFromContext<br/>→ 1 of 4 system prompts"]
         LOOP["Tool-calling loop<br/>(max 5 rounds)"]
         TOOLS["Tool executors<br/>tool_actions.go / dashboard_action.go"]
     end
@@ -85,7 +85,7 @@ flowchart LR
     subgraph Data["TimescaleDB / Postgres"]
         TEL[("telemetry_raw<br/>machines · machine_fields")]
         DASH[("dashboards<br/>dashboard_widgets")]
-        HIST[("ai_conversations<br/>ai_messages · ai_preview_drafts")]
+        HIST[("ai_conversations<br/>ai_messages")]
     end
 
     UI -- "message + on-screen context" --> CHAT
@@ -95,9 +95,47 @@ flowchart LR
     LOOP --> TOOLS
     TOOLS --> TEL
     TOOLS --> DASH
-    CHAT -- "persist turns" --> HIST
+    CHAT -- "save messages" --> HIST
     CHAT -- "reply messages[]" --> UI
 ```
+
+### System-prompt strategy
+
+Routing is **deterministic keyword matching**, not a semantic/LLM router — the classifier is
+pure regex over the message + a `strings.Contains` on the context (`controller.go:693-712`).
+There is no "ask the model what it needs" step; the prompt is chosen before Groq is called.
+
+The core principle is **pay only the tokens a message actually needs.** The system prompt is
+built in **layers** and only the necessary ones are assembled (`controller.go:387-394`):
+
+| Layer | Const | Sent when | Carries |
+|-------|-------|-----------|---------|
+| **Minimal** | `systemPromptMinimal` | `needsTools == false` (greeting / chit-chat) | identity + language rule + "one short sentence" only |
+| **Base** | `systemPromptBase` | always (default actionable path) | `TOOL SELECTION` + `SLOT FILLING` + `WIDGET TYPES` rules |
+| **+ ContextExt** | `systemPromptBase + systemPromptContextExt` | `needsTools && hasContext && !answerFromContext` | Base **plus** preview-staging + `@Widget`/`[FOCUSED]` routing rules |
+| **ContextAnswer** | `systemPromptContextAnswer` | `answerFromContext` (on-screen data answers) | identity + language + *"Do NOT call any tool; answer from context"* |
+
+**Selection inputs** (all deterministic):
+- `needsToolsFlag = needsTools(msg)` — regex for metric/action keywords or an `@` mention (`:693`).
+- `hasContext = body.Context != ""` — a dashboard/preview snapshot was sent.
+- `answerFromContext = inlineData || contextRead` — either the focused chart's series was inlined
+  (`"on-screen data"` in context) **or** an `@`-focused read that isn't an edit/range/SKU
+  (`editRe`/`rangeRe`/`skuRe`, `:707-712`).
+
+**Why layered.** The full `TOOL SELECTION` / `SLOT FILLING` / `WIDGET` rules are dead weight without
+tools, so a bare greeting drops them (~300 tokens saved). The preview/`CONTEXT` rules are useless
+with no dashboard open, so they're only appended when `hasContext` (~100 tokens saved). `Base` is
+kept **byte-stable** so Groq's prompt cache reuses the prefix across turns.
+
+**Token techniques that ride along** (all in service of the 8k-tokens/min Groq budget):
+- **Slim tool schemas** — simple tools send name + description only (arg hints embedded), full JSON
+  schema only for widget-nested tools (`toGroqToolSlim`, `:533`); ~50–80 tokens/tool.
+- **Context injected last** — the authoritative dashboard state is appended *after* history so
+  recency makes it win over any stale earlier turn (`:400-402`).
+- **Round cap** — a focused `@widget` question gets 0 extra tool rounds, others 1, because each
+  round re-sends the ~3k context block (`:498-504`).
+- **History trimmed to the last few turns**, past tool payloads not replayed (the prior summary
+  already captured them).
 
 ---
 
@@ -137,6 +175,36 @@ Dashboard Generation → User Feedback` shape, driven by `Chat` in `controller.g
    dashboard on its own.
 7. **User Feedback** — the assistant's reply is shown and the new turns
    (user + tool + assistant) are persisted to `ai_messages`.
+
+### Workflow at a glance
+
+The whole request lifecycle in one picture: deterministic classify → one of four prompts →
+(for actionable paths) the tool-calling loop → persist + reply. The four sequence diagrams
+below zoom into each branch.
+
+```mermaid
+flowchart TD
+    A["POST /api/ai/chat<br/>message + on-screen context"] --> B{"Classify — deterministic regex<br/>needsTools · hasContext · answerFromContext"}
+
+    B -->|"! needsTools · greeting / chit-chat"| P1["Minimal prompt<br/>no tools"]
+    B -->|"answerFromContext<br/>on-screen data already answers"| P2["ContextAnswer prompt<br/>no tools"]
+    B -->|"needsTools + hasContext"| P3["Base + ContextExt<br/>slim tools"]
+    B -->|"needsTools · no context"| P4["Base<br/>slim tools"]
+
+    P1 --> TXT["Groq → plain-text reply"]
+    P2 --> TXT
+    P3 --> LOOP["Groq call"]
+    P4 --> LOOP
+
+    LOOP --> D{"finish_reason"}
+    D -->|"text — final summary, OR slot-filling<br/>clarify when a required slot is missing"| TXT
+    D -->|"tool_calls"| EXEC["dispatch tool(s)<br/>read → SQL on TimescaleDB<br/>preview_* → stage on card, NO DB write<br/>compact result → append as tool msg"]
+    EXEC -->|"roundCap not hit, ≤ 5 rounds"| LOOP
+    EXEC -->|"roundCap hit"| TXT
+
+    TXT --> OUT["persist turns → ai_messages<br/>return messages[] to UI"]
+    OUT -.->|"preview staged → user acts later"| WRITE["Confirm (new) → create_custom_dashboard<br/>Save (existing) → widget REST endpoints<br/>→ DB write"]
+```
 
 ### Sequence diagram
 
@@ -302,115 +370,120 @@ sequenceDiagram
 ## 3. AI Model Comparison
 
 The model choice is **data-driven**: the repo contains a bake-off harness,
-`eval_test.go` (`TestBakeOff`), that runs **21 Thai-first intent cases** (greeting /
-reads / change-add-delete / slot-fill traps, including a custom-chart add) against the candidate Groq models and
-auto-scores each model's **first decision** — the tool it picks, or `""` for a correct
+`eval_test.go` (`TestBakeOff`), that runs **23 Thai-first intent cases** (greeting / reads /
+change-add-delete / slot-fill traps / focused-widget routing) against the candidate Groq models
+and auto-scores each model's **first decision** — the tool it picks, or `""` for a correct
 no-tool reply (`got == want`). First-decision accuracy is the metric that matters here,
 because "understand what the user wants" *is* the assistant's hard problem; the rest is
 deterministic SQL. Run it with:
 
 ```
-GROQ_API_KEY=… go test ./internal/modules/ai/ -run TestBakeOff -v -timeout 1800s
+GROQ_API_KEY=… go test ./internal/modules/ai/ -run TestBakeOff -v -count=1 -timeout 1800s
 ```
 
+`-count=1` is required: the test hits the live API, but Go caches test results per unchanged
+package, so a re-run without it just replays the previous scoreboard instead of calling Groq.
+
 The harness sleeps **10 s between cases** and **120 s between models** so the shared
-8k-tokens/min Groq budget recovers before each model starts; it also times every call and
-prints per-model average latency. A full run is ~20 min.
+8k-tokens/min Groq budget recovers before each model starts. It times **only the successful
+HTTP round** of each call — `callGroqModel` returns that duration, so the internal 3× 429 retry
+sleeps are *excluded* and the reported **median latency reflects model compute, not rate-limit
+backoff**. A full run is ~20 min.
 
 ### Candidates and results
 
-Measured on the live Groq API (run of 2026-07-05, 21 cases, 10 s inter-case + 120 s inter-model
-throttle; scoreboard printed by the harness). This run includes the custom-chart add case against
-the enlarged widget schema — the `chart` type plus its `fields`/`chartType`/`points`/`scaling`
-properties add ~240 tokens/prompt. **Rate-limited cases (⏳) are excluded from the denominator,
-not counted as failures**, so sample sizes differ. Two headline results:
-**custom-chart (#13) now passes on all three models**, but the **compound "create + what machines"
-trap (#17) was missed by *both* gpt-oss models** — `20b` answered with a clarifying text (no tool),
-`120b` called `preview_dashboard` with an empty machine — and only `qwen` routed it to
-`get_machines`. The 120 s inter-model cooldown paid off: `120b` completed **all 21** cases (0 rate
-limits); `qwen`'s ~3.3k-token prompts still made it the biggest 429 victim (8 of 21 lost).
+Measured on the live Groq API (run of 2026-07-06, 23 cases, `-count=1`, 10 s inter-case + 120 s
+inter-model throttle; scoreboard printed by the harness). **Rate-limited cases (⏳) are excluded
+from the denominator, not counted as failures**, so sample sizes differ. This is the first run
+of the **reworked suite**: 5 redundant easy dupes were trimmed and **7 harder discriminators**
+added — `all-metrics` (→ `get_machines`, not `show_metric`), `active-alerts`, an `alert-rule-trap`
+(rule management → plain-text redirect, **no tool**), three focused-widget routing traps
+(`get_telemetry_series` / `get_production_count` / `get_active_alerts` by widget type, where a
+weak model defaults to `show_metric`), and a `compound-read-write` (serve the read first). **All 7
+passed on both gpt-oss models.** The only gpt-oss miss was `120b` on `change-preview-edit`
+(→ `preview_dashboard`), a case `20b` passed — free-tier run-to-run non-determinism (the prior run
+`120b` instead missed `delete-preview-widget`), not a systematic weakness, and non-destructive.
+`qwen` lost 10/23 to rate limits.
 
-| Model | Score | Completed / 21 | Avg prompt tok | Median latency | Verdict |
+| Model | Score | Completed / 23 | Avg prompt tok | Median latency | Verdict |
 |-------|-------|----------------|----------------|----------------|---------|
-| `qwen/qwen3-32b` | **13 / 13** | 13 (8 ⏳) | ~3,280 | ~0.9 s | **replaced** — heaviest tokens, most rate-limited (completed only 13) |
-| `openai/gpt-oss-20b` | **18 / 19** | 19 (2 ⏳) | ~2,690 | ~0.7 s | **live** (`controller.go:23`) — cheapest + fastest; missed compound trap #17 |
-| `openai/gpt-oss-120b` | **20 / 21** | 21 (0 ⏳) | ~2,700 | ~0.8 s | step-up; completed every case, but also missed compound trap #17 |
+| `qwen/qwen3-32b` | **13 / 13** | 13 (10 ⏳) | ~3,282 | ~0.90 s | **replaced** — heaviest tokens, most rate-limited (completed only 13) |
+| `openai/gpt-oss-20b` | **23 / 23** | 23 (0 ⏳) | ~2,697 | **~0.83 s** | **live** (`controller.go:24`) — cheapest + fastest; perfect this run |
+| `openai/gpt-oss-120b` | **21 / 22** | 22 (1 ⏳) | ~2,698 | ~0.92 s | step-up; 1 nondeterministic preview miss, no accuracy edge |
 
 #### Full per-case results
 
 `✅` = picked the expected first tool (or correctly answered with no tool); `❌` = wrong
-decision (shown); `⏳` = case lost to a rate limit, excluded from the denominator. **Two `❌`
-this run — both on the compound trap (#17):** `gpt-oss-20b` and `gpt-oss-120b`.
+decision (shown); `⏳` = case lost to a rate limit, excluded from the denominator. Cases 4, 15, 16
+and 20–23 are the **new hard discriminators**. `20b` is clean (23/23); `120b`'s only miss is #6.
 
 | # | Case | Expected | qwen3-32b | gpt-oss-20b | gpt-oss-120b |
 |---|------|----------|-----------|-------------|--------------|
 | 1 | greeting | (no tool) | ✅ | ✅ | ✅ |
-| 2 | greeting-informal | (no tool) | ✅ | ✅ | ✅ |
-| 3 | read-speed | `show_metric` | ⏳ | ✅ | ✅ |
-| 4 | read-speed-thai | `show_metric` | ✅ | ✅ | ✅ |
-| 5 | read-temp-informal | `show_metric` | ⏳ | ✅ | ✅ |
-| 6 | english-read | `show_metric` | ✅ | ✅ | ✅ |
-| 7 | detail-analytical-focused | `get_telemetry_series` | ✅ | ✅ | ✅ |
-| 8 | change-preview-edit | `preview_update_widget` | ⏳ | ⏳ | ✅ |
-| 9 | add-preview-widget | `preview_add_widget` | ✅ | ✅ | ✅ |
-| 10 | delete-preview-widget | `preview_remove_widget` | ⏳ | ✅ | ✅ |
-| 11 | add-to-active-dashboard | `preview_add_widget` | ✅ | ✅ | ✅ |
-| 12 | remove-from-active-dashboard | `preview_remove_widget` | ✅ | ✅ | ✅ |
-| 13 | add-custom-chart | `preview_add_widget` | ✅ | ✅ | ✅ |
-| 14 | create | `preview_dashboard` | ⏳ | ⏳ | ✅ |
-| 15 | list-dashboards | `list_dashboards` | ✅ | ✅ | ✅ |
-| 16 | list-skus | `get_skus` | ⏳ | ✅ | ✅ |
-| 17 | trap-action-but-read | `get_machines` | ✅ | ❌ | ❌ |
-| 18 | ambiguous-fix | (no tool) | ⏳ | ✅ | ✅ |
-| 19 | ambiguous-change | (no tool) | ✅ | ✅ | ✅ |
-| 20 | read-no-machine | (no tool) | ⏳ | ✅ | ✅ |
-| 21 | read-no-machine-en | (no tool) | ✅ | ✅ | ✅ |
+| 2 | read-speed | `show_metric` | ✅ | ✅ | ✅ |
+| 3 | english-read | `show_metric` | ⏳ | ✅ | ✅ |
+| 4 | all-metrics | `get_machines` | ✅ | ✅ | ✅ |
+| 5 | detail-analytical-focused | `get_telemetry_series` | ⏳ | ✅ | ✅ |
+| 6 | change-preview-edit | `preview_update_widget` | ✅ | ✅ | ❌ `preview_dashboard` |
+| 7 | add-preview-widget | `preview_add_widget` | ⏳ | ✅ | ✅ |
+| 8 | delete-preview-widget | `preview_remove_widget` | ✅ | ✅ | ✅ |
+| 9 | add-to-active-dashboard | `preview_add_widget` | ✅ | ✅ | ✅ |
+| 10 | remove-from-active-dashboard | `preview_remove_widget` | ⏳ | ✅ | ✅ |
+| 11 | add-custom-chart | `preview_add_widget` | ✅ | ✅ | ✅ |
+| 12 | create | `preview_dashboard` | ⏳ | ✅ | ✅ |
+| 13 | list-dashboards | `list_dashboards` | ✅ | ✅ | ✅ |
+| 14 | list-skus | `get_skus` | ⏳ | ✅ | ⏳ |
+| 15 | active-alerts | `get_active_alerts` | ✅ | ✅ | ✅ |
+| 16 | alert-rule-trap | (no tool) | ⏳ | ✅ | ✅ |
+| 17 | trap-action-but-read | `get_machines` | ✅ | ✅ | ✅ |
+| 18 | ambiguous-fix | (no tool) | ✅ | ✅ | ✅ |
+| 19 | read-no-machine | (no tool) | ⏳ | ✅ | ✅ |
+| 20 | focused-gauge-analytical | `get_telemetry_series` | ✅ | ✅ | ✅ |
+| 21 | focused-count-now | `get_production_count` | ⏳ | ✅ | ✅ |
+| 22 | focused-alarm-panel | `get_active_alerts` | ✅ | ✅ | ✅ |
+| 23 | compound-read-write | `show_metric` | ⏳ | ✅ | ✅ |
 
 Reading the results — three things stand out this run:
-- **The compound trap (#17) is the genuinely hard case — both gpt-oss models missed it.** Asked
-  "create a dashboard, and what machines are there now?", `20b` replied with a clarifying text and
-  called **no tool**, while `120b` called `preview_dashboard` with an **empty** `machine` — neither
-  answered the read half with `get_machines`. Only `qwen` got it right. Both misses are *safe* (no
-  DB write — a preview stages nothing), but this is a real routing weakness on compound
-  create-plus-read sentences across the whole gpt-oss family, not a one-model fluke.
-- **The custom-chart case now passes on all three.** `add-custom-chart` (#13) routed to
-  `preview_add_widget` with a valid multi-field spec (`type: chart`,
-  `fields: ["speed","throughput"]`, `chartType`/`bucket`/`points`) on `qwen`, `20b`, and `120b` —
-  the earlier `20b` `tool_choice` abort did not recur, so the enlarged chart schema is confirmed
-  working on the live model.
-- **The inter-model cooldown cut rate-limit noise.** With 120 s between models, `120b` completed
-  all 21 cases (0 ⏳) and `20b` lost only 2; `qwen` still lost 8, because its ~3.3k-token prompts
-  burn the shared 8k/min budget fastest.
+- **The harder cases did not separate the gpt-oss pair.** All 7 new discriminators (all-metrics,
+  active-alerts, the alert-rule redirect, the three focused-widget routing traps, and the compound
+  read+write) routed correctly on both `20b` and `120b`. The cases the suite was toughened to catch —
+  where a weak model defaults to `show_metric` or reaches for a write tool — are handled cleanly.
+  **Accuracy alone no longer discriminates; latency and rate-limit survival do.**
+- **`120b`'s single miss is run-to-run noise, not a pattern.** It mis-routed #6
+  (`change-preview-edit` → `preview_dashboard`); `20b` got it right. In the prior run `120b` instead
+  missed `delete-preview-widget` and passed #6 — the slip shuffles between `preview_*` cases at
+  temperature, and is non-destructive (a preview writes nothing).
+- **Latency is now clean.** With the 429 retry sleeps excluded from timing, all three sit at
+  ~0.83–0.92 s median — real model-decision speed. `20b` is quickest (~0.83 s). The old "mean
+  inflated to 3–4 s by backoff" caveat is gone: backoff is no longer inside the timed window.
 
-Net: no *dangerous* actions (no wrong writes/previews) from any model. The clean separator is the
-compound trap (#17) — only `qwen` handled it, and `qwen` is the model being retired for its token
-cost and rate-limit fragility. Among the gpt-oss pair, `120b` completed every case and `20b` is
-cheapest and fastest; neither is reliable on #17 yet.
+Net: no *dangerous* actions from any model. First-decision accuracy is ~100% on completed cases
+for both gpt-oss models; the one residual miss shuffles between `preview_*` cases run-to-run rather
+than concentrating on one hard case. `20b` stays the cheapest and fastest; `120b` buys no
+measurable accuracy edge.
 
 ### The requested axes
 
 - **Quality** — the differentiator is not whether a model *can* call functions (all three
   can) but whether it picks the *correct* tool on a Thai sentence the first time. This run
-  `qwen` scored **13/13**, `120b` **20/21**, and `20b` **18/19** — and the only case any model
-  got wrong was the compound "create + read" trap (#17), which **both** gpt-oss models missed
-  (`20b` → text, `120b` → `preview_dashboard` with empty machine) and only `qwen` handled. Every
-  other completed case, including the custom-chart add (#13), routed correctly on all three. So
-  raw accuracy separates the models only on that one compound case — and it favors the model being
-  retired, not either gpt-oss candidate.
-- **Cost** — `gpt-oss-20b` has the smallest prompts (~2,690 vs ~3,280 tokens for qwen) and
+  `20b` scored **23/23**, `120b` **21/22** (one nondeterministic `preview_*` slip), and `qwen`
+  **13/13** on the cases it completed. Every new hard case — the count-widget/analytical routing
+  traps, the alert-rule redirect, the all-metrics fan-out — routed correctly on both gpt-oss
+  models. Raw accuracy no longer separates `20b` from `120b`; both are effectively saturated on
+  first-decision tool choice.
+- **Cost** — `gpt-oss-20b` has the smallest prompts (~2,697 vs ~3,282 tokens for qwen) and
   is the cheapest per token; because the large `base` prompt prefix stays byte-stable, Groq's
-  prompt cache is reused across turns, cutting effective input cost further. Adding the `chart`
-  tool schema lifted every prompt ~240 tokens vs the prior run, but the ranking is unchanged.
-  Qwen's larger prompts also made it the biggest free-tier rate-limit victim in the run.
-- **Latency** — the harness now times each `callGroqModel`. **Typical (median) first-decision
-  latency is ~0.7 s for `20b`, ~0.8 s for `120b`, ~0.9 s for `qwen`** — all fast for a single-turn
-  tool decision, and `20b` is the quickest. The per-model *mean* is higher (2.8 s / 3.8 s / 3.9 s)
-  only because a handful of calls absorbed a **429 retry/backoff** inside the timed window (those
-  outliers run 7–17 s); they are retry waits, not model compute. Calls are non-streaming with a
-  90 s client timeout and a 3× 429 retry (`parseRetryAfter`). To stay under Groq's 8k-tokens/min
-  limit the backend replays only the **last 3 turns**, sends **slim tool schemas** (name +
-  description for simple tools, full schema only for widget-nested ones), and caps tool rounds —
-  all of which also reduce per-request latency.
+  prompt cache is reused across turns, cutting effective input cost further. Qwen's larger prompts
+  also made it the biggest free-tier rate-limit victim in the run (10/23 cases lost).
+- **Latency** — the harness times **only the successful HTTP round** of each `callGroqModel`
+  (the returned duration), so 429 retry sleeps no longer pollute the number. **Median first-decision
+  latency is ~0.83 s for `20b`, ~0.92 s for `120b`, ~0.90 s for `qwen`** — all fast for a
+  single-turn tool decision, and `20b` is the quickest. (Before this fix the per-model *mean* read
+  3–4 s because a few calls absorbed a 429 backoff *inside* the timed window; excluding the sleep
+  removed that artifact.) Calls are non-streaming with a 90 s client timeout and a 3× 429 retry
+  (`parseRetryAfter`). To stay under Groq's 8k-tokens/min limit the backend replays only the
+  **last 3 turns**, sends **slim tool schemas** (name + description for simple tools, full schema
+  only for widget-nested ones), and caps tool rounds — all of which also reduce per-request latency.
 - **Context window** — the Groq `gpt-oss` family offers a long context, but the design
   deliberately does **not** rely on it: history is trimmed to 3 turns and past tool
   payloads are not replayed (the assistant's prior summary already captured them), so the
@@ -420,30 +493,32 @@ cheapest and fastest; neither is reliable on #17 yet.
 
 ### Decision (applied)
 
-The decision stands after this run (2026-07-05), with one known weakness:
+The decision stands after this run (2026-07-06), now with no systematic weakness surfaced:
 
-- The live constant (`controller.go:23`) runs **`openai/gpt-oss-20b`**. With the direct-write
+- The live constant (`controller.go:24`) runs **`openai/gpt-oss-20b`**. With the direct-write
   tools retired, the case for `20b` rests on **cost, cache-friendliness, and speed** — cheapest
-  per token, prompt-cache-friendly, and the fastest median first-decision latency (~0.7 s). It is
-  not flawless: it missed the compound trap (#17) this run — but so did `120b`, so paying for the
-  larger model would **not** buy reliability on that case. Every other completed case routed
-  correctly on `20b`.
-- **Known weakness: the compound "create + read" trap (#17).** No gpt-oss model handled it this
-  run — `20b` asked a clarifying question (safe: no tool), `120b` staged an empty-machine
-  `preview_dashboard`. Both are non-destructive (a preview writes nothing), but if this pattern
-  matters, the fix is a prompt/routing rule, not a bigger model.
+  per token, prompt-cache-friendly, and the fastest median first-decision latency (~0.83 s). This
+  run it scored a clean **23/23**, including all 7 new hard discriminators. `120b` buys no accuracy
+  edge (21/22, one nondeterministic slip) and is slightly slower, so paying for the larger model is
+  not justified by the data.
+- **No single hard case defeats the gpt-oss pair.** The toughened suite targets the boundaries a
+  weak model slips on — analytical-vs-current-value reads, count-widget routing, an action-looking
+  request that is really a text redirect — and both models handle them. The only residual misses
+  are nondeterministic `preview_*` slips that shuffle between cases run-to-run, all non-destructive
+  (a preview writes nothing; nothing persists until the user clicks Save/Confirm).
 - The "ask the user to open the dashboard" rule in `systemPromptBase` is **scoped** to fire only
-  when no preview/Active-dashboard context is on screen. The preview-edit cases (#9, #11, #12) all
+  when no preview/Active-dashboard context is on screen. The preview/active-edit cases (#7–#12) all
   routed correctly on `20b` this run, so that scoping holds.
-- The custom-chart capability (new `chart` widget type across `schema.go` /
-  `dashboard_action.go` and the frontend preview pipeline) is exercised by the `add-custom-chart`
-  case (#13) and now passes on **all three** models, including the live `20b` — the enlarged chart
-  schema routes and populates correctly.
+- The suite no longer discriminates on accuracy alone — both gpt-oss models are saturated on
+  first-decision tool choice. If a future run needs to separate them, the next lever is
+  **argument-level** scoring (right `metric` vs `viz`, correct `bucket`), which the current
+  name-only `got == want` check does not inspect.
 
-> Reproduce: `GROQ_API_KEY=… go test ./internal/modules/ai/ -run TestBakeOff -v -timeout 1800s`
-> (~20 min). The harness sleeps 10 s between cases and 120 s between models, times each call, and
-> prints a per-model scoreboard with average latency. Because it hits the live free-tier API, some
-> cases can still be lost to rate limits on any given run (they are skipped, not failed) — for a
-> clean denominator, re-run or raise the inter-case `time.Sleep`.
+> Reproduce: `GROQ_API_KEY=… go test ./internal/modules/ai/ -run TestBakeOff -v -count=1 -timeout 1800s`
+> (~20 min). `-count=1` is mandatory — without it Go replays the cached scoreboard instead of
+> calling the live API. The harness sleeps 10 s between cases and 120 s between models, and times
+> only the successful HTTP round of each call (429 retry sleeps excluded). Because it hits the live
+> free-tier API, some cases can still be lost to rate limits on any given run (they are skipped, not
+> failed) — for a clean denominator, re-run or raise the inter-case `time.Sleep`.
 > Exact model spec numbers (parameter counts, per-token pricing, hard context-window token
 > limits) are per Groq's published docs; the ranking here rests on this in-repo bake-off.

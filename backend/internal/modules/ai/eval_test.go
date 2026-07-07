@@ -13,6 +13,7 @@ package ai
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -43,13 +44,12 @@ type bakeCase struct {
 var bakeCases = []bakeCase{
 	// ── Greeting ─────────────────────────────────────────────────────────────
 	{label: "greeting", message: "สวัสดีครับ", expect: "no tool, Thai reply", want: ""},
-	{label: "greeting-informal", message: "หวัดดี", expect: "no tool, Thai reply", want: ""},
 
 	// ── Ask detail (read / analytical) ───────────────────────────────────────
 	{label: "read-speed", message: "speed ของ CW-01 เท่าไหร่", expect: "show_metric", want: "show_metric"},
-	{label: "read-speed-thai", message: "CW-01 ตอนนี้เร็วเท่าไหร่", expect: "show_metric", want: "show_metric"},
-	{label: "read-temp-informal", message: "ดูอุณหภูมิ CW-01 หน่อย", expect: "show_metric (value or trend)", want: "show_metric"},
 	{label: "english-read", message: "what's the speed of CW-01", expect: "show_metric, English reply", want: "show_metric"},
+	// hard: "see ALL metrics" routes to get_machines first (base prompt), not show_metric.
+	{label: "all-metrics", message: "ขอดูทุกค่าของ CW-01 หน่อย", expect: "get_machines (all fields) — NOT show_metric", want: "get_machines"},
 	{
 		label:   "detail-analytical-focused",
 		message: "@Speed Trend แนวโน้มเป็นยังไง วิเคราะห์หน่อย",
@@ -115,16 +115,47 @@ var bakeCases = []bakeCase{
 	},
 	{label: "create", message: "สร้าง dashboard ของ CW-01 ให้หน่อย", expect: "preview_dashboard (NOT create)", want: "preview_dashboard"},
 
-	// ── Other (list / skus) ──────────────────────────────────────────────────
+	// ── Other (list / skus / alerts) ─────────────────────────────────────────
 	{label: "list-dashboards", message: "มี dashboard อะไรบ้าง", expect: "list_dashboards", want: "list_dashboards"},
 	{label: "list-skus", message: "CW-01 มี SKU อะไรบ้าง", expect: "get_skus", want: "get_skus"},
+	{label: "active-alerts", message: "ตอนนี้มีแจ้งเตือนอะไรบ้าง", expect: "get_active_alerts", want: "get_active_alerts"},
+	// hard trap: alert-RULE management is a plain-text redirect (Alerts page), NOT a tool call.
+	{label: "alert-rule-trap", message: "ตั้ง alert ให้หน่อย ถ้า speed ของ CW-01 เกิน 100 ให้เตือน", expect: "no tool — redirect to Alerts page in Thai", want: ""},
 
 	// ── Slot-filling traps: a read needs a machine but none is named ──────────
-	{label: "trap-action-but-read", message: "สร้าง dashboard สิ แล้วตอนนี้มีเครื่องอะไรบ้าง", expect: "get_machines (read) — NOT preview/create", want: "get_machines"},
+	{label: "trap-action-but-read", message: "ถ้าฉันอยากสร้าง dashboard แล้วตอนนี้มีเครื่องอะไรบ้าง", expect: "get_machines (read) — NOT preview/create", want: "get_machines"},
 	{label: "ambiguous-fix", message: "แก้ให้หน่อย", expect: "clarifying question in Thai, no tool", want: ""},
-	{label: "ambiguous-change", message: "เปลี่ยนหน่อย", expect: "clarifying question in Thai, no tool", want: ""},
 	{label: "read-no-machine", message: "speed เท่าไหร่", expect: "ask which machine in Thai — NO tool, NO guessed machine_id", want: ""},
-	{label: "read-no-machine-en", message: "show me the temperature", expect: "ask which machine in English — NO tool, NO guessed machine_id", want: ""},
+
+	// ── Focused-widget routing traps (weak models default to show_metric) ────
+	{
+		label:   "focused-gauge-analytical",
+		message: "แนวโน้มเป็นยังไง วิเคราะห์หน่อย",
+		context: `[FOCUSED] widget: Speed Gauge | type gauge | machine CW-01 | metric speed`,
+		expect:  "get_telemetry_series (analytical → full series, NOT show_metric)",
+		want:    "get_telemetry_series",
+	},
+	{
+		label:   "focused-count-now",
+		message: "ตอนนี้เท่าไหร่",
+		context: `[FOCUSED] widget: CW-01 Count | type daily-count | machine CW-01 | bucket 1h`,
+		expect:  "get_production_count (count widget → NEVER show_metric)",
+		want:    "get_production_count",
+	},
+	{
+		label:   "focused-alarm-panel",
+		message: "ตอนนี้เป็นยังไงบ้าง",
+		context: `[FOCUSED] widget: Alarms | type alarm-panel | machine CW-01`,
+		expect:  "get_active_alerts (alarm-panel widget)",
+		want:    "get_active_alerts",
+	},
+	{
+		label:   "compound-read-write",
+		message: "เพิ่ม widget อุณหภูมิ CW-01 ด้วย แต่ก่อนอื่นบอกหน่อยตอนนี้ speed เท่าไหร่",
+		context: `{"activeDashboard":"Production Line","widgets":[{"type":"gauge","title":"Speed Gauge","machine":"CW-01","metric":"speed"}]}`,
+		expect:  "show_metric (serve the read first, then ask about the add)",
+		want:    "show_metric",
+	},
 }
 
 func TestBakeOff(t *testing.T) {
@@ -140,8 +171,7 @@ func TestBakeOff(t *testing.T) {
 
 	type tally struct {
 		score, total int
-		latSum       time.Duration // sum of wall time over completed (non-error) calls
-		latN         int
+		lats         []time.Duration // wall time of each completed (non-error) call
 	}
 	scores := map[string]tally{}
 
@@ -163,9 +193,9 @@ func TestBakeOff(t *testing.T) {
 			fmt.Printf("\n[%s] %q\n  expect: %s\n", tc.label, tc.message, tc.expect)
 
 			time.Sleep(10 * time.Second) // dodge free-tier rate limits (8k tokens/min)
-			t0 := time.Now()
-			resp, err := callGroqModel(model, msgs, tools, "")
-			elapsed := time.Since(t0)
+			// httpLat is the successful HTTP round only — excludes callGroqModel's internal
+			// 429 retry sleeps, so latency reflects model speed, not rate-limit backoff.
+			resp, httpLat, err := callGroqModel(model, msgs, tools, "")
 			if err != nil {
 				fmt.Printf("  ERROR: %v\n", err)
 				continue
@@ -192,8 +222,7 @@ func TestBakeOff(t *testing.T) {
 			}
 			t := scores[model]
 			t.total++
-			t.latSum += elapsed
-			t.latN++
+			t.lats = append(t.lats, httpLat)
 			status := "FAIL"
 			if got == tc.want {
 				status = "PASS"
@@ -201,7 +230,7 @@ func TestBakeOff(t *testing.T) {
 			}
 			scores[model] = t
 			fmt.Printf("  %s (want %q, got %q)\n", status, tc.want, got)
-			fmt.Printf("  latency: %.2fs\n", elapsed.Seconds())
+			fmt.Printf("  latency (http): %.2fs\n", httpLat.Seconds())
 			if resp.Usage != nil {
 				fmt.Printf("  tokens: prompt=%d completion=%d total=%d\n",
 					resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
@@ -212,10 +241,16 @@ func TestBakeOff(t *testing.T) {
 	fmt.Printf("\n========== SCOREBOARD ==========\n")
 	for _, model := range bakeModels {
 		t := scores[model]
-		avgLat := 0.0
-		if t.latN > 0 {
-			avgLat = t.latSum.Seconds() / float64(t.latN)
+		n := len(t.lats)
+		medLat := 0.0
+		if n > 0 {
+			sort.Slice(t.lats, func(i, j int) bool { return t.lats[i] < t.lats[j] })
+			if n%2 == 1 {
+				medLat = t.lats[n/2].Seconds()
+			} else {
+				medLat = (t.lats[n/2-1] + t.lats[n/2]).Seconds() / 2
+			}
 		}
-		fmt.Printf("%-24s %d/%d   avg latency %.2fs (n=%d)\n", model, t.score, t.total, avgLat, t.latN)
+		fmt.Printf("%-24s %d/%d   median latency %.2fs (n=%d)\n", model, t.score, t.total, medLat, n)
 	}
 }

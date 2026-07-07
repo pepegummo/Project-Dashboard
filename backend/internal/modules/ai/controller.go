@@ -3,6 +3,7 @@ package ai
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,10 +18,10 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-// gpt-oss-20b: confirmed via bake-off (see eval_test.go) — 2026-07-02 run: 17/20, zero
-// rate-limits, smallest prompts; 120b scored 15/16 with 4 cases lost to rate limits.
-// All residual misses are soft (wrong-but-harmless tool or over-cautious no-tool reply).
-// 20b is also cheaper and Groq prompt-caches the stable base prefix.
+// gpt-oss-20b: confirmed via bake-off (see eval_test.go) — 2026-07-06 run: 23/23, zero
+// rate-limits, smallest prompts (~2.7k tok), fastest (~0.83s median); 120b scored 21/22
+// (one nondeterministic preview_* slip) and buys no accuracy edge. 20b is also cheaper and
+// Groq prompt-caches the stable base prefix. See docs/AI_ARCHITECTURE.md §3.
 const groqModel = "openai/gpt-oss-20b"
 const groqBaseURL = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -443,6 +444,11 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 			}
 		}
 		if err != nil {
+			var rl *rateLimitError
+			if errors.As(err, &rl) {
+				return &middleware.AppError{StatusCode: 429, Code: "RATE_LIMIT",
+					Message: rl.Error(), Details: fiber.Map{"retryAfter": rl.seconds}}
+			}
 			return middleware.NewAppError(502, "AI_ERROR", fmt.Sprintf("Groq API error: %v", err))
 		}
 		if len(resp.Choices) == 0 {
@@ -592,12 +598,15 @@ func buildGroqTools(role string, hasContext bool) []map[string]any {
 // callGroq sends messages to Groq with the default model. Pass nil tools for a
 // plain (no-function-call) request. toolChoice: "" = auto, "required" = force a tool call.
 func callGroq(messages []groqMessage, tools []map[string]any, toolChoice string) (*groqResponse, error) {
-	return callGroqModel(groqModel, messages, tools, toolChoice)
+	resp, _, err := callGroqModel(groqModel, messages, tools, toolChoice)
+	return resp, err
 }
 
 // callGroqModel is callGroq with an explicit model — used by the bake-off harness
 // to compare candidates.
-func callGroqModel(model string, messages []groqMessage, tools []map[string]any, toolChoice string) (*groqResponse, error) {
+// Returns the successful attempt's HTTP round-trip duration (excludes retry sleeps and
+// failed attempts) so the bake-off can time model speed, not rate-limit backoff.
+func callGroqModel(model string, messages []groqMessage, tools []map[string]any, toolChoice string) (*groqResponse, time.Duration, error) {
 	reqBody := map[string]any{
 		"model":            model,
 		"messages":         messages,
@@ -612,7 +621,7 @@ func callGroqModel(model string, messages []groqMessage, tools []map[string]any,
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	httpClient := &http.Client{Timeout: 90 * time.Second}
@@ -623,28 +632,32 @@ func callGroqModel(model string, messages []groqMessage, tools []map[string]any,
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		req, err := http.NewRequest("POST", groqBaseURL, bytes.NewReader(bodyBytes))
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+config.Env.GroqApiKey)
 
+		attemptStart := time.Now() // time THIS attempt's round-trip only
 		httpResp, err := httpClient.Do(req)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		respBytes, _ := io.ReadAll(httpResp.Body)
 		httpResp.Body.Close()
+		attemptLat := time.Since(attemptStart)
 
 		if httpResp.StatusCode == http.StatusTooManyRequests {
-			if attempt < maxAttempts {
-				time.Sleep(parseRetryAfter(httpResp.Header.Get("Retry-After"), respBytes))
+			wait := parseRetryAfter(httpResp.Header.Get("Retry-After"), respBytes)
+			if wait <= 3*time.Second && attempt < maxAttempts {
+				time.Sleep(wait) // quick blip — retry silently
+				continue
 			}
-			continue
+			return nil, 0, &rateLimitError{seconds: wait.Seconds()} // long wait — surface to user
 		}
 
 		var result groqResponse
 		if err := json.Unmarshal(respBytes, &result); err != nil {
-			return nil, fmt.Errorf("failed to parse Groq response: %w", err)
+			return nil, 0, fmt.Errorf("failed to parse Groq response: %w", err)
 		}
 		if result.Error != nil {
 			// Groq's function-call parser failed (malformed generation, e.g. gpt-oss
@@ -654,18 +667,26 @@ func callGroqModel(model string, messages []groqMessage, tools []map[string]any,
 				strings.Contains(result.Error.Message, "Tool call validation failed")) && len(tools) > 0 {
 				return callGroqModel(model, messages, nil, "")
 			}
-			return nil, fmt.Errorf("Groq API: %s", result.Error.Message)
+			return nil, 0, fmt.Errorf("Groq API: %s", result.Error.Message)
 		}
-		return &result, nil
+		return &result, attemptLat, nil
 	}
 
-	return nil, lastErr
+	return nil, 0, lastErr
+}
+
+// rateLimitError signals a Groq 429 whose wait is too long to sit on server-side.
+// The Chat handler surfaces it as a 429 so the frontend can tell the user to retry.
+type rateLimitError struct{ seconds float64 }
+
+func (e *rateLimitError) Error() string {
+	return fmt.Sprintf("Rate limit reached. Please try again in %.0fs.", e.seconds)
 }
 
 var retryHintRe = regexp.MustCompile(`try again in ([0-9.]+)s`)
 
 func parseRetryAfter(header string, body []byte) time.Duration {
-	const maxWait = 8 * time.Second
+	const maxWait = 30 * time.Second // honor Groq's TPM-window wait (can be ~17s); ceiling guards the 90s client timeout
 	if header != "" {
 		if secs, err := strconv.ParseFloat(strings.TrimSpace(header), 64); err == nil && secs > 0 {
 			if d := time.Duration(secs * float64(time.Second)); d <= maxWait {
@@ -692,10 +713,10 @@ func strPtr(s string) *string { return &s }
 // no-context requests, so they don't pay for the full tool list.
 var needsToolsRe = regexp.MustCompile(`(?i)@|\b(` +
 	`speed|temp(erature)?|weight|pressure|humidity|voltage|current|power|flow|level|count|status|` +
+	`show|create|dashboard|add|widget|remove|alert|machine|trend|gauge|kpi|production|sku` +
+	`)\b|` +
 	`ดู|แสดง|เร็ว|อุณห|น้ำหนัก|ความดัน|กระแส|กำลัง|` +
-	`show|create|dashboard|add|widget|remove|alert|machine|trend|gauge|kpi|production|sku|` +
-	`สร้าง|เพิ่ม|ลบ|แก้|เปลี่ยน|เครื่อง|แจ้งเตือน|ผลิต` +
-	`)\b`)
+	`สร้าง|เพิ่ม|ลบ|แก้|เปลี่ยน|เครื่อง|แจ้งเตือน|ผลิต`)
 
 func needsTools(msg string) bool { return needsToolsRe.MatchString(msg) }
 
