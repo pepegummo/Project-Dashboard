@@ -114,6 +114,10 @@ var bakeCases = []bakeCase{
 		want:    "preview_add_widget",
 	},
 	{label: "create", message: "สร้าง dashboard ของ CW-01 ให้หน่อย", expect: "preview_dashboard (NOT create)", want: "preview_dashboard"},
+	// Typo'd create — the needsTools gate misses this at runtime (sentinel
+	// escalates it); here we verify the model still picks the right tool once
+	// tools are present.
+	{label: "typo-create", message: "ส้างแดชบอด cw-01 ให้หน่อย", expect: "preview_dashboard despite typos", want: "preview_dashboard"},
 
 	// ── Other (list / skus / alerts) ─────────────────────────────────────────
 	{label: "list-dashboards", message: "มี dashboard อะไรบ้าง", expect: "list_dashboards", want: "list_dashboards"},
