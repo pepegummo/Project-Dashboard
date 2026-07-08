@@ -152,6 +152,8 @@ function toPreviewWidgets(dbWidgets: DashboardWidget[]) {
     unit:        (w.config.unit as string) ?? '',
     ...(w.config.min    !== undefined ? { min:    w.config.min    as number } : {}),
     ...(w.config.max    !== undefined ? { max:    w.config.max    as number } : {}),
+    ...(w.config.startDateTime ? { startDateTime: w.config.startDateTime as string } : {}),
+    ...(w.config.endDateTime   ? { endDateTime:   w.config.endDateTime   as string } : {}),
     ...(w.config.bucket ? { bucket: w.config.bucket as string } : {}),
     ...(w.config.sku    ? { sku:    w.config.sku    as string } : {}),
     ...(w.config.status ? { status: w.config.status as 'all' | 'good' | 'reject' } : {}),
@@ -181,6 +183,11 @@ async function saveDashboardCard(card: any, layouts: Record<string, WidgetLayout
     // Update existing / add new
     for (let i = 0; i < previewWidgets.length; i++) {
       const pw = previewWidgets[i];
+      // In-grid line-chart time edits live in widget-view-state keyed by the preview id, not on
+      // the preview-widget object — pull them in so Save persists them (mirrors DashboardEditorPage.onSave).
+      const dt = pw.type === 'line-chart' ? widgetViewStateStore.datetimeStates[`preview-${i}`] : undefined;
+      const startDateTime = dt?.startDateTime ?? pw.startDateTime;
+      const endDateTime   = dt?.endDateTime   ?? pw.endDateTime;
       const config: Record<string, unknown> = {
         field: pw.metric ?? '',
         unit:  pw.unit  ?? '',
@@ -189,8 +196,8 @@ async function saveDashboardCard(card: any, layouts: Record<string, WidgetLayout
         ...(pw.bucket        ? { bucket:       pw.bucket        } : {}),
         ...(pw.sku           ? { sku:          pw.sku           } : {}),
         ...(pw.status        ? { status:       pw.status        } : {}),
-        ...(pw.startDateTime ? { startDateTime:pw.startDateTime } : {}),
-        ...(pw.endDateTime   ? { endDateTime:  pw.endDateTime   } : {}),
+        ...(startDateTime ? { startDateTime } : {}),
+        ...(endDateTime   ? { endDateTime   } : {}),
         ...(pw.type === 'chart' ? {
           fields: pw.fields ?? [],
           ...(pw.chartType ? { chartType: pw.chartType } : {}),
