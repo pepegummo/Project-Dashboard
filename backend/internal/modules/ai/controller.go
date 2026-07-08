@@ -413,11 +413,13 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 		msgs = append(msgs, groqMessage{Role: "system", Content: &ctxContent})
 	}
 
-	tools := buildGroqTools(middleware.GetUser(c).Role, hasContext)
+	fullTools := buildGroqTools(middleware.GetUser(c).Role, hasContext)
+	tools := fullTools
 
 	// Pure conversational messages (greetings, "what can you do?") get no tools —
 	// the model answers in plain text and tools are sent on the next actionable message.
 	// answerFromContext likewise needs no tools: the on-screen context already has the answer.
+	// fullTools is kept for the NEED_TOOLS sentinel escalation below.
 	if !needsToolsFlag || answerFromContext {
 		tools = nil
 	}
@@ -433,6 +435,7 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	}
 
 	callTools := tools
+	escalated := false
 	for i := 0; i < 5; i++ {
 		tc := ""
 		if i == 0 {
@@ -471,6 +474,23 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 			text := ""
 			if choice.Message.Content != nil {
 				text = *choice.Message.Content
+			}
+			// The keyword gate stripped tools but the model says the message needs
+			// them (typos the regex can't see — "ส้างแดชบอด"). Retry ONCE with the
+			// full prompt + tools; the sentinel itself is never saved as a reply.
+			// ponytail: one extra round only on gate misses, ~2.7k tok — same price
+			// a correctly-routed message pays anyway.
+			if !escalated && !needsToolsFlag && strings.TrimSpace(text) == needToolsSentinel {
+				escalated = true
+				sp = systemPromptBase
+				if hasContext {
+					sp += systemPromptContextExt
+					ctxContent := "Authoritative current dashboard state (overrides anything said earlier):\n" + body.Context
+					msgs = append(msgs, groqMessage{Role: "system", Content: &ctxContent})
+				}
+				tools = fullTools
+				callTools = fullTools
+				continue
 			}
 			assistantMsg, err := ctrl.repo.AddMessage(ctx, body.ConversationID, "assistant", text, nil, nil, nil)
 			if err != nil {
