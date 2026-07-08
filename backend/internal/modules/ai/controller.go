@@ -25,11 +25,21 @@ import (
 const groqModel = "openai/gpt-oss-120b"
 const groqBaseURL = "https://api.groq.com/openai/v1/chat/completions"
 
+// needToolsSentinel is the escape hatch for the needsTools() keyword gate: the
+// regex can't see typos ("ส้างแดชบอด" for "สร้างแดชบอร์ด"), so when a message it
+// stripped tools from actually asks for data or an action, the model replies
+// with this sentinel and the handler retries once with the full prompt + tools.
+// Without it the model role-played the action ("กำลังสร้างให้ครับ") and nothing
+// happened. Costs ~40 extra prompt tokens on greetings; the full retry price is
+// paid only on actual gate misses.
+const needToolsSentinel = "NEED_TOOLS"
+
 // systemPromptMinimal is sent on the no-tool path (greetings, chit-chat, "what
 // can you do?"). It carries only identity + the language rule — the full
 // TOOL SELECTION / SLOT FILLING / WIDGET rules are useless without tools, so a
 // bare greeting no longer pays for them (~300 tokens saved vs systemPromptBase).
-const systemPromptMinimal = `You are IotVision AI, assistant for an industrial IoT platform. Language: match the user's latest message exactly — Thai or English, never mix. Reply in one short, natural sentence. Plain text only — no markdown, no asterisks (**) or bold.`
+const systemPromptMinimal = `You are IotVision AI, assistant for an industrial IoT platform. Language: match the user's latest message exactly — Thai or English, never mix. Reply in one short, natural sentence. Plain text only — no markdown, no asterisks (**) or bold.
+If the user's latest message asks to view data, metrics, machines, dashboards, alerts, or to create/add/change/remove anything — even misspelled or informal, Thai or English — reply with exactly NEED_TOOLS and nothing else. Greetings, thanks, and small talk get a normal short reply.`
 
 // systemPromptContextAnswer replaces systemPromptContextExt for focused-widget
 // READS the on-screen context already answers — analytical questions (the full
