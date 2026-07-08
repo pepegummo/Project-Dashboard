@@ -479,7 +479,11 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 			// them (typos the regex can't see — "ส้างแดชบอด"). Retry ONCE with the
 			// full prompt + tools; the sentinel itself is never saved as a reply.
 			// ponytail: one extra round only on gate misses, ~2.7k tok — same price
-			// a correctly-routed message pays anyway.
+			// a correctly-routed message pays anyway. Accepted trade-offs: the retry
+			// consumes one loop iteration (roundCap gives escalated requests one fewer
+			// chained tool round — fine, typo requests are single-tool), and a
+			// post-escalation NEED_TOOLS reply would be saved raw (near-impossible;
+			// guarded only by `escalated`, deliberately not handled further).
 			if !escalated && !needsToolsFlag && strings.TrimSpace(text) == needToolsSentinel {
 				escalated = true
 				sp = systemPromptBase
