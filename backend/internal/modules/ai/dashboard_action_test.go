@@ -28,6 +28,11 @@ func TestNeedsTools(t *testing.T) {
 	}{
 		{"create dashboard about cw-01", true},
 		{"สร้างแดชบอร์ด cw-01 ให้หน่อย", true},
+		// Typo of the line above. The keyword gate is ALLOWED to miss typos —
+		// the NEED_TOOLS sentinel in systemPromptMinimal escalates them to the
+		// tool path at runtime (see controller.go). This case documents that
+		// the gate returning false here is expected, not a bug.
+		{"ส้างแดชบอด cw-01 ให้หน่อย", false},
 		{"สวัสดีครับ", false},
 		{"hello", false},
 		{"speed ของ CW-01 เท่าไหร่", true},
