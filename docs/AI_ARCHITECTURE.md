@@ -373,7 +373,8 @@ sequenceDiagram
 **Preview vs Active dashboard.** 2c edits two targets, and **both stage first — nothing is
 written to the DB until the user acts.** A **preview** is a new, unsaved plan; an **Active
 dashboard** is an existing saved one the user opened in the AI page (card `kind: 'dashboard'`,
-labelled `"Active dashboard"` — `AIAssistantPage.vue:548`). Chat edits to either use the
+labelled `"Active dashboard"` — the `card.kind === 'dashboard'` label branch in
+`AIAssistantPage.vue`). Chat edits to either use the
 same `preview_*` staging tools; the only difference is the persistence action.
 
 | | Preview (new, unsaved) | Active dashboard (existing, saved) |
@@ -387,7 +388,7 @@ same `preview_*` staging tools; the only difference is the persistence action.
 There is **no immediate-write path** anymore: the old `add_widget_to_dashboard` /
 `remove_widget` tools (which wrote on the spot) have been retired, so a chat request can
 never mutate a saved dashboard before Save. If the dashboard the user names isn't the one
-open on screen, the model asks them to open it first (`controller.go` `systemPromptBase`),
+open on screen, the model asks them to open it first (a rule in `systemPromptUnified`),
 and writes nothing.
 
 The card's **"+ Add widget" button** is the manual counterpart: it calls the frontend

@@ -9,10 +9,25 @@
 ## อัปเดต 2026-07-10: ระบบ Intent Router (Tasks 1-5 shipped)
 
 ระบบเปลี่ยนจากการเลือก prompt ด้วย regex keyword → ใช้ LLM router (ClassifyIntent) บวก
-dispatcher (dispatchIntent) บวก verify loop. Q ที่ขึ้นต่อการออกแบบเดิมได้รับการอัปเดต:
-- **Q2, Q8, Q12, Q15** เปลี่ยนแปลงไป (อ่านข้อมูลด้านล่างสำหรับรายละเอียด)
-- **Q6** เพิ่มเติม: ตอนนี้มี router bake-off แยกจาก main bake-off
-- History cap: ลดจาก 8 → 3 messages
+dispatcher (dispatchIntent) บวก verify loop. Q ที่ขึ้นต่อการออกแบบเดิมได้รับการอัปเดต — รายการ
+ครบทุกข้อที่แก้ (2 รอบ):
+- **Q2** — prompt เดียว (`systemPromptUnified`) + ClassifyIntent + dispatchIntent แทน regex/4 prompt
+- **Q3** — `@` mention ตอนนี้ป้อนเข้า `dispatchIntent` แทนการกระตุ้น regex `needsTools` เดิม
+- **Q5** — next-plan item "ลดขนาด prompt" (เคย `ContextExt`) ไม่ apply แล้วหลัง prompt รวมเป็นตัวเดียว
+- **Q6** — แยกเป็น 2 bake-off (router 32 เคส vs main 23 เคส); แก้ข้อสรุปเดิมที่เคยบอกว่า
+  20b เป็น main model — ตอนนี้ 120b คือ main, 20b คือ router
+- **Q7** — เขียนใหม่ทั้งหมด: "answerFromContext" เดิม (regex `editRe`/`rangeRe`/`skuRe` +
+  `systemPromptContextAnswer`) ถูกลบ แทนด้วย `dispatchIntent` ตัดสิน tool_choice "none"
+- **Q8** — คำตอบเปลี่ยนทิศทาง: จาก "ไม่ควรใช้ AI router" เป็น "ใช้แล้ว" พร้อมเหตุผล prompt cache
+- **Q9** — อัปเดต code citation ให้เป็น symbol-only (ไม่มีเลขบรรทัด)
+- **Q10** — แถว "คุม token/rate limit" เปลี่ยนจาก "prompt 4 ชั้น, sentinel" เป็น router+dispatchIntent+verify
+- **Q11** — เขียนใหม่ทั้งหมด: ไล่กลไก ClassifyIntent → dispatchIntent → dispatch → compact →
+  roundCap → VerifyAnswer แทนของเดิม (regex เลือก prompt + NEED_TOOLS escalation)
+- **Q12** — จาก "NEED_TOOLS sentinel" เป็น "ClassifyIntent อ่าน typo ตรง ๆ + verify loop"
+- **Q13** — รายการ test อัปเดตทั้งหมด (unit 7 + live 4) ให้ตรงกับไฟล์ test จริง
+- **Q14** — แก้ข้อความเดิมที่บอกว่า preview tools ส่งเฉพาะตอนมี dashboard เปิด (ไม่จริงแล้ว —
+  ตอนนี้แนบเสมอ กรองด้วย role อย่างเดียว) + อัปเดต citation เป็น `systemPromptUnified`
+- **Q15** — History cap ลดจาก 8 → 3 messages; ชี้แจง prompt cache 50% discount
 
 
 
@@ -32,7 +47,7 @@ dispatcher (dispatchIntent) บวก verify loop. Q ที่ขึ้นต่
 | Q10 | ทำไมไม่ใช้ LangGraph / agent framework | ระบบนี้*คือ* agent อยู่แล้ว — loop เองใน Go ไม่กี่ร้อยบรรทัด คุม token ได้ละเอียดกว่า และไม่เพิ่ม dependency |
 | Q11 | อธิบาย step ใน diagram (required/dispatch/compact/roundCap) | ไล่ทีละกลไกของ tool loop: บังคับ tool turn แรก → รัน tool → ย่อผล → จำกัดรอบ → บังคับสรุป |
 | Q12 | พิมพ์ผิดแต่อยากสร้างจริง router จับได้ยังไง | ClassifyIntent อ่านคำผิดออก (LLM ไม่ regex) + verify loop หาปัญหา → repair/askback ถ้าต้อง |
-| Q13 | test แต่ละตัวทำอะไร | unit 4 ตัว (dispatch/เวลา/429) + live 4 ตัว (router bake-off, main bake-off, verify, date-edit) |
+| Q13 | test แต่ละตัวทำอะไร | unit 7 ตัว (dispatch/router-parse/verify/เวลา/429/intent-response) + live 4 ตัว (router bake-off, main bake-off, verify, date-edit) |
 | Q14 | AI รู้ได้ไงว่าใช้ tool ไหน ส่ง description ทุกตัวไหม | ใช่ — ส่งชื่อ+description ของ tool ที่ role/บริบทอนุญาตไปทุก request แล้วโมเดลเลือกเอง |
 | Q15 | Groq จำ history ไหม ต้องส่งเองไหม | ไม่จำ (stateless) — เราส่ง 3 ข้อความล่าสุดเองทุกครั้ง (ลดจาก 8); prompt cache ช่วยเร็ว/ถูก (ไม่ใช่ความจำ) |
 
