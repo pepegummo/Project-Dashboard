@@ -13,7 +13,7 @@ import WidgetToolbox from '@/components/dashboard/WidgetToolbox.vue';
 import WidgetConfigModal from '@/components/dashboard/WidgetConfigModal.vue';
 import PreviewCanvasCard from '@/components/ai/PreviewCanvasCard.vue';
 import CreatedCanvasCard from '@/components/ai/CreatedCanvasCard.vue';
-import type { DashboardWidget, WidgetType, WidgetLayout, WidgetConfig } from '@/types';
+import type { DashboardWidget, WidgetType, WidgetLayout, WidgetConfig, AiChatIntent } from '@/types';
 
 type CanvasCard =
   | { kind: 'preview'; id: string; result: any; args: Record<string, unknown> }
@@ -381,65 +381,30 @@ function machineMatches(m: { id: string; name: string }, token: string): boolean
   return !!t && (m.id.toLowerCase() === t || m.name.toLowerCase().includes(t));
 }
 
-// Build a live PreviewWidget for the metric the user asked about, or null.
-// Text-driven: resolves machine + field from the question and the AI reply, with a
-// read tool's input only as a first preference (the model frequently answers a data
-// question without calling a tool, so we can't depend on tool metadata being present).
-function deriveFocusWidget(messages: any[], rawText: string): any | null {
-  const assistantText = (messages.find((m: any) => m.role === 'assistant')?.content ?? '').toLowerCase();
-  const hay = `${rawText} ${assistantText}`.toLowerCase();
+// Build a live PreviewWidget for the metric the router resolved, or null.
+// Slot-driven (Task 4): the backend's classify_intent router already parsed
+// machine/metric/bucket/status/sku out of the question — no local text-scanning.
+// A declined/fallback router result (ok:false) or a missing machine/metric slot means
+// "no ephemeral card"; the plain text reply (already shown via showToast) stands alone —
+// this never falls back to regexing the question/reply.
+function deriveFocusWidget(intent: AiChatIntent | undefined): any | null {
+  if (!intent?.ok || !intent.machine || !intent.metric) return null;
 
-  // Machine: prefer a read tool's machine_id (substring match like the backend), else
-  // a machine whose code-like name token (e.g. "CW-01") appears in the text.
-  let machine: typeof machineStore.machines[number] | undefined;
-  for (const msg of messages) {
-    if (!readToolNames.has(msg.toolName ?? '')) continue;
-    const key = (msg.toolInput?.machine_id as string) ?? '';
-    const m = machineStore.machines.find(mm => machineMatches(mm, key));
-    if (m) { machine = m; break; }
-  }
-  if (!machine) {
-    machine = machineStore.machines.find(m =>
-      m.name && m.name.toLowerCase().split(/\s+/).some(t => /\d/.test(t) && hay.includes(t))
-    );
-  }
+  // Resolve the intent's machine slot to a real machine the same substring way the
+  // backend does (mirrors resolveMachineID in backend dashboard_action.go).
+  const machine = machineStore.machines.find(m => machineMatches(m, intent.machine));
   if (!machine) return null;
 
-  // Metric: prefer an explicit tool metric, else a field whose key/label appears in the text.
-  const explicit = messages
-    .find((m: any) => readToolNames.has(m.toolName ?? '') && m.toolInput?.metric)?.toolInput?.metric as string | undefined;
-  const field = explicit
-    ? machine.fields.find(f => f.key === explicit)
-    : machine.fields.find(f => hay.includes(f.key.toLowerCase()) || hay.includes(f.label.toLowerCase()));
+  const field = machine.fields.find(f => f.key === intent.metric);
   if (!field) return null;
 
-  const trend = messages.some((m: any) => m.toolName === 'get_telemetry_trend' || m.toolName === 'get_telemetry_series') || /trend|history|กราฟ|ย้อนหลัง|เทรนด์/.test(hay);
-  const daily = messages.some((m: any) => m.toolName === 'get_production_count') || /daily|count|รายวัน|ต่อวัน|จำนวน/.test(hay);
-  const type = trend ? 'line-chart'
-    : daily ? 'daily-count'
+  const type = intent.intent === 'production' ? 'daily-count'
+    : intent.intent === 'read_agg' ? 'line-chart'
     : (field.min !== undefined && field.max !== undefined) ? 'gauge' : 'kpi-card';
 
-  // Extract bucket size for daily-count (default 1h)
-  let bucket = '1h';
-  const bucketMatch = /(\d+)\s*(minute|min|hour|hr|day|วัน|นาที|ชั่วโมง)s?/i.exec(hay);
-  if (bucketMatch) {
-    const val = bucketMatch[1];
-    const unit = bucketMatch[2].toLowerCase();
-    const unitChar = /minute|min|นาที/.test(unit) ? 'm' : /hour|hr|ชั่วโมง/.test(unit) ? 'h' : 'd';
-    bucket = `${val}${unitChar}`;
-  }
-
-  // Extract piece status filter (default all)
-  let status = 'all';
-  if (/good|ดี|ปกติ/.test(hay)) status = 'good';
-  else if (/reject|เสีย|ไม่ผ่าน/.test(hay)) status = 'reject';
-
-  // Extract SKU filter
-  let sku = '';
-  const skuMatch = /sku\s*([\w-]+)/i.exec(hay);
-  if (skuMatch && !/all|every|ทุก/.test(skuMatch[1])) {
-    sku = skuMatch[1];
-  }
+  const bucket = intent.bucket || '1h';
+  const status = intent.status || 'all';
+  const sku = intent.sku || '';
 
   return {
     type,
@@ -491,24 +456,21 @@ function removeFocusCard(id: string) {
   canvasCards.value = canvasCards.value.filter(c => c.id !== id);
 }
 
-// Analytical intent → the user wants a trend/prediction, so the focused widget's
-// full on-screen series is worth its tokens. Simple/edit messages skip it.
-const ANALYTICAL_RE = /trend|analy|predict|forecast|how'?s it doing|over time|history|แนวโน้ม|วิเคราะห์|ทำนาย/i;
-
 // Summarize the on-screen preview (widgets + live values) so the AI can answer
 // questions about what the user is looking at. For a focused line-chart/daily-count
-// widget on an analytical question, also inject the exact series it's rendering.
-function buildDashboardContext(text = '', focusedIds: string[] = []): string {
-  const analytical = ANALYTICAL_RE.test(text);
+// widget, also inject the exact series it's rendering — the backend router decides
+// what to do with it (tool_choice "none" only for read intents; edits force
+// preview_update_widget regardless), so no question-text gate is needed here.
+function buildDashboardContext(focusedIds: string[] = []): string {
   // When the user has clicked/mentioned specific widgets, scope the context to just
   // those. Otherwise a salient sibling (e.g. a "Trend" line-chart's current value)
   // pulls the model off the widget the user actually focused. No focus → send all.
   const inScope = (id: string) => !focusedIds.length || focusedIds.includes(id);
-  // For a focused chart/count widget on an analytical question, append the exact
-  // series the widget already rendered (from widget-view-state) so the AI reads
-  // on-screen data with no tool call. Empty for anything else.
+  // For a focused chart/count widget, append the exact series the widget already
+  // rendered (from widget-view-state) so the AI reads on-screen data with no tool call.
+  // Empty for anything else.
   const seriesLine = (id: string, type: string): string => {
-    if (!analytical || !focusedIds.includes(id)) return '';
+    if (!focusedIds.includes(id)) return '';
     if (type !== 'line-chart' && type !== 'daily-count') return '';
     const s = widgetViewStateStore.seriesStates[id];
     if (!s?.data?.length) return '';
@@ -642,10 +604,7 @@ async function sendMessage() {
       conversationId.value = conv.id;
     }
 
-    // Analytical intent must key off what the user typed, not the message with @mentions
-    // appended: a chart titled "Trend" made "@Trend" match ANALYTICAL_RE, wrongly injecting
-    // on-screen data and routing a "view yesterday" edit onto the no-tool context-answer path.
-    const messages = await api.chat(conversationId.value!, text, buildDashboardContext(rawText, mentionSnapshot.map(w => w.id)));
+    const { messages, intent } = await api.chat(conversationId.value!, text, buildDashboardContext(mentionSnapshot.map(w => w.id)));
 
     for (const msg of messages) {
       if (msg.role === 'assistant' && msg.content?.trim()) {
@@ -943,13 +902,14 @@ async function sendMessage() {
     // Focus preview: a data question whose metric has no live widget to highlight →
     // show an ephemeral, live single-metric card (not persisted, user adds it manually).
     // Runs even when show_metric (a builder tool) fired but produced no highlight — e.g.
-    // it errored, matched nothing, or was refused because a preview was open. Text-driven,
-    // so it needs no tool to have fired. Guarded against duplicating a card show_metric
-    // already created (no existing focus card, nothing highlighted, no preview open).
+    // it errored, matched nothing, or was refused because a preview was open. Slot-driven
+    // off the server's resolved intent, so it needs no tool to have fired. Guarded against
+    // duplicating a card show_metric already created (no existing focus card, nothing
+    // highlighted, no preview open).
     if (!aiSelectedIds.value.length && !aiSelectedPreviewIds.value.length && !hasPreview.value
         && !canvasCards.value.some(c => c.kind === 'focus')) {
       if (!machineStore.machines.length) await machineStore.fetchMachines();
-      const pw = deriveFocusWidget(messages, rawText);
+      const pw = deriveFocusWidget(intent);
       if (pw) canvasCards.value = [{ kind: 'focus', id: uid(), result: { dashboardName: '', widgets: [pw], summary: '' } }];
     }
   } catch (e: any) {

@@ -278,6 +278,23 @@ export interface AiMessage {
   createdAt: string;
 }
 
+// Resolved intent + slots from the backend's classify_intent router (Chat()'s
+// "intent" response field). ok:false with zero-value slots means the router
+// declined/fell back — treat as "no ephemeral card", not as a text-parsing signal.
+export interface AiChatIntent {
+  ok: boolean;
+  intent: string;
+  machine: string;
+  metric: string;
+  fields: string[];
+  bucket: string;
+  dateRange: { start: string; end: string };
+  targetWidget: string;
+  status: string;
+  sku: string;
+  confidence: number;
+}
+
 // ─── API ─────────────────────────────────────────────────────────────────────
 export interface ApiResponse<T> {
   success: true;

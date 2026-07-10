@@ -1,5 +1,5 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
-import type { ApiResponse, Dashboard, DashboardWidget, Machine, MachineField, Alert, AlertEvent, AiConversation, AiMessage, AiTool, TelemetrySeries, TelemetrySnapshot, OrgOption } from '@/types';
+import type { ApiResponse, Dashboard, DashboardWidget, Machine, MachineField, Alert, AlertEvent, AiConversation, AiMessage, AiChatIntent, AiTool, TelemetrySeries, TelemetrySnapshot, OrgOption } from '@/types';
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:4000';
 
@@ -348,9 +348,9 @@ class ApiService {
     await this.client.put('/ai/selected-dashboard', { dashboardId });
   }
 
-  async chat(conversationId: string, message: string, context?: string) {
-    const { data } = await this.client.post<ApiResponse<AiMessage[]>>('/ai/chat', { conversationId, message, ...(context ? { context } : {}) }, { timeout: 120_000 });
-    return data.data;
+  async chat(conversationId: string, message: string, context?: string): Promise<{ messages: AiMessage[]; intent?: AiChatIntent }> {
+    const { data } = await this.client.post<ApiResponse<AiMessage[]> & { intent?: AiChatIntent }>('/ai/chat', { conversationId, message, ...(context ? { context } : {}) }, { timeout: 120_000 });
+    return { messages: data.data, intent: data.intent };
   }
 
   // ─── LED Token ────────────────────────────────────────────────────────────

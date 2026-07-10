@@ -521,7 +521,32 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 		}
 	}
 
-	return c.JSON(fiber.Map{"success": true, "data": newMessages})
+	return c.JSON(fiber.Map{"success": true, "data": newMessages, "intent": chatIntentResponse(intentRes, routerOK)})
+}
+
+// chatIntentResponse exposes the router's classification (Task 2/3) to the frontend so
+// it can consume the server's resolved intent+slots instead of re-parsing question text
+// with its own regexes (Task 4). ok:false with zero-value slots when the router declined
+// or fell back — the frontend must treat that as "no ephemeral card", never as a signal
+// to fall back to its own text parsing.
+func chatIntentResponse(res IntentResult, ok bool) fiber.Map {
+	fields := res.Fields
+	if fields == nil {
+		fields = []string{} // marshal as [], never null — matches the documented contract
+	}
+	return fiber.Map{
+		"ok":           ok,
+		"intent":       res.Intent,
+		"machine":      res.Machine,
+		"metric":       res.Metric,
+		"fields":       fields,
+		"bucket":       res.Bucket,
+		"dateRange":    fiber.Map{"start": res.DateRange.Start, "end": res.DateRange.End},
+		"targetWidget": res.TargetWidget,
+		"status":       res.Status,
+		"sku":          res.Sku,
+		"confidence":   res.Confidence,
+	}
 }
 
 // ── Groq HTTP helpers ─────────────────────────────────────────────────────────
