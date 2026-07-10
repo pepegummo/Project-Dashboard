@@ -190,8 +190,11 @@ func TestBakeOff(t *testing.T) {
 			msgs = append(msgs, tc.history...)
 			msgs = append(msgs, groqMessage{Role: "user", Content: strPtr(tc.message)})
 			if tc.context != "" {
-				ctxContent := "Authoritative current dashboard state (overrides anything said earlier):\n" + tc.context
+				ctxContent := "Authoritative current dashboard state (overrides anything said earlier):\n" + tc.context + "\n" + dateLineForRequest()
 				msgs = append(msgs, groqMessage{Role: "system", Content: &ctxContent})
+			} else {
+				dateContent := dateLineForRequest()
+				msgs = append(msgs, groqMessage{Role: "system", Content: &dateContent})
 			}
 
 			fmt.Printf("\n[%s] %q\n  expect: %s\n", tc.label, tc.message, tc.expect)

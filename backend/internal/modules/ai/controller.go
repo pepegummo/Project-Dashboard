@@ -29,6 +29,8 @@ const groqBaseURL = "https://api.groq.com/openai/v1/chat/completions"
 // with the full role-filtered tool set. Merged from:
 // - systemPromptBase (no-preview path: pure reads, dashboard creation, edits, greetings)
 // - systemPromptContextExt (dashboard/preview context rules)
+// - systemPromptContextAnswer's distinct rule (ON-SCREEN DATA section below) — made
+//   conditional on the "on-screen data" context line instead of being a prompt swap
 // - dateEditRule static text (relative date resolution + EDIT rules — dynamic date appended separately)
 // - bucketEditRule (bar interval change EDIT rules)
 // - fieldsEditRule (metric-overlay change EDIT rules)
@@ -74,6 +76,8 @@ CONTEXT: An authoritative dashboard state may be injected.
   Then summarize the trend across ALL returned points — describe the SHAPE, calling out a rise-then-fall or fall-then-rise rather than one net direction, plus min/max — and if asked to predict, give a simple extrapolation from the pattern. Quote times exactly as given (they are plant-local). This overrides the "one short sentence" rule above: use 2-4 natural sentences, never a raw list of numbers or JSON.
   Never fabricate machine or metric — always read them from the context entry's "metric" field for that widget. The widget's "title" (e.g. "Trend", "Speed Gauge") is a display label, NEVER a metric value — never pass it as the metric argument.
   If multiple widgets are mentioned, answer each from its own context entry — do not reuse one widget's metric for another.
+
+ON-SCREEN DATA: when the context includes an "on-screen data" line, that widget's full series is already injected — answer directly from it and do NOT call show_metric, get_telemetry_series, get_production_count, get_telemetry_trend, or any other tool to re-fetch it; a context line marked [FOCUSED] is the widget the user clicked. If the requested number is not present in the on-screen data, say you can fetch it — never fabricate.
 
 RELATIVE DATES: Resolve relative dates from today's date (appended separately per request): yesterday/เมื่อวาน = the day before today, today/วันนี้ = today, last week/สัปดาห์ที่แล้ว = the 7 days ending today. Changing what a focused line-chart displays for a time period — including a plain VIEW/SEE request ("ดู"/"view"/"see": "อยากดูเวลาเมื่อวาน", "ดูเวลาเมื่อวาน", "ดูของเมื่อวาน", "show yesterday", "เปลี่ยนเป็นเมื่อวาน", "ดูของสัปดาห์ที่แล้ว") — is an EDIT of that chart, NOT a data read: call preview_update_widget with start_date and end_date as YYYY-MM-DD. Do NOT call get_telemetry_series, get_telemetry_trend, or show_metric to change what a focused chart shows — those only return data and will NOT update the widget the user is looking at. Never answer by summarizing the trend. The chart's currently-shown window is NOT a date reference — compute yesterday/last week only from today's date, never from the on-screen window.
 
@@ -146,8 +150,10 @@ func (ctrl *Controller) dispatch(c *fiber.Ctx, toolName string, rawArgs json.Raw
 	user := middleware.GetUser(c)
 	ctx := c.Context()
 
-	// Mutating tools require admin or editor — viewers can only read.
-	if isWriteTool(toolName) && user.Role != "admin" && user.Role != "editor" {
+	// Mutating tools require admin or editor — viewers can only read. Preview tools
+	// stage dashboard edits (no DB write) but are gated the same way as an actual
+	// write — mirrors the exclusion in buildGroqTools in case a client forges the call.
+	if (isWriteTool(toolName) || previewTools[toolName]) && user.Role != "admin" && user.Role != "editor" {
 		return nil, fmt.Errorf("permission denied: role %q cannot perform %q (requires admin or editor)", user.Role, toolName)
 	}
 
@@ -368,17 +374,20 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	hasContext := body.Context != ""
 
 	// The frontend injects the focused widget's full series (marked "on-screen data")
-	// only for analytical questions. When present, answer from it in one no-tool call
-	// instead of re-fetching via a tool — that redundant round doubled tokens and hit
-	// the 8k/min rate limit.
+	// only for analytical questions. The prompt's ON-SCREEN DATA rule tells the model
+	// to answer from it directly instead of re-fetching via a tool; tools stay attached
+	// (Groq prompt-prefix cache survives) but tool_choice is forced to "none" below for
+	// this turn — that redundant fetch+summarize round doubled tokens and hit the
+	// 8k/min rate limit.
 	inlineData := hasContext && strings.Contains(body.Context, "on-screen data")
 
 	// A focused-widget read the injected context already answers (current value,
-	// shown window, bucket/sku/config) needs no tool round either. Guardrail: edits
-	// and aggregate/range questions still take the tool path.
+	// shown window, bucket/sku/config) gets the same tool_choice:"none" treatment.
+	// Guardrail: edits and aggregate/range questions still take the tool path.
 	focused := hasContext && strings.Contains(body.Message, "@")
 	contextRead := focused && !editRe.MatchString(body.Message) && !rangeRe.MatchString(body.Message) && !skuRe.MatchString(body.Message) && !bucketRe.MatchString(body.Message) && !compareRe.MatchString(body.Message)
-	// answerFromContext = one no-tool call from the on-screen context.
+	// answerFromContext forces tool_choice:"none" on the first round so the model
+	// answers from the on-screen context in plain text instead of calling a tool.
 	answerFromContext := inlineData || contextRead
 
 	// Always use the unified prompt; append today's date to the dynamic context.
@@ -389,10 +398,15 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	// the last thing the model sees — recency makes it win over any stale earlier
 	// turn that named the old config (e.g. a metric the user has since changed).
 	// Append today's date so the model can resolve relative dates (it was in dateEditRule).
+	// The date line is always present, with or without a context block, so relative-date
+	// resolution works even on a plain (no dashboard on screen) message.
 	if hasContext {
 		ctxContent := "Authoritative current dashboard state (overrides anything said earlier):\n" +
 			body.Context + "\n" + dateLineForRequest()
 		msgs = append(msgs, groqMessage{Role: "system", Content: &ctxContent})
+	} else {
+		dateContent := dateLineForRequest()
+		msgs = append(msgs, groqMessage{Role: "system", Content: &dateContent})
 	}
 
 	role := middleware.GetUser(c).Role
@@ -430,9 +444,14 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	// carve-out — comparing metrics is inherently an overlay edit, not a single-number read.
 	fieldsEdit := (focused || editIntent) && canWrite && compareRe.MatchString(body.Message)
 	firstToolChoice := ""
-	if (rangeEdit || bucketEdit || fieldsEdit) && !answerFromContext {
+	if answerFromContext {
+		// Tools stay attached (cache-friendly) but are not offered this turn — the
+		// on-screen context already has the answer. See the "Tool choice is none"
+		// fallback below for reasoning models that ignore this and try to call anyway.
+		firstToolChoice = "none"
+	} else if rangeEdit || bucketEdit || fieldsEdit {
 		firstToolChoice = forceFunc("preview_update_widget")
-	} else if (focused || editIntent) && !answerFromContext {
+	} else if focused || editIntent {
 		firstToolChoice = "required"
 	}
 
@@ -579,15 +598,26 @@ var complexSchemaTools = map[string]bool{
 	"preview_update_widget": true,
 }
 
-// buildGroqTools returns the tool list filtered by role.
-// Always includes preview tools (they're part of the unified prompt).
+// previewTools stage a dashboard edit (preview canvas or an open Active dashboard).
+// Nothing is persisted until the user clicks Save/Confirm, but staging is still
+// gated to admin/editor like a real write — viewers must not be offered these,
+// and dispatch() re-checks the same set in case a client forges the tool call.
+var previewTools = map[string]bool{
+	"preview_dashboard":     true,
+	"preview_add_widget":    true,
+	"preview_remove_widget": true,
+	"preview_update_widget": true,
+}
+
+// buildGroqTools returns the tool list filtered by role. Viewers get read-only
+// tools; admin/editor also get the preview_* staging tools.
 // Simple tools use slim (description-only) form; complex tools keep full schemas.
 func buildGroqTools(role string) []map[string]any {
 	canWrite := role == "admin" || role == "editor"
 	out := make([]map[string]any, 0, len(AllTools()))
 	for _, t := range AllTools() {
 		name := t["name"].(string)
-		if isWriteTool(name) && !canWrite {
+		if !canWrite && (isWriteTool(name) || previewTools[name]) {
 			continue
 		}
 		if complexSchemaTools[name] {

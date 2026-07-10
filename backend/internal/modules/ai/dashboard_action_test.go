@@ -20,5 +20,3 @@ func TestToDatetimeLocal(t *testing.T) {
 		}
 	}
 }
-
-
