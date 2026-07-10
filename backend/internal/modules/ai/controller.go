@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -382,14 +383,9 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	// 8k/min rate limit.
 	inlineData := hasContext && strings.Contains(body.Context, "on-screen data")
 
-	// A focused-widget read the injected context already answers (current value,
-	// shown window, bucket/sku/config) gets the same tool_choice:"none" treatment.
-	// Guardrail: edits and aggregate/range questions still take the tool path.
+	// focused = the user @-mentioned a widget with a dashboard/preview on screen.
+	// Feeds both dispatchIntent's tool-choice rules and the chained-round cap below.
 	focused := hasContext && strings.Contains(body.Message, "@")
-	contextRead := focused && !editRe.MatchString(body.Message) && !rangeRe.MatchString(body.Message) && !skuRe.MatchString(body.Message) && !bucketRe.MatchString(body.Message) && !compareRe.MatchString(body.Message)
-	// answerFromContext forces tool_choice:"none" on the first round so the model
-	// answers from the on-screen context in plain text instead of calling a tool.
-	answerFromContext := inlineData || contextRead
 
 	// Always use the unified prompt; append today's date to the dynamic context.
 	sp := systemPromptUnified
@@ -410,51 +406,35 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 		msgs = append(msgs, groqMessage{Role: "system", Content: &dateContent})
 	}
 
-	role := middleware.GetUser(c).Role
-	canWrite := role == "admin" || role == "editor"
+	user := middleware.GetUser(c)
+	role := user.Role
 	// Always build the full role-filtered tool set (previews are always available now,
 	// not just when context is present).
 	tools := buildGroqTools(role)
 
-	// Force a tool call when either (a) an @WidgetTitle mention is present, or (b) the
-	// message is a clear EDIT with a dashboard/preview context on screen — both give the
-	// model a concrete widget to act on. Without this an unmentioned edit like
-	// "เปลี่ยนเป็นเมื่อวานหน่อย" role-played the change in prose instead of calling
-	// preview_update_widget. Forcing on a vague message risks an invalid function call
-	// (Groq 400) — but editRe is specific, and a forced-but-refused call already falls
-	// back to auto below. Never force when we're answering from context (want plain text).
-	// ponytail: on a multi-widget dashboard with no focus, the model may target the wrong
-	// widget — acceptable for the common single-chart case; click the widget to pin it.
-	editIntent := hasContext && editRe.MatchString(body.Message)
-	// A relative-date window change on a focused chart ("ดูเมื่อวาน", "วันก่อนหน้า", "show
-	// yesterday") is deterministically forced to preview_update_widget BY NAME — plain
-	// tool_choice:"required" let the model escape to get_telemetry_series and summarize, and
-	// describe the on-screen window as "yesterday" instead of computing it from today. Guarded:
-	// writers only (a viewer's toolset lacks the tool — forcing a missing function 400s) and not
-	// an aggregate read ("ค่าเฉลี่ยเมื่อวาน" wants a number). The forced call then resolves the
-	// date from today via dateEditRule and cannot summarize.
-	rangeEdit := (focused || editIntent) && canWrite && relDateRe.MatchString(body.Message) && !aggReadRe.MatchString(body.Message)
-	// A bucket/interval change ("อยากดู 22 นาที", "ทุก 15 นาที", "1h") on a focused count/chart
-	// widget is the daily-count sibling of rangeEdit: force preview_update_widget BY NAME so the
-	// model resizes the bars instead of refusing or reading. Same guards — writers only, and
-	// aggReadRe carves out count questions ("ผลิตกี่ชิ้นใน 22 นาที").
-	bucketEdit := (focused || editIntent) && canWrite && bucketRe.MatchString(body.Message) && !aggReadRe.MatchString(body.Message)
-	// A metric-overlay change ("เปรียบเทียบ weight, speed", "compare X and Y") on a focused chart
-	// widget is the "chart"-widget sibling: force preview_update_widget BY NAME so the model
-	// reassigns fields[] instead of refusing that the chart shows other metrics. No aggReadRe
-	// carve-out — comparing metrics is inherently an overlay edit, not a single-number read.
-	fieldsEdit := (focused || editIntent) && canWrite && compareRe.MatchString(body.Message)
-	firstToolChoice := ""
-	if answerFromContext {
-		// Tools stay attached (cache-friendly) but are not offered this turn — the
-		// on-screen context already has the answer. See the "Tool choice is none"
-		// fallback below for reasoning models that ignore this and try to call anyway.
-		firstToolChoice = "none"
-	} else if rangeEdit || bucketEdit || fieldsEdit {
-		firstToolChoice = forceFunc("preview_update_widget")
-	} else if focused || editIntent {
-		firstToolChoice = "required"
+	// Intent router (Phase 3): classify the message into a small enum, then let
+	// dispatchIntent decide deterministically. Design law: the model classifies, Go
+	// decides. A router miss/decline (ok == false) falls back to plain auto — see
+	// dispatchIntent's !ok branch — Chat must never fail because the router failed.
+	routerStart := time.Now()
+	intentRes, routerOK := ClassifyIntent(ctx, body.Message, focusedContextSummary(body.Context))
+	if routerOK {
+		log.Printf("[ai router] intent=%s confidence=%.2f duration=%s", intentRes.Intent, intentRes.Confidence, time.Since(routerStart))
+	} else {
+		log.Printf("[ai router] fallback (no confident classification) duration=%s", time.Since(routerStart))
 	}
+
+	// Slot sanity guard: spend at most one query, and only when the machine slot
+	// actually drives a forced-by-name decision (read_metric/read_agg/production).
+	// Never force a tool with a hallucinated machine — an unresolved slot degrades
+	// dispatchIntent's choice to tool_choice:"required" instead.
+	machineValid := false
+	if routerOK && intentRes.Machine != "" &&
+		(intentRes.Intent == "read_metric" || intentRes.Intent == "read_agg" || intentRes.Intent == "production") {
+		_, machineValid = resolveMachineID(ctx, user.OrgId, intentRes.Machine)
+	}
+
+	firstToolChoice, roundCap := dispatchIntent(intentRes, routerOK, focused, inlineData, role, machineValid)
 
 	callTools := tools
 	for i := 0; i < 5; i++ {
@@ -531,14 +511,11 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 			})
 		}
 
-		// Cap chained tool rounds, then force a text summary. A focused-widget
-		// message gets 1 round (2 calls) — each round re-sends the full ~3k context,
-		// so more rounds blow the 8k/min limit. Non-focused keeps 2 rounds for the
-		// get_machines → show_metric ×N fan-out. Outer loop cap is the hard stop.
-		roundCap := 1
-		if focused {
-			roundCap = 0
-		}
+		// Cap chained tool rounds, then force a text summary. roundCap comes from
+		// dispatchIntent (0 for a focused-widget message, else 1) — each round
+		// re-sends the full ~3k context, so more rounds blow the 8k/min limit.
+		// Non-focused keeps 2 rounds for the get_machines → show_metric ×N fan-out.
+		// Outer loop cap is the hard stop.
 		if i >= roundCap {
 			callTools = nil
 		}
@@ -614,11 +591,10 @@ var previewTools = map[string]bool{
 // tools; admin/editor also get the preview_* staging tools.
 // Simple tools use slim (description-only) form; complex tools keep full schemas.
 func buildGroqTools(role string) []map[string]any {
-	canWrite := role == "admin" || role == "editor"
 	out := make([]map[string]any, 0, len(AllTools()))
 	for _, t := range AllTools() {
 		name := t["name"].(string)
-		if !canWrite && (isWriteTool(name) || previewTools[name]) {
+		if !canWrite(role) && (isWriteTool(name) || previewTools[name]) {
 			continue
 		}
 		if complexSchemaTools[name] {
@@ -753,58 +729,145 @@ func parseRetryAfter(header string, body []byte) time.Duration {
 
 func strPtr(s string) *string { return &s }
 
-// editRe / rangeRe classify a focused-widget message so we know whether the
-// on-screen context can answer it without a tool:
-//   - editIntent  → the user wants to mutate the widget (needs preview_update_widget etc.).
-//   - rangeIntent → the answer needs an aggregate/time-range fetch not guaranteed in context.
-// A focused read that is neither can be answered straight from the injected context.
-var editRe = regexp.MustCompile(`(?i)\b(change|set|update|rename|move|remove|delete|add)\b|เปลี่ยน|แก้|ตั้ง|ลบ|เพิ่ม|ย้าย`)
-// The Thai "X ก่อน / ก่อนหน้า" (ago/previous) constructs must be here too: without
-// them a focused "ดูวันก่อนหน้า" (view previous day) fell through to contextRead, got the
-// no-tool context-answer prompt, and the model role-played the edit as a prose promise it
-// could not fulfill. Bare "ก่อน" is excluded — it means "first/beforehand" too often.
-var rangeRe = regexp.MustCompile(`(?i)\b(avg|average|mean|sum|total|min|max|peak|trend|forecast|predict|analy\w*|over|last|past|hour|day|week|month|yesterday|today|previous|prior)\b|เฉลี่ย|รวม|สูงสุด|ต่ำสุด|ย้อนหลัง|เมื่อวาน|วันนี้|วันก่อน|อาทิตย์ก่อน|สัปดาห์ก่อน|เดือนก่อน|ก่อนหน้า|ที่ผ่านมา|แนวโน้ม|วิเคราะห์|ทำนาย`)
-
-// relDateRe / aggReadRe deterministically route a focused-chart time-window change.
-// relDateRe = a relative date phrase (a window edit: "ดูเมื่อวาน", "วันก่อนหน้า", "show yesterday").
-// aggReadRe = an aggregate the user wants as a NUMBER ("ค่าเฉลี่ยเมื่อวาน") — a read, not a window
-// change, so it must NOT be forced onto preview_update_widget. Prose alone (dateEditRule) failed:
-// forced to call "some" tool, the model picked get_telemetry_series and summarized instead of
-// editing, and described the on-screen window as "yesterday". Forcing the tool by name fixes both.
-var relDateRe = regexp.MustCompile(`(?i)\b(yesterday|today|tonight|last\s+(week|month|day)|this\s+(week|month)|previous|prior)\b|เมื่อวาน|เมื่อคืน|วันนี้|วันก่อน|ก่อนหน้า|สัปดาห์ที่แล้ว|สัปดาห์ก่อน|อาทิตย์ก่อน|อาทิตย์ที่แล้ว|เดือนที่แล้ว|เดือนก่อน|ที่ผ่านมา`)
-var aggReadRe = regexp.MustCompile(`(?i)\b(avg|average|mean|sum|total|min|max|peak|count|how\s+many|how\s+much)\b|เฉลี่ย|รวม|สูงสุด|ต่ำสุด|จำนวน|กี่|เท่าไหร่|เท่าไร`)
-
-// bucketRe deterministically routes a focused count/chart widget's bar-interval (bucket)
-// change, exactly like relDateRe does for a date window. It matches a duration+unit
-// ("22 นาที", "22m", "15 minutes", "1 ชั่วโมง") or an "every N / ราย..." interval phrase.
-// Without it "อยากดู 22 นาที" had no edit verb (editRe) and no range word (rangeRe — it lacks
-// "minute"/นาที), so contextRead swallowed it onto the no-tool answer path and the model
-// refused ("the widget only provides 15-minute intervals"). Vocabulary mirrors the frontend
-// bucket parser at AIAssistantPage.vue. aggReadRe still carves out count reads
-// ("ผลิตกี่ชิ้นใน 22 นาที") so a number question is not forced onto an edit. The bare word
-// "bucket" is deliberately excluded — it would hijack "what bucket is this?" context reads.
-// ponytail: the abbreviation "min" collides with aggReadRe's "min" (minimum), so a bare
-// "30 min" degrades to the generic force-required path instead of force-by-name — still an
-// edit. Thai นาที and the full word "minutes" are unambiguous. Not worth disambiguating.
-var bucketRe = regexp.MustCompile(`(?i)\b\d+\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours)\b|\d+\s*(นาที|ชั่วโมง|ชม)|ทุก\s*\d+|ราย(นาที|ชั่วโมง|วัน)`)
-
-// compareRe routes a metric-overlay change on a focused chart widget ("เปรียบเทียบ weight,
-// speed", "compare X and Y", "overlay speed vs throughput") — the "chart"-widget sibling of
-// rangeEdit/bucketEdit. Replacing which fields a custom chart overlays is an EDIT
-// (preview_update_widget with fields[]), not a read. Without it "อยากดูเปรียบเทียบ weight, speed"
-// had no edit verb and no range word, so contextRead swallowed it onto the no-tool path and the
-// model refused. Typo-tolerant on the metric names themselves (the compare keyword is the anchor).
-var compareRe = regexp.MustCompile(`(?i)\bcompare\b|\bversus\b|\bvs\b|\boverlay\b|เปรียบเทียบ|เทียบ|ซ้อน`)
-
 // forceFunc builds an OpenAI/Groq tool_choice object that forces one named function.
 // callGroqModel detects the leading "{" and sends it as an object rather than a string.
 func forceFunc(name string) string {
 	return `{"type":"function","function":{"name":"` + name + `"}}`
 }
 
-// skuRe: a SKU question needs get_skus — the available-SKU list is never in the
-// injected context, so it must NOT take the no-tool contextRead path.
-var skuRe = regexp.MustCompile(`(?i)sku`)
+// canWrite reports whether role may perform mutating/preview actions (admin or
+// editor). Viewers are read-only — dispatchIntent must never force a preview_*
+// tool onto a viewer's tool_choice: their tool set doesn't include it (Task 1
+// gating in buildGroqTools), and forcing a missing function 400s.
+func canWrite(role string) bool {
+	return role == "admin" || role == "editor"
+}
+
+// focusedLineRe / focusedHeaderRe / focused{Machine,Metric,Bucket}Re extract a
+// one-line summary of the on-screen [FOCUSED] widget (if any) for ClassifyIntent's
+// contextSummary parameter. The dashboard context string is built by the frontend
+// (AIAssistantPage.vue buildDashboardContext) as lines shaped like:
+//
+//	- [FOCUSED] line-chart "Trend" — machine CW-01, metric weight, bucket 1h
+//
+// focusedContextSummary reformats that into "focused widget: <title> (<type>,
+// machine <machine>, metric/bucket <x>)" — the shape router_eval_test.go's
+// TestRouterBakeOff cases (Task 2) were scored against.
+var focusedLineRe = regexp.MustCompile(`(?m)^.*\[FOCUSED\].*$`)
+var focusedHeaderRe = regexp.MustCompile(`\[FOCUSED\]\s+([\w-]+)\s+"([^"]*)"`)
+var focusedMachineRe = regexp.MustCompile(`\bmachine\s+([^\s,]+)`)
+var focusedMetricRe = regexp.MustCompile(`\bmetric\s+([^\s,]+)`)
+var focusedBucketRe = regexp.MustCompile(`\bbucket\s+([^\s,]+)`)
+
+// focusedContextSummary returns "" when context is empty or carries no [FOCUSED]
+// marker, or the marker doesn't match the expected `type "title"` header shape.
+func focusedContextSummary(context string) string {
+	if context == "" {
+		return ""
+	}
+	line := focusedLineRe.FindString(context)
+	if line == "" {
+		return ""
+	}
+	m := focusedHeaderRe.FindStringSubmatch(line)
+	if m == nil {
+		return ""
+	}
+	typ, title := m[1], m[2]
+	parts := []string{typ}
+	if mm := focusedMachineRe.FindStringSubmatch(line); mm != nil {
+		parts = append(parts, "machine "+mm[1])
+	}
+	if mm := focusedMetricRe.FindStringSubmatch(line); mm != nil {
+		parts = append(parts, "metric "+mm[1])
+	}
+	if mm := focusedBucketRe.FindStringSubmatch(line); mm != nil {
+		parts = append(parts, "bucket "+mm[1])
+	}
+	return "focused widget: " + title + " (" + strings.Join(parts, ", ") + ")"
+}
+
+// hasMachineSlot reports whether dispatchIntent may safely force a machine-specific
+// tool by name: either the router named a machine that resolved in the DB
+// (machineValid — checked by the caller, see Chat's slot sanity guard), or no
+// machine was named but a focused widget on screen supplies one implicitly.
+// Otherwise (no slot and no focus, or a named slot that failed to resolve) forcing
+// risks bad/hallucinated args — the caller degrades to tool_choice:"required" so
+// the model can fall back to get_machines first.
+func hasMachineSlot(res IntentResult, focused bool, machineValid bool) bool {
+	if res.Machine == "" {
+		return focused
+	}
+	return machineValid
+}
+
+// dispatchIntent is the pure, deterministic replacement for the old regex-based
+// tool-choice heuristics (editRe/rangeRe/relDateRe/aggReadRe/bucketRe/compareRe/
+// skuRe): the router model classifies (small enum, res/ok), this function decides
+// (tool_choice + roundCap) — no I/O, no randomness, unit-testable in isolation.
+// machineValid must be pre-computed by the caller (a DB lookup) only when
+// res.Machine is non-empty and the intent is machine-specific.
+//
+// !ok (router failed/declined/ambiguous) is the fallback path: plain tool_choice
+// "" (auto) with the same roundCap formula as every other path — indistinguishable
+// from having no router at all (pre-router behavior).
+func dispatchIntent(res IntentResult, ok bool, focused bool, inlineData bool, role string, machineValid bool) (toolChoice string, roundCap int) {
+	roundCap = 1
+	if focused {
+		roundCap = 0
+	}
+
+	if !ok {
+		return "", roundCap
+	}
+
+	// Task-1 answer-from-context path, now router-decided: a read the injected
+	// context already answers gets no tool call this turn.
+	if focused && inlineData && (res.Intent == "chat" || res.Intent == "read_metric" || res.Intent == "read_agg") {
+		return "none", roundCap
+	}
+
+	switch res.Intent {
+	case "chat":
+		return "", roundCap
+	case "read_metric":
+		if hasMachineSlot(res, focused, machineValid) {
+			return forceFunc("show_metric"), roundCap
+		}
+		return "required", roundCap
+	case "read_agg":
+		if hasMachineSlot(res, focused, machineValid) {
+			return forceFunc("get_telemetry_series"), roundCap
+		}
+		return "required", roundCap
+	case "production":
+		if hasMachineSlot(res, focused, machineValid) {
+			return forceFunc("get_production_count"), roundCap
+		}
+		return "required", roundCap
+	case "alerts":
+		// Org-scoped, no machine slot involved — no exception needed.
+		return forceFunc("get_active_alerts"), roundCap
+	case "edit_widget", "compare":
+		// compare is the fields[]-overlay sibling of edit_widget — identical
+		// write/focus gating (both stage a preview_update_widget edit).
+		if !canWrite(role) {
+			return "", roundCap
+		}
+		if focused {
+			return forceFunc("preview_update_widget"), roundCap
+		}
+		return "required", roundCap
+	case "create_dashboard":
+		if canWrite(role) {
+			return forceFunc("preview_dashboard"), roundCap
+		}
+		return "", roundCap
+	default:
+		// Unreachable: parseIntentResult only returns ok==true for validRouterIntents.
+		return "", roundCap
+	}
+}
 
 // buildGroqMessages converts the last few DB messages to Groq/OpenAI format.
 // GetMessages now returns DESC order (newest first) to avoid a full table scan;
