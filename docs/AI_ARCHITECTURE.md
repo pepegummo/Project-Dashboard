@@ -81,13 +81,15 @@ flowchart LR
 
     subgraph Backend["Go / Fiber backend"]
         CHAT["POST /api/ai/chat<br/>Chat handler"]
-        CLASS["Prompt classify<br/>needsTools / hasContext / answerFromContext<br/>→ 1 of 4 system prompts"]
+        ROUTER["ClassifyIntent<br/>openai/gpt-oss-20b<br/>→ IntentResult (ok/not-ok)"]
+        DISPATCH["dispatchIntent<br/>pure function<br/>intent → tool_choice + roundCap"]
         LOOP["Tool-calling loop<br/>(max 5 rounds)"]
+        VERIFY["VerifyAnswer<br/>(if tools ran)<br/>deterministic checks + repair"]
         TOOLS["Tool executors<br/>tool_actions.go / dashboard_action.go"]
     end
 
     subgraph External
-        GROQ["Groq LLM<br/>openai/gpt-oss-120b"]
+        MAIN["Groq LLM<br/>openai/gpt-oss-120b"]
     end
 
     subgraph Data["TimescaleDB / Postgres"]
@@ -97,167 +99,163 @@ flowchart LR
     end
 
     UI -- "message + on-screen context" --> CHAT
-    CHAT --> CLASS --> LOOP
-    LOOP -- "tool decision + summary" --> GROQ
-    GROQ -- "tool_calls / text" --> LOOP
+    CHAT --> ROUTER --> DISPATCH --> LOOP
+    LOOP -- "tool decision + summary" --> MAIN
+    MAIN -- "tool_calls / text" --> LOOP
     LOOP --> TOOLS
     TOOLS --> TEL
     TOOLS --> DASH
+    LOOP -- "final text + toolLog" --> VERIFY
+    VERIFY -- "pass/repair/askback" --> CHAT
     CHAT -- "save messages" --> HIST
-    CHAT -- "reply messages[]" --> UI
+    CHAT -- "reply with intent" --> UI
 ```
 
 ### System-prompt strategy
 
-Routing is **deterministic keyword matching**, not a semantic/LLM router — the classifier is
-pure regex over the message + a `strings.Contains` on the context (`controller.go:748-767`).
-There is no "ask the model what it needs" step; the prompt is chosen before Groq is called.
+The system prompt is now **unified and byte-stable** (`systemPromptUnified`, `controller.go:30`),
+sent on all requests with the full role-filtered tool set **always attached**. The design is
+**single-shot**; Groq prompt caching (50% input discount on static prefixes) makes this economical.
 
-The core principle is **pay only the tokens a message actually needs.** The system prompt is
-built in **layers** and only the necessary ones are assembled (`controller.go:398-405`):
+**Two-stage intent classification:**
 
-| Layer | Const | Sent when | Carries |
-|-------|-------|-----------|---------|
-| **Minimal** | `systemPromptMinimal` | `needsTools == false` (greeting / chit-chat) | identity + language rule + "one short sentence" + the `NEED_TOOLS` sentinel rule (escape hatch — see below) |
-| **Base** | `systemPromptBase` | always (default actionable path) | `TOOL SELECTION` + `SLOT FILLING` + `WIDGET TYPES` rules |
-| **+ ContextExt** | `systemPromptBase + systemPromptContextExt` | `needsTools && hasContext && !answerFromContext` | Base **plus** preview-staging + `@Widget`/`[FOCUSED]` routing rules |
-| **ContextAnswer** | `systemPromptContextAnswer` | `answerFromContext` (on-screen data answers) | identity + language + *"Do NOT call any tool; answer from context"* |
+1. **Router (Phase 2)** — `ClassifyIntent` in `router.go:20` makes **one forced tool call** to
+   `openai/gpt-oss-20b` with the `classify_intent` schema (`schema.go`). Returns strict JSON
+   `{intent ∈ {chat, read_metric, read_agg, edit_widget, compare, create_dashboard, alerts, production}, 
+   machine, metric, fields[], bucket, dateRange, targetWidget, status, sku, confidence}`. 
+   Confidence floor 0.5; unknown intent, invalid JSON, timeout (6s), or low confidence → not-ok. 
+   Router failure **never blocks** chat — falls back to auto tools.
 
-**Selection inputs** (all deterministic):
-- `needsToolsFlag = needsTools(msg)` — regex for metric/action keywords or an `@` mention (`:755`).
-- `hasContext = body.Context != ""` — a dashboard/preview snapshot was sent.
-- `answerFromContext = inlineData || contextRead` — either the focused chart's series was inlined
-  (`"on-screen data"` in context) **or** an `@`-focused read that isn't an edit/range/SKU
-  (`editRe`/`rangeRe`/`skuRe`, `:757-767`).
+2. **Dispatcher** — `dispatchIntent` in `controller.go:1021` (pure deterministic function) maps 
+   intent → tool_choice + roundCap. not-ok → auto tools (fallback identical to pre-router behavior).
+   Focused + inline on-screen data + read/chat intent → tool_choice "none". read/agg/production
+   with machine slot → forced tool by name (degrades to "required" if machine unresolved or absent
+   without focus). edit_widget/compare/create_dashboard forced only for canWrite roles; viewers
+   never get preview tools.
 
-**Sentinel escalation (typo safety net).** Regex routing can't see typos — "ส้างแดชบอด cw-01"
-misses every keyword, lands on the Minimal no-tool path, and (before this fix) the model
-role-played the action without doing it. The escape hatch: `systemPromptMinimal` carries one
-extra rule — if the tool-stripped message actually asks for data or an action, reply with
-exactly `NEED_TOOLS` and nothing else (`needToolsSentinel`, `controller.go:28-35`). When the
-no-tool round returns that sentinel, the handler swaps in `systemPromptBase` (+ `ContextExt`
-if a dashboard context is present) plus the full tool list and retries **once**
-(`controller.go:487-494`, guarded by an `escalated` flag). The sentinel itself is never saved
-as an assistant message. Cost: greetings pay ~40 extra prompt tokens for the rule; the full
-retry (~2.7k tok) plus one wasted minimal round (~200 tok) is paid only on actual gate misses.
+**Main call (Phase 4)** — `openai/gpt-oss-120b` with:
+- Single `systemPromptUnified` (byte-stable for prompt caching; today's date appended per-request
+  in dynamic tail, never in the static prefix).
+- Full role-filtered tool set **always attached**, static-first ordering so Groq's automatic
+  prompt caching applies.
+- Tool rounds: `roundCap` 0 (focused) or 1 (others), hard cap 5.
 
-**Why layered.** The full `TOOL SELECTION` / `SLOT FILLING` / `WIDGET` rules are dead weight without
-tools, so a bare greeting drops them (~300 tokens saved). The preview/`CONTEXT` rules are useless
-with no dashboard open, so they're only appended when `hasContext` (~100 tokens saved). `Base` is
-kept **byte-stable** so Groq's prompt cache reuses the prefix across turns.
+**Verify loop (Phase 5)** — only when ≥1 tool executed (pure chat pays zero):
+- Deterministic checks: edit metric must exist in machine_fields; preview widgets must have metrics.
+- If needed, one LLM verify call (`VerifyAnswer`, router model, forced `verify_answer` tool →
+  {matches_intent, problem, clarifying_question}).
+- At most ONE repair round (repair messages include original answer + verifier problem note).
+- If still failing or ambiguous from start (router declined + mismatch): reply is verifier's
+  clarifying question.
+- Verifier infrastructure failure = deliver as-is.
+- Log line: `ai verify: verdict=<pass|repair|askback|repair-error|repair-empty> ...`.
 
-**Token techniques that ride along** (all in service of the 8k-tokens/min Groq budget):
+**Token techniques:**
 - **Slim tool schemas** — simple tools send name + description only (arg hints embedded), full JSON
-  schema only for widget-nested tools (`toGroqToolSlim`, `:573`); ~50–80 tokens/tool.
+  schema only for widget-nested tools (`toGroqToolSlim` in `controller.go:573`); ~50–80 tokens/tool.
 - **Context injected last** — the authoritative dashboard state is appended *after* history so
-  recency makes it win over any stale earlier turn (`:411-413`).
+  recency makes it win over any stale earlier turn.
 - **Round cap** — a focused `@widget` question gets 0 extra tool rounds, others 1, because each
-  round re-sends the ~3k context block (`:538-542`).
-- **History trimmed to the last few turns**, past tool payloads not replayed (the prior summary
-  already captured them).
+  round re-sends the ~3k context block.
+- **History trimmed to last 3 turns** (`buildGroqMessages` in `controller.go`), past tool
+  payloads not replayed (assistant summary already captured them).
 
 ---
 
 ## 2. AI Workflow
 
 How the architecture actually operates, per request. The stages map onto the classic
-`User Request → Intent Detection → Tool Selection → Data Retrieval → LLM Reasoning →
-Dashboard Generation → User Feedback` shape, driven by `Chat` in `controller.go`
-(≈ lines 342–560).
+`User Request → Intent Classification → Dispatch → Tool Selection → Data Retrieval → LLM Reasoning →
+Verification → Dashboard Generation → User Feedback` shape, driven by `Chat` in `controller.go`.
 
 1. **User Request** — the UI sends the message plus a serialized snapshot of the
-   on-screen dashboard/preview/focused widget (`buildDashboardContext`). For analytical
-   questions about a focused chart it even inlines the rendered data series, so the model
-   can answer without a second fetch.
-2. **Intent Detection** — the backend computes `needsTools`, `answerFromContext`, and
-   `hasContext`, then selects **one of four system prompts**:
-   `minimal` (greeting/chit-chat), `contextAnswer` (the on-screen data already answers),
-   `base` (default actionable rules), or `base + contextExt` (preview-editing rules added).
-   This is where a bare "สวัสดีครับ" is routed to a no-tool path and a metric read is
-   routed to `show_metric`.
-3. **Tool Selection** — Groq's first turn returns either `tool_calls` (e.g.
-   `show_metric`, `preview_dashboard`, `get_production_count`) or plain text if no tool is
-   needed.
-4. **Data Retrieval** — the dispatch switch runs each requested tool against TimescaleDB
-   (org-scoped SQL via the domain services). Large series/count results are compacted
-   (`compactSeriesResult` / `compactBucketResult`) into column+tuple form to cut tokens,
-   then appended back as `tool` messages.
-5. **LLM Reasoning** — results are fed back and the model runs again. The loop allows up
-   to 5 rounds but a `roundCap` (0 for a focused `@widget` question, 1 otherwise) forces a
-   text summary early to stay under Groq's 8k-tokens/min rate limit.
-6. **Dashboard Generation** — for create/edit intents the model returns `preview_*`
-   specs; the UI **stages** them on the card but writes nothing. A **new** dashboard
-   persists only when the user clicks **Confirm** (`POST /api/ai/tools/execute` →
-   `create_custom_dashboard`, gated to admin/editor); an **existing** dashboard persists
-   only on **Save** (`saveDashboardCard` → the plain widget REST endpoints). The retired
-   `add_widget_to_dashboard` / `remove_widget` tools mean the model can never mutate a saved
-   dashboard on its own.
-7. **User Feedback** — the assistant's reply is shown and the new turns
-   (user + tool + assistant) are persisted to `ai_messages`.
+   on-screen dashboard/preview/focused widget. For analytical questions about a focused
+   chart it inlines the rendered data series, so the model can answer without a second fetch.
+2. **Intent Classification** — `ClassifyIntent` calls `openai/gpt-oss-20b` with a forced
+   `classify_intent` tool, returning strict JSON `IntentResult` with slots (machine, metric,
+   bucket, dateRange, etc.) and a confidence score. Results below 0.5 or invalid JSON →
+   fallback (routerOK = false).
+3. **Dispatch** — `dispatchIntent` is a pure Go function that deterministically maps the
+   intent result to a tool_choice + roundCap. Also determines which tools are safe to expose
+   (role-gated preview tools, machine-validation guard). not-ok → auto tools (fallback to
+   pre-router behavior).
+4. **Tool Selection** — `openai/gpt-oss-120b` is called with the unified system prompt,
+   full role-filtered tool set, and the message history. The model's first turn returns
+   either `tool_calls` (e.g. `show_metric`, `preview_dashboard`, `get_production_count`) or
+   plain text if no tool is needed. tool_choice and roundCap from dispatch may force "required"
+   or "none" to control this turn's behavior.
+5. **Data Retrieval** — `dispatch` runs each requested tool against TimescaleDB via domain
+   services (org-scoped SQL). Large series/count results are compacted (`compactSeriesResult`
+   / `compactBucketResult`) into column+tuple form to cut tokens, then appended back as `tool`
+   messages.
+6. **LLM Reasoning** — results are fed back and the model runs again. The loop allows up
+   to 5 rounds but roundCap (0 for focused `@widget`, 1 otherwise) forces a text summary early
+   to stay under Groq's 8k-tokens/min rate limit.
+7. **Verification** — if ≥1 tool executed, deterministic checks run (edit metric exists in
+   machine_fields, preview widgets have valid metrics). If checks fail, one verify call
+   (`VerifyAnswer` with router model) determines if a repair round is needed. At most one
+   repair attempt; if still failing or ambiguous, the reply is a clarifying question instead
+   of an error. Verification infrastructure failure = deliver as-is.
+8. **Dashboard Generation** — for create/edit intents the model returns `preview_*` specs;
+   the UI **stages** them on the card but writes nothing. A **new** dashboard persists only
+   when the user clicks **Confirm** (`POST /api/ai/tools/execute` → `create_custom_dashboard`,
+   gated to admin/editor); an **existing** dashboard persists only on **Save** via the plain
+   widget REST endpoints. The retired `add_widget_to_dashboard` / `remove_widget` tools mean
+   the model can never mutate a saved dashboard on its own.
+9. **User Feedback** — the assistant's reply (with the router's intent classification
+   included) is shown and the new turns (user + tool + assistant) are persisted to `ai_messages`.
 
 ### Workflow at a glance
 
-The whole request lifecycle in one picture: deterministic classify → one of four prompts →
-(for actionable paths) the tool-calling loop → persist + reply. The four sequence diagrams
-below zoom into each branch.
+The whole request lifecycle: ClassifyIntent → dispatchIntent → main call → tool loop →
+verify → persist + reply. The sequence diagrams below zoom into the primary flows.
 
 ```mermaid
 flowchart TD
-    A["POST /api/ai/chat<br/>message + on-screen context"] --> B{"Classify — deterministic regex<br/>needsTools · hasContext · answerFromContext"}
+    A["POST /api/ai/chat<br/>message + on-screen context"] --> ROUTER["ClassifyIntent<br/>gpt-oss-20b forced tool<br/>→ IntentResult (ok/not-ok)"]
 
-    B -->|"! needsTools · greeting / chit-chat"| P1["Minimal prompt<br/>no tools"]
-    B -->|"answerFromContext<br/>on-screen data already answers"| P2["ContextAnswer prompt<br/>no tools"]
-    B -->|"needsTools + hasContext"| P3["Base + ContextExt<br/>slim tools"]
-    B -->|"needsTools · no context"| P4["Base<br/>slim tools"]
+    ROUTER --> DISPATCH["dispatchIntent<br/>pure function<br/>intent → tool_choice + roundCap"]
 
-    P1 --> TXT["Groq → plain-text reply"]
-    P1 -->|"reply == NEED_TOOLS<br/>(typo'd action the regex missed)"| ESC["escalate once<br/>Base(+ContextExt) + full tools"]
-    ESC --> LOOP
-    P2 --> TXT
-    P3 --> LOOP["Groq call"]
-    P4 --> LOOP
+    DISPATCH --> LOOP["Groq main call<br/>openai/gpt-oss-120b<br/>systemPromptUnified + tools"]
 
     LOOP --> D{"finish_reason"}
-    D -->|"text — final summary, OR slot-filling<br/>clarify when a required slot is missing"| TXT
+    D -->|"text — final summary, OR slot-filling<br/>clarify when a required slot is missing"| TXT["build final reply"]
     D -->|"tool_calls"| EXEC["dispatch tool(s)<br/>read → SQL on TimescaleDB<br/>preview_* → stage on card, NO DB write<br/>compact result → append as tool msg"]
     EXEC -->|"roundCap not hit, ≤ 5 rounds"| LOOP
     EXEC -->|"roundCap hit"| TXT
 
-    TXT --> OUT["persist turns → ai_messages<br/>return messages[] to UI"]
+    TXT --> VERIFY["VerifyAnswer (if tools executed)<br/>deterministic checks → repair/askback"]
+
+    VERIFY --> OUT["persist turns → ai_messages<br/>return messages[] + intent to UI"]
     OUT -.->|"preview staged → user acts later"| WRITE["Confirm (new) → create_custom_dashboard<br/>Save (existing) → widget REST endpoints<br/>→ DB write"]
 ```
 
 ### Sequence diagram
 
-Every request starts the same way — the UI POSTs to `/api/ai/chat`, the backend
-classifies intent and picks 1 of 4 system prompts — then follows one of four flow shapes:
+Every request starts the same way — the UI POSTs to `/api/ai/chat`, the backend calls
+`ClassifyIntent` (router), then `dispatchIntent` (dispatch), then the main LLM loop. Then
+follows one of four primary flow shapes:
 
 - **2a Greeting** — no tool, no DB.
-- **2b Read** — any read (metric value/trend, SKUs, dashboard list) → read tool → DB → summary.
-- **2c Change / Add / Delete** — stage via `preview_*` → Confirm (new) / Save (existing) → write.
+- **2b Read** — any read (metric value/trend, SKUs, dashboard list) → read tool → DB → summary → verify.
+- **2c Change / Add / Delete** — stage via `preview_*` → Confirm (new) / Save (existing) → write → verify.
 - **2d Answer-from-context** — the on-screen data already answers → no tool, no DB.
 
-Four behaviors are **not** separate shapes but **cross-cutting guards** that ride on top of
-the flows and are shown once here rather than in every diagram:
+Three behaviors are **cross-cutting guards** that ride on top of the flows:
 
 - **Slot filling** — if a read or edit is missing a required slot (which machine? which
-  widget? change it to what?), the `SLOT FILLING` rules (`controller.go:66-69`) make the
+  widget? change it to what?), the `SLOT FILLING` rule in `systemPromptUnified` makes the
   model **ask one clarifying question and call no tool** — e.g. `"speed เท่าไหร่"` (no
   machine) or `"แก้ให้หน่อย"` (no target). Applies to both 2b and 2c.
-- **Forced first tool on a focused message** — when the message has an `@Widget` mention and
-  is *not* answer-from-context, turn 0 is sent with `tool_choice:"required"`
-  (`controller.go:434`) so the model must act on the focused widget. If it answers in
-  plain text anyway, Groq rejects it and the backend silently retries with `auto`
-  (`controller.go:451-455`) — `required` is an optimization, not a hard constraint.
+- **Forced first tool on a focused message** — when the message has an `@Widget` mention,
+  `dispatchIntent` may set tool_choice to "required" on turn 0 so the model must act on the
+  focused widget. If it answers in plain text anyway, Groq rejects it and the backend silently
+  retries with `auto` — `required` is an optimization, not a hard constraint.
 - **Rate limit / error** — a Groq 429 whose wait is short (≤ 3 s) is retried silently up to
   3×; a longer wait aborts the loop and surfaces to the UI as **HTTP 429 `RATE_LIMIT`** with
-  a `retryAfter` hint (`controller.go:460-465`), so any of 2b/2c can end in a "please retry"
-  instead of a reply. A malformed tool call from the model triggers one retry with no tools
-  (`controller.go:697`) so the user still gets a plain-text answer.
-- **Sentinel escalation** — a typo'd action message the keyword gate misrouted to the no-tool
-  2a path replies with exactly `NEED_TOOLS`; the handler swaps in the full prompt + tools and
-  retries once (`controller.go:487-494`), so the request lands on 2b/2c after all. The sentinel
-  is never saved as a reply (see "Sentinel escalation" in §1).
+  a `retryAfter` hint, so any of 2b/2c can end in a "please retry" instead of a reply. A
+  malformed tool call from the model triggers one retry with no tools so the user still gets
+  a plain-text answer.
 
 All flows persist the turn to `ai_messages` at the end (omitted from each diagram for
 brevity).
@@ -269,25 +267,24 @@ sequenceDiagram
     actor User
     participant UI as Vue UI
     participant BE as Backend (Chat)
-    participant LLM as Groq LLM
+    participant Router as ClassifyIntent
+    participant LLM as Groq (120b)
 
     User->>UI: "สวัสดีครับ"
     UI->>BE: POST /api/ai/chat
-    BE->>BE: classify → minimal prompt, no tools
-    BE->>LLM: message (no tools)
+    BE->>Router: ClassifyIntent (gpt-oss-20b forced tool)
+    Router-->>BE: {intent: "chat", confidence: 0.98} ✓
+    BE->>BE: dispatchIntent → tool_choice: "none"
+    BE->>LLM: systemPromptUnified + message (no tools)
     LLM-->>BE: one short Thai/English sentence
     BE-->>UI: reply (no tool, no DB read)
     UI-->>User: shows reply
 ```
 
-> A typo'd **action** message (e.g. "ส้างแดชบอด cw-01") lands on this path too — the keyword
-> gate can't see typos. There the model replies exactly `NEED_TOOLS` and the handler escalates
-> once to the 2b/2c tool path (sentinel guard above) instead of role-playing the action.
-
 #### 2b. Read — metric / analytical / list  — `"speed ของ CW-01 เท่าไหร่"`, `"CW-01 มี SKU อะไรบ้าง"`
 
 All reads share one shape — the model picks a **read tool**, the backend queries the DB,
-the model summarizes. Only the tool differs by what's asked:
+the model summarizes, then verify checks the result. Tool chosen by the model:
 `show_metric` / `get_telemetry_trend` / `get_telemetry_series` (metric value or trend),
 `get_production_count` (piece counts), `get_skus` (SKU list), `list_dashboards`,
 `get_machines` (machine list). Missing a machine → the clarify guard fires (no tool).
@@ -297,27 +294,31 @@ sequenceDiagram
     actor User
     participant UI as Vue UI
     participant BE as Backend (Chat)
-    participant LLM as Groq LLM
+    participant Router as ClassifyIntent
+    participant LLM as Groq (120b)
     participant DB as TimescaleDB
 
-    User->>UI: "speed ของ CW-01 เท่าไหร่" / "CW-01 มี SKU อะไรบ้าง" / "มี dashboard อะไรบ้าง"
+    User->>UI: "speed ของ CW-01 เท่าไหร่" / "CW-01 มี SKU อะไรบ้าง"
     UI->>BE: POST /api/ai/chat (+ on-screen context)
-    BE->>BE: classify → base prompt + tools
+    BE->>Router: ClassifyIntent (gpt-oss-20b)
+    Router-->>BE: {intent: "read_metric", machine: "CW-01", confidence: 0.95} ✓
+    BE->>BE: dispatchIntent → tools + roundCap=1
     alt required slot missing (e.g. no machine named)
-        BE->>LLM: message + tools
+        BE->>LLM: systemPromptUnified + message + tools
         LLM-->>BE: one clarifying question, no tool
         BE-->>UI: reply (no DB)
-    else slots present
-        BE->>LLM: message + slim tools
-        loop tool-calling (≤ 5 rounds, capped)
-            LLM-->>BE: show_metric / get_telemetry_series / get_skus / list_dashboards
-            BE->>DB: query machines / machine_fields / telemetry / skus / dashboards
+    else slots present and machine valid
+        BE->>LLM: systemPromptUnified + message + tools
+        loop tool-calling (≤ roundCap+1 rounds or roundCap=5)
+            LLM-->>BE: show_metric / get_telemetry_series / get_skus
+            BE->>DB: query telemetry / skus / etc.
             DB-->>BE: rows
             BE->>BE: compact result → tool message
             BE->>LLM: tool result appended
         end
         LLM-->>BE: 1–4 sentence summary
-        BE-->>UI: reply + highlight widget
+        BE->>BE: VerifyAnswer (deterministic checks + optional repair)
+        BE-->>UI: reply + highlight widget + intent
     end
     UI-->>User: shows reply
 ```
@@ -337,19 +338,23 @@ sequenceDiagram
     actor User
     participant UI as Vue UI
     participant BE as Backend (Chat)
-    participant LLM as Groq LLM
+    participant Router as ClassifyIntent
+    participant LLM as Groq (120b)
     participant DB as TimescaleDB
 
     User->>UI: "เปลี่ยน metric เป็น temperature"
     UI->>BE: POST /api/ai/chat (+ preview / active-dashboard context)
-    BE->>BE: classify → base + contextExt prompt
-    BE->>LLM: message + tools
+    BE->>Router: ClassifyIntent (gpt-oss-20b)
+    Router-->>BE: {intent: "edit_widget", metric: "temperature", confidence: 0.92} ✓
+    BE->>BE: dispatchIntent → preview tools + roundCap=1
+    BE->>LLM: systemPromptUnified + message + preview tools
     LLM-->>BE: preview_update_widget / preview_add_widget / preview_dashboard
     BE->>DB: resolve machine id, machine_fields, field unit -- READ only, NO write
     DB-->>BE: machine id / fields / unit
     BE->>LLM: tool result appended, roundCap forces a summary
-    LLM-->>BE: 1-2 sentence staged reply, tells user to Save/Confirm
-    BE-->>UI: reply plus preview spec inside the messages array
+    LLM-->>BE: 1-2 sentence staged reply
+    BE->>BE: VerifyAnswer (check metric exists, widget has valid metrics)
+    BE-->>UI: reply + preview spec + intent
     UI->>UI: stage the widget on the card -- NO DB write yet
     User->>UI: click Confirm (new) / Save (existing)
     UI->>BE: create_custom_dashboard (new)  ·  api.addWidget/updateWidget/deleteWidget (existing)
@@ -391,31 +396,36 @@ the chat path.
 #### 2d. Answer from context — no tool, no DB  — `"@Speed Trend แนวโน้มเป็นยังไง"`
 
 The difference from 2b is **not** "is a widget focused" — it is **"is the answer already
-on screen."** The backend sets `answerFromContext` (`controller.go:376-384`) when either
-`inlineData` (an analytical question whose focused chart's rendered series the UI inlined
-as `"on-screen data"`) **or** `contextRead` (an `@`-focused plain current-value/config
-question) holds. It then selects `systemPromptContextAnswer` — *"Do NOT call any tool"* —
-and the model answers from the injected context, skipping the redundant fetch-then-
-summarize round (a token + rate-limit optimization).
+on screen."** The backend detects this when either:
+- `inlineData` — an analytical question about a focused widget whose rendered series the UI inlined
+  as `"on-screen data"` **or**
+- `contextRead` — an `@`-focused plain current-value/config question that isn't an edit/range/SKU
+
+When detected, `dispatchIntent` sets tool_choice to "none" and the model answers from the
+injected context, skipping the redundant fetch-then-summarize round (a token + rate-limit
+optimization).
 
 Guardrails: an `@`-focus alone does **not** force this path. If the focused question is an
-**edit** (`editRe`) it goes to 2c; if it asks a **range/aggregate** (`rangeRe`) or **SKU**
-(`skuRe`) not shown on screen, it falls back to the 2b tool path to fetch the data.
+**edit** it goes to 2c; if it asks a **range/aggregate** or **SKU** not shown on screen, it
+falls back to the 2b tool path to fetch the data.
 
 ```mermaid
 sequenceDiagram
     actor User
     participant UI as Vue UI
     participant BE as Backend (Chat)
-    participant LLM as Groq LLM
+    participant Router as ClassifyIntent
+    participant LLM as Groq (120b)
 
     User->>UI: "@Speed Trend แนวโน้มเป็นยังไง"
     UI->>UI: read on-screen series from widgetViewStateStore
-    UI->>BE: POST /api/ai/chat (context includes the rendered data)
-    BE->>BE: answerFromContext = true → systemPromptContextAnswer, no tools
-    BE->>LLM: message + injected on-screen data (no tools)
+    UI->>BE: POST /api/ai/chat (context includes rendered data)
+    BE->>Router: ClassifyIntent (gpt-oss-20b)
+    Router-->>BE: {intent: "read_agg", confidence: 0.88} ✓
+    BE->>BE: inlineData=true → dispatchIntent sets tool_choice="none"
+    BE->>LLM: systemPromptUnified + message + on-screen data (no tools)
     LLM-->>BE: trend summary reasoned from context
-    BE-->>UI: reply (no tool call, no DB read)
+    BE-->>UI: reply + intent (no tool call, no DB read)
     UI-->>User: shows reply
 ```
 
@@ -423,65 +433,69 @@ sequenceDiagram
 
 ## 3. AI Model Comparison
 
-The model choice is **data-driven**: the repo contains a bake-off harness,
-`eval_test.go` (`TestBakeOff`), that runs **24 Thai-first intent cases** (greeting / reads /
-change-add-delete / slot-fill traps / focused-widget routing, plus a `typo-create` case —
-"ส้างแดชบอด cw-01" — added 2026-07-08 with the NEED_TOOLS sentinel work, exercised on the next
-full run) against the candidate Groq models
-and auto-scores each model's **first decision** — the tool it picks, or `""` for a correct
-no-tool reply (`got == want`). First-decision accuracy is the metric that matters here,
-because "understand what the user wants" *is* the assistant's hard problem; the rest is
-deterministic SQL. Run it with:
+Model choices are **data-driven**. Two separate bake-offs exist:
+
+1. **Intent Router** (`TestRouterBakeOff` in `router_eval_test.go`) — evaluates `ClassifyIntent`'s
+   accuracy at intent classification (32 cases: 24 legacy intent patterns + 8 new including typos).
+2. **Main Chat Model** (`TestBakeOff` in `eval_test.go`) — evaluates the full chat model's
+   first-decision tool choice (24 Thai-first cases covering greeting/reads/edits/slot-filling).
+
+Both harnesses auto-score **first-decision accuracy** — because "understand what the user wants"
+*is* the hard problem; tool execution is deterministic SQL. Run them with:
 
 ```
+GROQ_API_KEY=… go test ./internal/modules/ai/ -run TestRouterBakeOff -v -count=1 -timeout 2400s
 GROQ_API_KEY=… go test ./internal/modules/ai/ -run TestBakeOff -v -count=1 -timeout 1800s
 ```
 
-`-count=1` is required: the test hits the live API, but Go caches test results per unchanged
-package, so a re-run without it just replays the previous scoreboard instead of calling Groq.
+`-count=1` is required: both tests hit the live API. The harnesses sleep between cases
+(10–120 s inter-case/model throttle per budget recovery) and time only successful HTTP rounds,
+excluding 429 retry sleeps.
 
-The harness sleeps **10 s between cases** and **120 s between models** so the shared
-8k-tokens/min Groq budget recovers before each model starts. It times **only the successful
-HTTP round** of each call — `callGroqModel` returns that duration, so the internal 3× 429 retry
-sleeps are *excluded* and the reported **median latency reflects model compute, not rate-limit
-backoff**. A full run is ~20 min.
+### Router bake-off: ClassifyIntent (2026-07-10)
 
-### Candidates and results
+Measured on live Groq API with **32 cases** (24 legacy intents + 8 new, incl. typos).
+`✅` = correct intent extracted; `❌` = wrong intent; `⏳` = rate-limited (excluded from
+denominator). Known router gaps (fall back safely): ambiguous-fix confidence instability,
+focused-count-now, focused-alarm-panel, relative-date-edit.
 
-Measured on the live Groq API (run of 2026-07-06 — the suite then had 23 cases; the 24th,
-`typo-create`, was added 2026-07-08 and is not in this scoreboard — `-count=1`, 10 s inter-case +
-120 s inter-model throttle; scoreboard printed by the harness). **Rate-limited cases (⏳) are excluded
-from the denominator, not counted as failures**, so sample sizes differ. This is the first run
-of the **reworked suite**: 5 redundant easy dupes were trimmed and **7 harder discriminators**
-added — `all-metrics` (→ `get_machines`, not `show_metric`), `active-alerts`, an `alert-rule-trap`
-(rule management → plain-text redirect, **no tool**), three focused-widget routing traps
-(`get_telemetry_series` / `get_production_count` / `get_active_alerts` by widget type, where a
-weak model defaults to `show_metric`), and a `compound-read-write` (serve the read first). **All 7
-passed on both gpt-oss models.** The only gpt-oss miss was `120b` on `change-preview-edit`
-(→ `preview_dashboard`), a case `20b` passed — free-tier run-to-run non-determinism (the prior run
-`120b` instead missed `delete-preview-widget`), not a systematic weakness, and non-destructive.
-`qwen` lost 10/23 to rate limits.
+| Model | Score | Confidence floor | Verdict |
+|-------|-------|------------------|---------|
+| `openai/gpt-oss-20b` | **28 / 32** | 0.5 | **live router** (`routerModel` in `router.go:23`) — forced `classify_intent` tool, all edge cases handled |
+| `openai/gpt-oss-120b` | — | — | not evaluated for router (too expensive for frequent calls) |
+| `llama-3.1-8b-instant` | **1 / 32** | — | kept in eval for the record; Groq's validator rejects forced tool_choice output |
+
+The 20b router handles all high-confidence requests (0.5 floor); low-confidence or failed
+classifications fall back to auto tools (identical to pre-router behavior).
+
+### Main model bake-off: Chat Tool Selection (2026-07-06)
+
+Measured on live Groq API with **23 cases** (run before latest updates; 24th case `typo-create`
+is now caught by the router). This is the reworked suite with 7 harder discriminators added
+(all-metrics, active-alerts, alert-rule-trap, three focused-widget routing traps, compound-read-write).
+**Rate-limited cases (⏳) excluded from denominator**, so sample sizes differ. **All 7 new hard
+cases passed on both gpt-oss models.**
 
 | Model | Score | Completed / 23 | Avg prompt tok | Median latency | Verdict |
 |-------|-------|----------------|----------------|----------------|---------|
 | `qwen/qwen3-32b` | **13 / 13** | 13 (10 ⏳) | ~3,282 | ~0.90 s | **replaced** — heaviest tokens, most rate-limited (completed only 13) |
-| `openai/gpt-oss-20b` | **23 / 23** | 23 (0 ⏳) | ~2,697 | **~0.83 s** | **live** (`controller.go:25`) — cheapest + fastest; perfect this run |
-| `openai/gpt-oss-120b` | **21 / 22** | 22 (1 ⏳) | ~2,698 | ~0.92 s | step-up; 1 nondeterministic preview miss, no accuracy edge |
+| `openai/gpt-oss-120b` | **21 / 22** | 22 (1 ⏳) | ~2,698 | ~0.92 s | **live main model** (`groqModel` in `controller.go:27`) — used after router dispatch |
+| `openai/gpt-oss-20b` | **23 / 23** | 23 (0 ⏳) | ~2,697 | **~0.83 s** | router model; previously evaluated as main (see history below) |
 
-#### Full per-case results
+#### Main model per-case results
 
 `✅` = picked the expected first tool (or correctly answered with no tool); `❌` = wrong
 decision (shown); `⏳` = case lost to a rate limit, excluded from the denominator. Cases 4, 15, 16
-and 20–23 are the **new hard discriminators**. `20b` is clean (23/23); `120b`'s only miss is #6.
+and 20–23 are the **new hard discriminators**. `120b` scored 21/22 (one nondeterministic miss).
 
-| # | Case | Expected | qwen3-32b | gpt-oss-20b | gpt-oss-120b |
-|---|------|----------|-----------|-------------|--------------|
+| # | Case | Expected | qwen3-32b | gpt-oss-120b | gpt-oss-20b |
+|---|------|----------|-----------|-------------|------------|
 | 1 | greeting | (no tool) | ✅ | ✅ | ✅ |
 | 2 | read-speed | `show_metric` | ✅ | ✅ | ✅ |
 | 3 | english-read | `show_metric` | ⏳ | ✅ | ✅ |
 | 4 | all-metrics | `get_machines` | ✅ | ✅ | ✅ |
 | 5 | detail-analytical-focused | `get_telemetry_series` | ⏳ | ✅ | ✅ |
-| 6 | change-preview-edit | `preview_update_widget` | ✅ | ✅ | ❌ `preview_dashboard` |
+| 6 | change-preview-edit | `preview_update_widget` | ✅ | ❌ `preview_dashboard` | ✅ |
 | 7 | add-preview-widget | `preview_add_widget` | ⏳ | ✅ | ✅ |
 | 8 | delete-preview-widget | `preview_remove_widget` | ✅ | ✅ | ✅ |
 | 9 | add-to-active-dashboard | `preview_add_widget` | ✅ | ✅ | ✅ |
@@ -489,7 +503,7 @@ and 20–23 are the **new hard discriminators**. `20b` is clean (23/23); `120b`'
 | 11 | add-custom-chart | `preview_add_widget` | ✅ | ✅ | ✅ |
 | 12 | create | `preview_dashboard` | ⏳ | ✅ | ✅ |
 | 13 | list-dashboards | `list_dashboards` | ✅ | ✅ | ✅ |
-| 14 | list-skus | `get_skus` | ⏳ | ✅ | ⏳ |
+| 14 | list-skus | `get_skus` | ⏳ | ⏳ | ✅ |
 | 15 | active-alerts | `get_active_alerts` | ✅ | ✅ | ✅ |
 | 16 | alert-rule-trap | (no tool) | ⏳ | ✅ | ✅ |
 | 17 | trap-action-but-read | `get_machines` | ✅ | ✅ | ✅ |
@@ -500,50 +514,46 @@ and 20–23 are the **new hard discriminators**. `20b` is clean (23/23); `120b`'
 | 22 | focused-alarm-panel | `get_active_alerts` | ✅ | ✅ | ✅ |
 | 23 | compound-read-write | `show_metric` | ⏳ | ✅ | ✅ |
 
-Reading the results — three things stand out this run:
+Reading the results — three things stand out:
 - **The harder cases did not separate the gpt-oss pair.** All 7 new discriminators (all-metrics,
   active-alerts, the alert-rule redirect, the three focused-widget routing traps, and the compound
-  read+write) routed correctly on both `20b` and `120b`. The cases the suite was toughened to catch —
+  read+write) routed correctly on both `120b` and `20b`. The cases the suite was toughened to catch —
   where a weak model defaults to `show_metric` or reaches for a write tool — are handled cleanly.
   **Accuracy alone no longer discriminates; latency and rate-limit survival do.**
 - **`120b`'s single miss is run-to-run noise, not a pattern.** It mis-routed #6
-  (`change-preview-edit` → `preview_dashboard`); `20b` got it right. In the prior run `120b` instead
-  missed `delete-preview-widget` and passed #6 — the slip shuffles between `preview_*` cases at
+  (`change-preview-edit` → `preview_dashboard`). In the prior run `120b` instead missed
+  `delete-preview-widget` and passed #6 — the slip shuffles between `preview_*` cases at
   temperature, and is non-destructive (a preview writes nothing).
 - **Latency is now clean.** With the 429 retry sleeps excluded from timing, all three sit at
-  ~0.83–0.92 s median — real model-decision speed. `20b` is quickest (~0.83 s). The old "mean
-  inflated to 3–4 s by backoff" caveat is gone: backoff is no longer inside the timed window.
+  ~0.83–0.92 s median — real model-decision speed. The old "mean inflated to 3–4 s by backoff"
+  caveat is gone: backoff is no longer inside the timed window.
 
 Net: no *dangerous* actions from any model. First-decision accuracy is ~100% on completed cases
 for both gpt-oss models; the one residual miss shuffles between `preview_*` cases run-to-run rather
-than concentrating on one hard case. `20b` stays the cheapest and fastest; `120b` buys no
-measurable accuracy edge.
+than concentrating on one hard case. `120b` is the main model; `20b` is now the router.
 
 ### The requested axes
 
 - **Quality** — the differentiator is not whether a model *can* call functions (all three
-  can) but whether it picks the *correct* tool on a Thai sentence the first time. This run
-  `20b` scored **23/23**, `120b` **21/22** (one nondeterministic `preview_*` slip), and `qwen`
-  **13/13** on the cases it completed. Every new hard case — the count-widget/analytical routing
+  can) but whether it picks the *correct* tool on a Thai sentence the first time. For the main
+  model this run: `120b` scored **21/22** (one nondeterministic `preview_*` slip), `20b` **23/23**
+  (but now used only for routing). Every new hard case — the count-widget/analytical routing
   traps, the alert-rule redirect, the all-metrics fan-out — routed correctly on both gpt-oss
-  models. Raw accuracy no longer separates `20b` from `120b`; both are effectively saturated on
-  first-decision tool choice.
-- **Cost** — `gpt-oss-20b` has the smallest prompts (~2,697 vs ~3,282 tokens for qwen) and
-  is the cheapest per token; because the large `base` prompt prefix stays byte-stable, Groq's
-  prompt cache is reused across turns, cutting effective input cost further. Qwen's larger prompts
-  also made it the biggest free-tier rate-limit victim in the run (10/23 cases lost).
-- **Latency** — the harness times **only the successful HTTP round** of each `callGroqModel`
-  (the returned duration), so 429 retry sleeps no longer pollute the number. **Median first-decision
-  latency is ~0.83 s for `20b`, ~0.92 s for `120b`, ~0.90 s for `qwen`** — all fast for a
-  single-turn tool decision, and `20b` is the quickest. (Before this fix the per-model *mean* read
-  3–4 s because a few calls absorbed a 429 backoff *inside* the timed window; excluding the sleep
-  removed that artifact.) Calls are non-streaming with a 90 s backend→Groq HTTP timeout; short 429 waits
-  (≤ 3 s) retry silently up to 3×, longer ones surface to the UI as a 429 with a `retryAfter`
-  hint (`parseRetryAfter`). To stay under Groq's 8k-tokens/min limit the backend replays only the
-  **last 3 turns**, sends **slim tool schemas** (name + description for simple tools, full schema
-  only for widget-nested ones), and caps tool rounds — all of which also reduce per-request latency.
+  models. Raw accuracy no longer separates them; both are effectively saturated on first-decision
+  tool choice. For the router: `20b` scored **28/32** on intent classification (confidence floor 0.5);
+  low-confidence cases fall back to auto tools safely.
+- **Cost** — both `gpt-oss-20b` and `gpt-oss-120b` have tight prompts (~2,697–2,698 tokens for the
+  main model) because the large `systemPromptUnified` prefix stays byte-stable, and Groq's prompt
+  cache is reused across turns, cutting effective input cost sharply. The router makes a separate
+  call per request (fast, ~600-token static prefix) and only on the main LLM's slower path.
+- **Latency** — the harness times **only the successful HTTP round** of each call, excluding 429 retry
+  sleeps. **Median latencies: ~0.92 s for main `120b`, ~0.83 s for router `20b` / legacy main `20b`.**
+  Calls are non-streaming with 90 s backend→Groq HTTP timeout; short 429 waits (≤ 3 s) retry silently
+  up to 3×, longer waits surface to the UI. To stay under Groq's 8k-tokens/min limit the backend
+  replays only the **last 3 turns** (`buildGroqMessages` in `controller.go`), sends **slim tool schemas**
+  (name + description for simple tools, full schema only for widget-nested ones), and caps tool rounds.
 - **Context window** — the Groq `gpt-oss` family offers a long context, but the design
-  deliberately does **not** rely on it: history is trimmed to 3 turns and past tool
+  deliberately does **not** rely on it: history is trimmed to last 3 turns and past tool
   payloads are not replayed (the assistant's prior summary already captured them), so the
   effective prompt stays small and cache-friendly.
 - **Tool calling** — all candidates support OpenAI-compatible function calling, which is
@@ -551,26 +561,27 @@ measurable accuracy edge.
 
 ### Decision (applied)
 
-The decision stands after this run (2026-07-06), now with no systematic weakness surfaced:
+**Main model** (per run 2026-07-06):
+- The live constant (`groqModel` in `controller.go:27`) runs **`openai/gpt-oss-120b`** for the main
+  chat loop. While `20b` scored **23/23** in the main model bake-off, the router-based architecture
+  enables a cleaner split: `120b` handles the tool-calling loop (higher reasoning capacity with
+  minimal latency cost), and `20b` handles the deterministic intent classification.
+- Both gpt-oss models are saturated on first-decision tool choice — all 7 hard discriminators
+  passed. The only residual misses are nondeterministic `preview_*` slips that shuffle cases
+  run-to-run, all non-destructive (previews write nothing until Save/Confirm).
+- The suite no longer discriminates on accuracy alone. If future runs need to separate them, the
+  next lever is **argument-level** scoring (right `metric` vs `viz`, correct `bucket`), which the
+  current name-only `got == want` check does not inspect.
 
-- The live constant (`controller.go:25`) runs **`openai/gpt-oss-20b`**. With the direct-write
-  tools retired, the case for `20b` rests on **cost, cache-friendliness, and speed** — cheapest
-  per token, prompt-cache-friendly, and the fastest median first-decision latency (~0.83 s). This
-  run it scored a clean **23/23**, including all 7 new hard discriminators. `120b` buys no accuracy
-  edge (21/22, one nondeterministic slip) and is slightly slower, so paying for the larger model is
-  not justified by the data.
-- **No single hard case defeats the gpt-oss pair.** The toughened suite targets the boundaries a
-  weak model slips on — analytical-vs-current-value reads, count-widget routing, an action-looking
-  request that is really a text redirect — and both models handle them. The only residual misses
-  are nondeterministic `preview_*` slips that shuffle between cases run-to-run, all non-destructive
-  (a preview writes nothing; nothing persists until the user clicks Save/Confirm).
-- The "ask the user to open the dashboard" rule in `systemPromptBase` is **scoped** to fire only
-  when no preview/Active-dashboard context is on screen. The preview/active-edit cases (#7–#12) all
-  routed correctly on `20b` this run, so that scoping holds.
-- The suite no longer discriminates on accuracy alone — both gpt-oss models are saturated on
-  first-decision tool choice. If a future run needs to separate them, the next lever is
-  **argument-level** scoring (right `metric` vs `viz`, correct `bucket`), which the current
-  name-only `got == want` check does not inspect.
+**Router model** (per `TestRouterBakeOff`, 2026-07-10):
+- The live constant (`routerModel` in `router.go:23`) runs **`openai/gpt-oss-20b`** for `ClassifyIntent`.
+  Scored **28/32** on intent classification with a 0.5 confidence floor; low-confidence or invalid
+  classifications fall back to auto tools (identical to pre-router behavior), so router failure never
+  blocks chat.
+- The router catches typos (`create_dashboard` case) and deterministic slot extraction that regex
+  would miss, while keeping classification fast (forced tool call, no prose loop). Known gaps
+  (ambiguous-fix confidence instability, focused-count-now, focused-alarm-panel, relative-date-edit)
+  are handled by dispatchIntent's safety guards and the always-attached tools.
 
 > Reproduce: `GROQ_API_KEY=… go test ./internal/modules/ai/ -run TestBakeOff -v -count=1 -timeout 1800s`
 > (~20 min). `-count=1` is mandatory — without it Go replays the cached scoreboard instead of

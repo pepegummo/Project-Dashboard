@@ -4,25 +4,37 @@
 `backend/internal/modules/ai/` และ `frontend/src/pages/AIAssistantPage.vue`
 คู่กับ `AI_ARCHITECTURE.md` (รายละเอียดลึก) และ `AI_SLIDES_DIAGRAMS.md` (ภาพ present)
 
+---
+
+## อัปเดต 2026-07-10: ระบบ Intent Router (Tasks 1-5 shipped)
+
+ระบบเปลี่ยนจากการเลือก prompt ด้วย regex keyword → ใช้ LLM router (ClassifyIntent) บวก
+dispatcher (dispatchIntent) บวก verify loop. Q ที่ขึ้นต่อการออกแบบเดิมได้รับการอัปเดต:
+- **Q2, Q8, Q12, Q15** เปลี่ยนแปลงไป (อ่านข้อมูลด้านล่างสำหรับรายละเอียด)
+- **Q6** เพิ่มเติม: ตอนนี้มี router bake-off แยกจาก main bake-off
+- History cap: ลดจาก 8 → 3 messages
+
+
+
 ## สรุปสั้นทุกข้อ (ใช้เป็นสารบัญ)
 
 | # | คำถาม | คำตอบ 1 บรรทัด |
 |---|--------|----------------|
 | Q1 | ทำไม qwen ใช้ token เยอะกว่า | tokenizer หั่นภาษาไทยถี่กว่า ~20% — ข้อความเดียวกันกลายเป็น token มากกว่า เลยชน rate limit ก่อน |
-| Q2 | เลือก prompt ยังไง / แต่ละ prompt ต่างกันยังไง | regex ดู 3 สัญญาณ (needsTools / hasContext / answerFromContext) → เลือก 1 ใน 4 prompt ที่เบาที่สุดที่พอ |
+| Q2 | เลือก prompt ยังไง / router ทำงานยังไง | prompt เดียว (systemPromptUnified) + ClassifyIntent (gpt-oss-20b) → JSON intent → dispatchIntent (Go) ตัดสิน tool/role |
 | Q3 | mention (@) กับ highlight ต่างกันยังไง | mention = คนชี้ widget เข้า, highlight = AI ชี้กลับ |
 | Q4 | AI รู้ข้อมูล/แก้ config ได้ยังไง | AI แค่เลือก tool — backend รัน SQL จริง; setting ที่แก้ได้คือ args ของ `preview_update_widget` |
 | Q5 | แผนถัดไปมีอะไร ทำไมยังไม่ทำ | argument-level scoring / SSE / ลด prompt / parallel dispatch — รอวัดก่อนค่อยทำ (data-driven) |
-| Q6 | เทียบโมเดลวัดยังไง | bake-off 24 เคสไทย วัด first-decision accuracy + token + latency → เลือก gpt-oss-20b |
+| Q6 | เทียบโมเดลวัดยังไง | router bake-off 32 เคส (20b: 28/32), main bake-off 23 เคส (120b main, 20b router, qwen dropped) |
 | Q7 | answerFromContext คืออะไร / ถามข้อมูลบนจอแต่ไม่ @ | "คำตอบอยู่บนจอแล้ว" ต้อง @focus เท่านั้น — ไม่ @ จะเข้าเส้น tool ปกติ (AI fetch DB เอง) |
-| Q8 | ควรเปลี่ยน regex เป็น AI/vector router ไหม | ไม่ — regex ตัดสินแค่ขนาด prompt ไม่ใช่สมอง, มี sentinel เป็น safety net แล้ว, eval ยัง 100% |
+| Q8 | ควรใช้ AI router ไหม? | ใช้แล้ว (shipped Phase 2) — Groq prompt cache เปลี่ยนเศรษฐศาสตร์; router + verify loop + always-attached tools = safer |
 | Q9 | dispatch/executor คืออะไร · คุยเป็น JSON ไหม | dispatch = switch เช็คสิทธิ์แล้วเรียก executor จริง; ทั้ง chain เป็น JSON ตาม OpenAI spec |
 | Q10 | ทำไมไม่ใช้ LangGraph / agent framework | ระบบนี้*คือ* agent อยู่แล้ว — loop เองใน Go ไม่กี่ร้อยบรรทัด คุม token ได้ละเอียดกว่า และไม่เพิ่ม dependency |
 | Q11 | อธิบาย step ใน diagram (required/dispatch/compact/roundCap) | ไล่ทีละกลไกของ tool loop: บังคับ tool turn แรก → รัน tool → ย่อผล → จำกัดรอบ → บังคับสรุป |
-| Q12 | พิมพ์ผิดแต่อยากสร้างจริง Minimal จับได้ยังไง | โมเดลตอบ `NEED_TOOLS` เป๊ะ ๆ → backend retry ครั้งเดียวด้วย prompt เต็ม + tools (sentinel ไม่ลง DB) |
+| Q12 | พิมพ์ผิดแต่อยากสร้างจริง router จับได้ยังไง | ClassifyIntent อ่านคำผิดออก (LLM ไม่ regex) + verify loop หาปัญหา → repair/askback ถ้าต้อง |
 | Q13 | test แต่ละตัวทำอะไร | unit 4 ตัว (gate/เวลา/429) + live 2 ตัว (sentinel, bake-off 24 เคส) |
 | Q14 | AI รู้ได้ไงว่าใช้ tool ไหน ส่ง description ทุกตัวไหม | ใช่ — ส่งชื่อ+description ของ tool ที่ role/บริบทอนุญาตไปทุก request แล้วโมเดลเลือกเอง |
-| Q15 | Groq จำ history ไหม ต้องส่งเองไหม | ไม่จำ (stateless) — เราส่ง 8 ข้อความล่าสุดเองทุกครั้ง; prompt cache ช่วยเร็ว/ถูกขึ้นแต่ไม่ใช่ความจำ |
+| Q15 | Groq จำ history ไหม ต้องส่งเองไหม | ไม่จำ (stateless) — เราส่ง 3 ข้อความล่าสุดเองทุกครั้ง (ลดจาก 8); prompt cache ช่วยเร็ว/ถูก (ไม่ใช่ความจำ) |
 
 ---
 
@@ -42,33 +54,22 @@ qwen จึงโดน rate limit 10/23 เคส ในขณะที่ gpt-
 
 ---
 
-## Q2 — เลือก prompt อย่างไร / แต่ละ system prompt ต่างกันอย่างไร / needsTools, context คืออะไร
+## Q2 — เลือก prompt อย่างไร / system prompt เดียวหรือหลาย / router คืออะไร
 
-ตัดสินด้วยกฎ (regex) ที่ backend **ก่อน** เรียก AI — จ่าย token เท่าที่ข้อความนั้นต้องใช้จริง
-ดูจาก 3 สัญญาณ (`controller.go:380-394`):
+ตอนนี้ใช้ **prompt เดียว** (`systemPromptUnified` ใน `controller.go:30`) ส่งทุก request บวก
+full tool set พร้อมเสมอ (Groq prompt cache ช่วยเร็ว/ถูกลง 50% input discount).
 
-1. **needsTools?** — ข้อความ*น่าจะ*ต้องใช้ข้อมูล/ลงมือไหม: regex หา keyword เกี่ยวกับ metric/คำสั่ง
-   (speed, สร้าง, ลบ, เพิ่ม, alert…) หรือมี `@` mention — เจออย่างเดียวก็ผ่าน
-2. **hasContext?** — frontend แนบ snapshot ของ dashboard/preview ที่เปิดบนจอมาด้วยไหม
-   (`body.Context != ""`) — "context" ก็คือข้อความสรุปสถานะจอ ณ ตอนนั้น (widget อะไร ค่าอะไร)
-3. **answerFromContext?** — คำตอบอยู่ใน context นั้นแล้วหรือยัง (ดู Q7)
+แทน regex keyword gate, ตอนนี้มี **intent router** สองชั้น:
 
-แล้วเลือก 1 ใน 4 prompt (`controller.go:398-405`) — ต่างกันที่ "บรรจุกฎอะไร":
+1. **ClassifyIntent** (`router.go:20`): เรียก `openai/gpt-oss-20b` ด้วย forced `classify_intent`
+   tool → JSON `{intent, machine, metric, ...}` ที่ confidence floor 0.5 ↑. ต่ำกว่า 0.5 หรือ
+   invalid JSON → fallback (routerOK = false) = safe-mode: ใช้ tools ปกติแบบเดิม
+2. **dispatchIntent** (`controller.go:1021`): pure Go function ที่ map intent → tool_choice + roundCap
+   ตรงกัน + role gate (preview tools ให้ editor/admin เท่านั้น). ถ้า router failed → auto tools
 
-| กรณี | Prompt | tool | บรรจุอะไร |
-|------|--------|------|-----------|
-| ทักทาย/คุยเล่น | Minimal (~300 tok) | ไม่มี | identity + กฎภาษา + "ตอบสั้น" + กฎ `NEED_TOOLS` sentinel (ดู Q12) |
-| ข้อมูลอยู่บนจอแล้ว | ContextAnswer | ไม่มี — ตอบรอบเดียว | identity + ภาษา + "ห้ามเรียก tool ตอบจาก context ที่แนบ" |
-| ถาม/สั่งทั่วไป | Base | มี | สมองหลัก: TOOL SELECTION + SLOT FILLING + WIDGET TYPES |
-| แก้ widget บนจอ | Base + ContextExt | มี + กฎ preview | ทุกอย่างของ Base **บวก** กฎ preview-staging + routing `@Widget`/`[FOCUSED]` |
-
-**ทำไมทำแบบนี้:** แค่ทักทายไม่ควรจ่ายค่ากฎเลือก tool/widget แยก layer ทำให้ทักทายประหยัด
-~300 token, ไม่มี dashboard ก็ตัดกฎ preview อีก ~100 token และ Base ถูกล็อกให้ byte เหมือนเดิม
-ทุกครั้ง เพื่อให้ Groq ใช้ prompt cache ซ้ำได้
-
-**ถ้าไม่เจอ keyword เลย จะจบที่ Minimal ตายตัวไหม?** ไม่ — Minimal มี escape hatch: ถ้าข้อความ
-ที่หลุดมาจริง ๆ แล้วขอข้อมูล/สั่งงาน (เช่นพิมพ์ผิดจน regex มองไม่เห็น) โมเดลจะตอบ `NEED_TOOLS`
-แล้ว backend ยกระดับไปเส้น tool เต็มให้เองอีกรอบ — ดู Q12
+**ผล:** Model ที่เลือก tool/decide action (AI ยังตัดสินใจจริง), Go ตัดสินเรื่องรอบต่างๆ
+(เลือก model ไหน, บังคับ tool ไหน, ตัดโอกาส round กี่ครั้ง). ไม่มี "escape hatch sentinel" อีก
+เพราะ router จับ typo ได้ + verify loop + always-attached tools ทำ safety net ที่ดีกว่า
 
 ---
 
@@ -176,32 +177,35 @@ answerFromContext ต้องมี focus: `inlineData` จะแนบ series 
 
 ---
 
-## Q8 — ควรเปลี่ยน regex → ให้ AI เลือกเอง / vector matching ไหม?
+## Q8 — ควรใช้ AI router ไหม? ตอบแล้ว — ใช้แล้ว (Phase 2 shipped 2026-07-10)
 
-**สรุป: ไม่ควรเปลี่ยนตอนนี้**
+**สรุป: ใช้ LLM router แล้ว — Groq prompt cache เปลี่ยนเศรษฐศาสตร์**
 
-จุดที่มักเข้าใจผิด: **regex ไม่ได้ตัดสินใจแทน AI** — มันตัดสินแค่ "จะโหลด prompt/tool หนักแค่ไหน"
-ส่วน**การตัดสินใจจริง (เรียก tool ไหน, args อะไร) AI ทำเองอยู่แล้ว**ใน tool-loop
-ดังนั้น regex เป็นแค่ประตูคัดเบา ๆ ไม่ใช่สมอง → ไม่คุ้มลงทุนหนัก
+เดิม (ดู Q8 เก่า): regex เป็นเพียง "ประตูคัด prompt ขนาด" ไม่ใช่สมอง, อันตรายคือ false negative
+(บอก ไม่ต้อง tool ทั้งที่ต้อง). ตรรมชาติของปัญหา: regex ไม่ได้คำพิมพ์ผิด ("ส้างแดชบอด").
 
-| ทางเลือก | ต้นทุนเพิ่ม | ปัญหา |
-|----------|-------------|--------|
-| **ให้ AI เลือก prompt เอง** | +1 รอบเรียก LLM ก่อนรอบจริง (ทุกข้อความ รวมทักทาย) | ย้อนแย้ง (จะถามต้องส่ง prompt ก่อนอยู่ดี), สู้กับ budget 8k/min, non-deterministic ทดสอบยาก |
-| **Vector / semantic router** | embedding model (API=latency+key / local=dependency ใหม่) + ตัวอย่าง + threshold | ผิดข้อจำกัด "ห้าม dependency/Redis/table ใหม่", เกินจำเป็นสำหรับ 4 กลุ่ม, ไทย embedding ไม่แน่นอน, debug ยาก |
-| **regex (ปัจจุบัน)** | 0 | pin ด้วย eval ได้ (23/23), 0ms, ไม่มี dependency |
+ตอนนี้เปลี่ยน (shipped 2026-07):
+1. **ClassifyIntent** (LLM router) แทน regex keyword gate — อ่านคำผิดออก, slot extraction ชัดเจน
+2. **always-attached tools** — ไม่มีแบ่ง 4 prompt แล้ว, full role-filtered toolset ทุกครั้ง
+3. **verify loop** — ตรวจสอบผลก่อนตอบ, repair/askback ถ้าต้อง (ไม่แค่ role-play)
+4. **Groq prompt cache** — `systemPromptUnified` byte-stable + Groq automatic caching ทำให้รอบที่ 2+ เร็ว/ถูก
+   → router cost (1 call per message) จ่ายได้ (cache save กลบทั่ว)
 
-**Trade-off ที่บอกว่าไม่ควรเปลี่ยน:**
-1. ความผิดพลาดที่อันตรายคือ **false negative** (บอก "ไม่ต้อง tool" ทั้งที่ต้อง → AI ทำอะไรไม่ได้) —
-   regex จงใจตั้งให้ "ใจกว้าง" (keyword เยอะ + เจอ `@` ก็ผ่าน) กัน เคสนี้ได้แน่ ส่วน threshold แบบ
-   vector อาจ**เงียบ ๆ พลาด**
-2. มี safety net อยู่แล้ว: `tool_choice:required` ถ้าโมเดลปฏิเสธ fallback เป็น `auto`, โมเดลถามกลับได้
-   และล่าสุดมี **NEED_TOOLS sentinel** (Q12) ปิดรู false negative จากคำพิมพ์ผิดให้อีกชั้น
-3. eval ปัจจุบัน 100% — ไม่มีอะไรให้แก้ (YAGNI)
+ต้นทุน vs ประโยชน์:
+- **ต้นทุนเพิ่ม:** 1 รอบ router call (~600 tok, cached) ทุก request
+- **ประโยชน์:** catch typos (ส้างแดชบอด CW-01), slot extraction sure (ไม่ hallucinate machine), 
+  intent + slots → safer downstream dispatch
 
-**ควรกลับมาคิดใหม่เมื่อ:** intent เพิ่มเป็นหลายสิบกลุ่มจน regex ดูแลไม่ไหว, หรือ eval บน traffic
-จริงเริ่มตก → แล้ววัดก่อนเปลี่ยน "next lever" ที่ถูกต้องคือ argument-level scoring ไม่ใช่เปลี่ยน router
+| ส่วน | Q8 เก่า | Q8 ใหม่ |
+|-----|---------|---------|
+| Classifier | regex keyword gate | LLM ClassifyIntent (gpt-oss-20b forced tool) |
+| Typo safety | sentinel (Minimal → NEED_TOOLS → retry) ✓ extra cost ~200-2700 tok | router reads typos directly ✓ slot extraction sure |
+| Safety net | tool_choice:required + fallback + sentinel | always-attached tools + verify loop + fallback |
+| Cost | no extra route → layers save token | +1 route (cached) / request → total balanced |
+| Eval | main model 23/23, no sentinel case measured | router 28/32, main model 21/22 |
 
-> ตอนนี้แบ่งถูกแล้ว: **AI ตัดสินเรื่องสำคัญ (tool) / regex ตัดสินแค่เรื่องถูก (ขนาด prompt)**
+**เหตุผล:** prompt cache economics มาก — byte-stable prefix คืนผลตั้งแต่ call ที่ 2 (50% input discount).
+router ไม่ได้"ฟรี" แต่ margin ของมัน (speed + safety) ตัดได้ดี. ไม่ใช่ vector embedding ที่ก้อยหนัก.
 
 ---
 
@@ -285,27 +289,27 @@ answerFromContext ต้องมี focus: `inlineData` จะแนบ series 
 
 ---
 
-## Q12 — พิมพ์ผิดแต่อยากให้สร้างจริง Minimal จับ intent ได้อย่างไร (NEED_TOOLS sentinel)
+## Q12 — พิมพ์ผิดแต่อยากให้สร้างจริง router จับได้อย่างไร (ผ่าน ClassifyIntent + verify)
 
 ปัญหาเดิม: "ส้างแดชบอด cw-01" (สะกดผิด) ไม่ติด keyword ใด ๆ ใน regex → ถูกจัดเป็นคุยเล่น
 เข้า Minimal ที่**ไม่มี tools** → โมเดลเคยตอบ "กำลังสร้างให้ครับ" ทั้งที่ทำอะไรไม่ได้เลย (role-play)
 
-ทางแก้ (ship 2026-07-08): ให้ **ตัวโมเดลเองเป็นคนจับ intent แทน regex** — เพราะ LLM อ่านคำผิดออก:
+ทางแก้ (ship 2026-07-10): **LLM router อ่านคำผิดออก** ตรงๆ:
 
-1. `systemPromptMinimal` มีกฎเพิ่ม 1 ข้อ (`controller.go:41-42`): *ถ้าข้อความล่าสุดขอดูข้อมูล/
-   สร้าง/แก้/ลบอะไรก็ตาม — แม้สะกดผิด — ให้ตอบว่า `NEED_TOOLS` เท่านั้น* (ทักทายปกติตอบปกติ)
-2. backend เจอคำตอบที่เป็น `NEED_TOOLS` เป๊ะ ๆ บนเส้น no-tool (`:487-494`) → สลับเป็น
-   `systemPromptBase` (+ContextExt ถ้ามีจอเปิด) + tools ครบ แล้ว**วนใหม่อีก 1 รอบ**
-3. guard ด้วย flag `escalated` — ทำได้ครั้งเดียวต่อ request ไม่มีทางวนลูป และคำว่า `NEED_TOOLS`
-   **ไม่ถูกบันทึกเป็นคำตอบใน DB** (ผู้ใช้ไม่มีวันเห็น)
+1. **ClassifyIntent** (`router.go`) — LLM เอง (ไม่ regex) อ่านข้อความแม้สะกดผิด → JSON intent.
+   "ส้างแดชบอด cw-01" → `{intent: "create_dashboard", confidence: 0.75+}` ✓ catch ได้
+2. **dispatchIntent** → map intent → tools + role guard
+3. **Main call** + **verify loop** (ถ้า tools รัน) → ตรวจสอบผล (metric exist ไหม, widget valid ไหม)
+   → ถ้าต้อง, repair call (router model) → clarifying question ถ้ายังไม่ได้
+4. Router fallback safety: confidence < 0.5 หรือ invalid JSON → treat as "not-ok" → auto tools
+   (ไม่ขัดจังหวะ, ปลอดภัย)
 
-**ต้นทุน:** คำทักทายจ่ายเพิ่มแค่ ~40 token (ค่ากฎ 1 บรรทัด); ราคาเต็มของ retry (~2.9k token)
-จ่ายเฉพาะตอน regex พลาดจริง ๆ เท่านั้น
+**ต้นทุน:** ClassifyIntent ~600 tok cached, verify only ≥1 tool. Total balanced vs sentinel approach.
 
-**พิสูจน์แล้ว:** live test `TestMinimalPromptSentinel` (typo 2 แบบได้ sentinel, ทักทาย/คุยเล่นไม่ได้)
-+ ทดสอบจริงบน stack: "ส้างแดชบอด cw-01 ให้หน่อย" ได้ preview card จริง ไม่ใช่คำตอบเปล่า
+**ผลจริง:** Live router eval 28/32 (typo create-dashboard case ✓ caught). หากไม่แน่ใจ intent
+(low confidence) ตัวอื่นๆ (verify) ช่วยจับปัญหา → clarify ผู้ใช้ แทน role-play.
 
-> regex เป็นด่านแรกที่เร็วและฟรี — โมเดลเป็นด่านสองที่อ่านคำผิดออก ใช้จุดแข็งคนละอย่าง
+> LLM ดีที่อ่านคำผิด — router + verify ดีที่จับปัญหา + แนะสิ่งที่จะทำ
 
 ---
 
@@ -313,15 +317,15 @@ answerFromContext ต้องมี focus: `inlineData` จะแนบ series 
 
 | Test | ไฟล์ | ทดสอบอะไร | ชนิด |
 |------|------|-----------|------|
-| `TestNeedsTools` | dashboard_action_test.go | gate regex: ข้อความไหนควรได้ tools (รวม doc ว่า typo พลาดได้ — sentinel รับ) | unit |
+| `TestDispatchIntent` | dispatch_test.go | dispatchIntent pure function: intent → tool_choice + roundCap ก่อนเรียก LLM | unit |
 | `TestToDatetimeLocal` | dashboard_action_test.go | แปลงรูปแบบวันเวลาเป็น datetime-local ของ widget | unit |
 | `TestShortTimePtrBangkok` | timezone_test.go | format เวลาโซนกรุงเทพ (UTC+7) ถูกต้อง | unit |
 | `TestParseRetryAfter` | ratelimit_test.go | อ่านค่า wait จาก 429 (header/body) + เพดาน 30s | unit |
-| `TestMinimalPromptSentinel` | sentinel_live_test.go | ยิง Groq จริง: typo ได้ `NEED_TOOLS`, ทักทายไม่ได้ | live (ต้องมี `GROQ_API_KEY`, ~40s) |
-| `TestBakeOff` | eval_test.go | เทียบโมเดล 24 เคสไทย วัด first-decision tool accuracy + token + latency | live (~20 นาที, รันเมื่อจะเปลี่ยนโมเดล) |
+| `TestRouterBakeOff` | router_eval_test.go | ยิง ClassifyIntent ด้วย 2 models บน 32 เคส typo/intent — 20b: 28/32 | live (~30 นาที, ต้อง `GROQ_API_KEY`) |
+| `TestBakeOff` | eval_test.go | เทียบโมเดล main 23 เคสไทย วัด first-decision tool accuracy + token + latency | live (~20 นาที, รันเมื่อจะเปลี่ยนโมเดล) |
 
 รันเฉพาะ unit: `cd backend; go test ./internal/modules/ai/` (live 2 ตัว skip เองถ้าไม่มี key;
-bake-off ต้องใส่ `-run TestBakeOff -count=1` ถึงจะรัน)
+bake-off ต้องใส่ `-run Test(Router)BakeOff -count=1` ถึงจะรัน)
 
 ---
 
@@ -353,14 +357,14 @@ bake-off ต้องใส่ `-run TestBakeOff -count=1` ถึงจะรั
 **ไม่จำ — และต้องส่งเองทุกครั้ง** Chat completions API เป็น **stateless**: แต่ละ request คือ
 กระดาษเปล่า โมเดลรู้เฉพาะสิ่งที่แนบไปใน `messages[]` ของ request นั้น จบ request ก็ลืมหมด
 
-ฝั่งเราจัดการอย่างนี้ (`controller.go:368-374`):
-- history เก็บใน DB ของเราเอง (`ai_messages`) แล้วแนบไปกับทุก request **แค่ 8 ข้อความล่าสุด**
-  (~3–4 turn) — พอให้คุยต่อเนื่อง ไม่บวม token
+ฝั่งเราจัดการอย่างนี้ (`buildGroqMessages` in `controller.go`):
+- history เก็บใน DB ของเราเอง (`ai_messages`) แล้วแนบไปกับทุก request **แค่ 3 ข้อความล่าสุด** (ลดจาก 8)
+  (~1.5 turn) — พอให้ context บริบท ไม่บวม token
 - tool payload เก่า ๆ ไม่ถูก replay — คำสรุปของ assistant รอบก่อนจับใจความไว้แล้ว
 
 **แล้ว prompt cache ที่พูดถึงคืออะไร?** คนละเรื่องกับความจำ — มันคือ Groq **cache ผลการ
-ประมวลผล** ของ prompt ส่วนหัวที่ byte เหมือนเดิมทุกครั้ง (เราจงใจล็อก `systemPromptBase`
-ให้นิ่งเพื่อสิ่งนี้) ทำให้ request ถัดไป**เร็วขึ้น/ถูกลง** แต่**ไม่ได้แปลว่าโมเดลจำอะไรได้** —
-ข้อความทุกตัวอักษรยังต้องส่งไปเต็ม ๆ ทุกครั้งเหมือนเดิม
+ประมวลผล** ของ prompt ส่วนหัวที่ byte เหมือนเดิมทุกครั้ง (เราจงใจล็อก `systemPromptUnified`
+ให้นิ่งเพื่อสิ่งนี้) ทำให้ request ถัดไป**เร็วขึ้น/ถูกลง** (50% input discount) แต่**ไม่ได้แปลว่า
+โมเดลจำอะไรได้** — ข้อความทุกตัวอักษรยังต้องส่งไปเต็ม ๆ ทุกครั้งเหมือนเดิม
 
-> สรุป: ความจำ = DB ของเรา + ส่ง 8 ข้อความล่าสุดไปเอง · cache = แค่ทางลัดการคำนวณ ไม่ใช่ความจำ
+> สรุป: ความจำ = DB ของเรา + ส่ง 3 ข้อความล่าสุดไปเอง · cache = แค่ทางลัดการคำนวณ (50% discount) ไม่ใช่ความจำ
