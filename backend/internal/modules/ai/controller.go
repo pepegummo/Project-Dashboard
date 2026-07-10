@@ -25,32 +25,15 @@ import (
 const groqModel = "openai/gpt-oss-120b"
 const groqBaseURL = "https://api.groq.com/openai/v1/chat/completions"
 
-// needToolsSentinel is the escape hatch for the needsTools() keyword gate: the
-// regex can't see typos ("ส้างแดชบอด" for "สร้างแดชบอร์ด"), so when a message it
-// stripped tools from actually asks for data or an action, the model replies
-// with this sentinel and the handler retries once with the full prompt + tools.
-// Without it the model role-played the action ("กำลังสร้างให้ครับ") and nothing
-// happened. Costs ~40 extra prompt tokens on greetings; the full retry price is
-// paid only on actual gate misses.
-const needToolsSentinel = "NEED_TOOLS"
-
-// systemPromptMinimal is sent on the no-tool path (greetings, chit-chat, "what
-// can you do?"). It carries only identity + the language rule — the full
-// TOOL SELECTION / SLOT FILLING / WIDGET rules are useless without tools, so a
-// bare greeting no longer pays for them (~300 tokens saved vs systemPromptBase).
-const systemPromptMinimal = `You are IotVision AI, assistant for an industrial IoT platform. Language: match the user's latest message exactly — Thai or English, never mix. Reply in one short, natural sentence. Plain text only — no markdown, no asterisks (**) or bold.
-If the user's latest message asks to view data, metrics, machines, dashboards, alerts, or to create/add/change/remove anything — even misspelled or informal, Thai or English — reply with exactly NEED_TOOLS and nothing else. Greetings, thanks, and small talk get a normal short reply.`
-
-// systemPromptContextAnswer replaces systemPromptContextExt for focused-widget
-// READS the on-screen context already answers — analytical questions (the full
-// series is injected) and plain current-value / window / config questions. The
-// model answers in one no-tool call, avoiding the redundant fetch+summarize round
-// that double-billed tokens and tripped the 8k/min rate limit.
-const systemPromptContextAnswer = `You are IotVision AI, assistant for an industrial IoT platform. Language: match the user's latest message exactly — Thai or English, never mix. Plain text only — no markdown, no asterisks (**) or bold.
-Answer from the focused widget's on-screen context (its current value, shown time window, bucket/sku/config, and any data series present). A context line marked [FOCUSED] is the widget the user clicked — answer about THAT widget and ignore the others unless the user names one; never let another widget's title (e.g. "Trend") or value pull you off it. For a [FOCUSED] daily-count widget, read its "on-screen data" count series — never substitute another widget's current value. For a trend/analysis question, describe the SHAPE across the whole series — if it rises then falls (or falls then rises), say so, don't collapse it to one net direction — plus min/max, and extrapolate simply if asked to predict. Quote times exactly as given (they are plant-local). Do NOT call any tool. If the requested number is not in the context, say you can fetch it — never fabricate. Reply in 1-4 natural sentences, never raw JSON or a bare list of numbers.`
-// systemPromptBase is always sent. It covers the no-preview path (pure reads, dashboard
-// creation, existing-dashboard edits, greetings). Kept stable so Groq can cache it.
-const systemPromptBase = `You are IotVision AI, assistant for an industrial IoT platform. Language: match the user's latest message exactly — Thai or English, never mix. Plain text only — no markdown, no asterisks (**) or bold.
+// systemPromptUnified is the single, byte-stable system prompt sent on all requests
+// with the full role-filtered tool set. Merged from:
+// - systemPromptBase (no-preview path: pure reads, dashboard creation, edits, greetings)
+// - systemPromptContextExt (dashboard/preview context rules)
+// - dateEditRule static text (relative date resolution + EDIT rules — dynamic date appended separately)
+// - bucketEditRule (bar interval change EDIT rules)
+// - fieldsEditRule (metric-overlay change EDIT rules)
+// Groq caches the static prefix; tools are ordered static-first for cache re-use.
+const systemPromptUnified = `You are IotVision AI, assistant for an industrial IoT platform. Language: match the user's latest message exactly — Thai or English, never mix. Plain text only — no markdown, no asterisks (**) or bold.
 
 TOOL SELECTION:
 - Greeting / general question → plain text only, no tool.
@@ -69,11 +52,7 @@ SLOT FILLING:
 - Ambiguous action ("fix it", "change it") → ask what to change in ONE question.
 
 WIDGET TYPES: daily-count (production/piece counts) · kpi-card (single value) · line-chart (trend) · gauge (dial) · chart (multi-metric overlay — set fields[] not metric, plus chartType and scaling)
-Line charts support absolute date ranges — convert any DD/MM/YYYY the user gives to YYYY-MM-DD for start_date/end_date.`
-
-// systemPromptContextExt is appended only when a dashboard/preview context is present.
-// Keeps preview-specific rules and the CONTEXT section out of no-preview requests (~100 tokens saved).
-const systemPromptContextExt = `
+Line charts support absolute date ranges — convert any DD/MM/YYYY the user gives to YYYY-MM-DD for start_date/end_date.
 
 Compound message (read + write intent) → serve the read first, then ask about the write.
 Editing the current preview canvas OR an open Active dashboard → use preview_add_widget / preview_update_widget / preview_remove_widget (staged, no DB write). For count/production widgets always use type "daily-count". The change is not persisted until the user clicks Save (Active dashboard) or Confirm (new preview) — after staging, tell them to do so; never claim it is saved.
@@ -82,10 +61,7 @@ CONTEXT: An authoritative dashboard state may be injected.
 - A context line marked [FOCUSED] is the widget the user clicked — route the answer to THAT widget (its machine/type/metric/bucket/sku), ignoring other widgets unless the user names one; never let another widget's title (e.g. "Trend") pull you off it.
 - Structural questions (widget count, names, layout) → answer from context.
 - Live value questions with NO widget mentioned ("what is X", "speed of CW-01") → call show_metric.
-@Widget Title tokens identify the exact widget the user is referring to — this OVERRIDES the generic
-live-value rule above. Any question about a mentioned widget (status, "how's it doing now",
-"what is this", vague follow-ups) must route by that widget's ACTUAL type from context, never by
-guessing a metric from conversation history:
+@Widget Title tokens identify the exact widget the user is referring to — this OVERRIDES the generic live-value rule above. Any question about a mentioned widget (status, "how's it doing now", "what is this", vague follow-ups) must route by that widget's ACTUAL type from context, never by guessing a metric from conversation history:
 - Edit/remove intent → use the title verbatim as widget_title in preview_update_widget / preview_remove_widget.
 - Simple current-value question ("what is it now", "ตอนนี้เท่าไหร่") → read the widget's type/machine/metric from context, then:
   • daily-count / count-style widget → call get_production_count(machine_id, bucket, sku, status — all from context); never call show_metric for a mentioned count widget, it doesn't honor the widget's bucket/sku/status filters. If context lists a "bucket" for this widget, copy it verbatim — never substitute a different one. If context has no bucket line at all, default to "1h", never "1d", unless the user explicitly asks for a daily/monthly view.
@@ -97,56 +73,24 @@ guessing a metric from conversation history:
   • alarm-panel → call get_active_alerts.
   Then summarize the trend across ALL returned points — describe the SHAPE, calling out a rise-then-fall or fall-then-rise rather than one net direction, plus min/max — and if asked to predict, give a simple extrapolation from the pattern. Quote times exactly as given (they are plant-local). This overrides the "one short sentence" rule above: use 2-4 natural sentences, never a raw list of numbers or JSON.
   Never fabricate machine or metric — always read them from the context entry's "metric" field for that widget. The widget's "title" (e.g. "Trend", "Speed Gauge") is a display label, NEVER a metric value — never pass it as the metric argument.
-  If multiple widgets are mentioned, answer each from its own context entry — do not reuse one widget's metric for another.`
+  If multiple widgets are mentioned, answer each from its own context entry — do not reuse one widget's metric for another.
 
-// dateEditRule is appended to systemPromptContextExt so the model can (1) resolve
-// relative dates the user speaks ("เมื่อวาน", "yesterday", "last week") into the
-// absolute YYYY-MM-DD that preview_update_widget needs, and (2) treat "change the
-// chart's shown range" as an EDIT (preview_update_widget) rather than a read-and-
-// summarize. Without today's date it had no way to compute "yesterday" and fell back
-// to summarizing the trend. Only on the context path (~55 tok); the date string
-// breaks this prompt's Groq cache once per day, which is free.
+RELATIVE DATES: Resolve relative dates from today's date (appended separately per request): yesterday/เมื่อวาน = the day before today, today/วันนี้ = today, last week/สัปดาห์ที่แล้ว = the 7 days ending today. Changing what a focused line-chart displays for a time period — including a plain VIEW/SEE request ("ดู"/"view"/"see": "อยากดูเวลาเมื่อวาน", "ดูเวลาเมื่อวาน", "ดูของเมื่อวาน", "show yesterday", "เปลี่ยนเป็นเมื่อวาน", "ดูของสัปดาห์ที่แล้ว") — is an EDIT of that chart, NOT a data read: call preview_update_widget with start_date and end_date as YYYY-MM-DD. Do NOT call get_telemetry_series, get_telemetry_trend, or show_metric to change what a focused chart shows — those only return data and will NOT update the widget the user is looking at. Never answer by summarizing the trend. The chart's currently-shown window is NOT a date reference — compute yesterday/last week only from today's date, never from the on-screen window.
+
+BUCKET EDITS: Changing a focused count/chart widget's bar interval (bucket size) — a bare "<N> minutes/hours", "22 นาที", "ทุก 15 นาที", "รายชั่วโมง", or "every 15 min" — is an EDIT of that widget: call preview_update_widget with bucket as <number><m|h|d> (22 นาที → "22m", 1 ชั่วโมง → "1h"). Any bucket like "22m" is valid — never say the widget only supports its current interval, and do NOT call get_production_count or get_telemetry_series to resize the bars (those only read).
+
+METRIC OVERLAYS: Comparing or overlaying metrics on a focused chart widget — "เปรียบเทียบ weight, speed", "compare speed and throughput", "overlay X vs Y" — is an EDIT of that chart: call preview_update_widget with fields as the metric field keys, e.g. fields:["weight","speed"] (match the user's metric words to the machine's real field keys). Do NOT refuse because the widget currently shows other metrics, and do NOT call a read tool to compare — just reassign fields[].`
+
+// dateLineForRequest returns "Today is YYYY-MM-DD (plant-local)." to append to
+// the dynamic context (dashboard state message) so the model can resolve relative dates.
+// This moves the date OUT of the system prompt (which is Groq-cached) and INTO the
+// per-request context, so the cache remains byte-identical across all requests and days.
 // ponytail: server-local date. In Docker that's UTC — near midnight it can be a day
 // off plant-local. If the plant isn't near UTC, have the frontend pass its local date.
-// ponytail: prompt-only routing has a ceiling — the model is still handed read tools
-// with tool_choice:"required", so it can still pick a read tool for a "view yesterday"
-// phrasing. If misroutes persist, force tool_choice:preview_update_widget deterministically
-// on focused-chart + relative-date messages (upgrade path).
-func dateEditRule() string {
+func dateLineForRequest() string {
 	today := time.Now().Format("2006-01-02")
-	return "\nToday is " + today + " (plant-local). Resolve relative dates from it: " +
-		"yesterday/เมื่อวาน = the day before today, today/วันนี้ = " + today +
-		", last week/สัปดาห์ที่แล้ว = the 7 days ending today. " +
-		"Changing what a focused line-chart displays for a time period — including a plain " +
-		"VIEW/SEE request (\"ดู\"/\"view\"/\"see\": \"อยากดูเวลาเมื่อวาน\", \"ดูเวลาเมื่อวาน\", " +
-		"\"ดูของเมื่อวาน\", \"show yesterday\", \"เปลี่ยนเป็นเมื่อวาน\", \"ดูของสัปดาห์ที่แล้ว\") — is an " +
-		"EDIT of that chart, NOT a data read: call preview_update_widget with start_date and " +
-		"end_date as YYYY-MM-DD. Do NOT call get_telemetry_series, get_telemetry_trend, or " +
-		"show_metric to change what a focused chart shows — those only return data and will NOT " +
-		"update the widget the user is looking at. Never answer by summarizing the trend. " +
-		"The chart's currently-shown window is NOT a date reference — compute yesterday/last week " +
-		"only from today's date above, never from the on-screen window."
+	return "Today is " + today + " (plant-local)."
 }
-
-// bucketEditRule is the daily-count/chart sibling of dateEditRule: changing a focused
-// widget's bar interval (bucket size) is an EDIT, not a data read. Any <number><m|h|d>
-// is valid (backend accepts ^(\d{1,4})(m|h|d)$), so the model must never claim the widget
-// only supports its current interval. Static (~50 tok, Groq-cacheable), appended wherever
-// dateEditRule() is.
-const bucketEditRule = "\nChanging a focused count/chart widget's bar interval (bucket size) — a bare " +
-	"\"<N> minutes/hours\", \"22 นาที\", \"ทุก 15 นาที\", \"รายชั่วโมง\", or \"every 15 min\" — is an EDIT of " +
-	"that widget: call preview_update_widget with bucket as <number><m|h|d> (22 นาที → \"22m\", 1 ชั่วโมง → " +
-	"\"1h\"). Any bucket like \"22m\" is valid — never say the widget only supports its current interval, and " +
-	"do NOT call get_production_count or get_telemetry_series to resize the bars (those only read)."
-
-// fieldsEditRule teaches the model that a metric-overlay change on a focused chart widget is an
-// EDIT: "เปรียบเทียบ/compare/overlay A, B" replaces the chart's fields[]. Chart widgets carry
-// config.fields (an array) — reassign them via preview_update_widget, never read+summarize.
-const fieldsEditRule = "\nComparing or overlaying metrics on a focused chart widget — \"เปรียบเทียบ weight, " +
-	"speed\", \"compare speed and throughput\", \"overlay X vs Y\" — is an EDIT of that chart: call " +
-	"preview_update_widget with fields as the metric field keys, e.g. fields:[\"weight\",\"speed\"] " +
-	"(match the user's metric words to the machine's real field keys). Do NOT refuse because the " +
-	"widget currently shows other metrics, and do NOT call a read tool to compare — just reassign fields[]."
 
 // ── Groq / OpenAI-compatible API types ───────────────────────────────────────
 
@@ -420,13 +364,8 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 		return err
 	}
 
-	// Build Groq messages: system prompt + capped history.
+	// Build Groq messages: unified system prompt + capped history.
 	hasContext := body.Context != ""
-	// A message only pays for the context extension / dashboard-state block / tool list when
-	// it actually looks like it needs one — a bare greeting with a preview open shouldn't cost
-	// any more than a greeting with nothing open. needsTools already matches @WidgetTitle
-	// mentions, so the "click a widget then ask something vague" flow is unaffected.
-	needsToolsFlag := needsTools(body.Message)
 
 	// The frontend injects the focused widget's full series (marked "on-screen data")
 	// only for analytical questions. When present, answer from it in one no-tool call
@@ -442,38 +381,25 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	// answerFromContext = one no-tool call from the on-screen context.
 	answerFromContext := inlineData || contextRead
 
-	// No-tool path (greetings, chit-chat) gets the minimal prompt — the full
-	// rule set is dead weight without tools to act on.
-	sp := systemPromptBase
-	if !needsToolsFlag {
-		sp = systemPromptMinimal
-	} else if answerFromContext {
-		sp = systemPromptContextAnswer
-	} else if hasContext {
-		sp += systemPromptContextExt + dateEditRule() + bucketEditRule + fieldsEditRule
-	}
+	// Always use the unified prompt; append today's date to the dynamic context.
+	sp := systemPromptUnified
 	msgs := []groqMessage{{Role: "system", Content: &sp}}
 	msgs = append(msgs, buildGroqMessages(history)...)
 	// Inject the on-screen dashboard preview AFTER history so the current state is
 	// the last thing the model sees — recency makes it win over any stale earlier
 	// turn that named the old config (e.g. a metric the user has since changed).
-	if hasContext && needsToolsFlag {
-		ctxContent := "Authoritative current dashboard state (overrides anything said earlier):\n" + body.Context
+	// Append today's date so the model can resolve relative dates (it was in dateEditRule).
+	if hasContext {
+		ctxContent := "Authoritative current dashboard state (overrides anything said earlier):\n" +
+			body.Context + "\n" + dateLineForRequest()
 		msgs = append(msgs, groqMessage{Role: "system", Content: &ctxContent})
 	}
 
 	role := middleware.GetUser(c).Role
 	canWrite := role == "admin" || role == "editor"
-	fullTools := buildGroqTools(role, hasContext)
-	tools := fullTools
-
-	// Pure conversational messages (greetings, "what can you do?") get no tools —
-	// the model answers in plain text and tools are sent on the next actionable message.
-	// answerFromContext likewise needs no tools: the on-screen context already has the answer.
-	// fullTools is kept for the NEED_TOOLS sentinel escalation below.
-	if !needsToolsFlag || answerFromContext {
-		tools = nil
-	}
+	// Always build the full role-filtered tool set (previews are always available now,
+	// not just when context is present).
+	tools := buildGroqTools(role)
 
 	// Force a tool call when either (a) an @WidgetTitle mention is present, or (b) the
 	// message is a clear EDIT with a dashboard/preview context on screen — both give the
@@ -511,7 +437,6 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	}
 
 	callTools := tools
-	escalated := false
 	for i := 0; i < 5; i++ {
 		tc := ""
 		if i == 0 {
@@ -550,27 +475,6 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 			text := ""
 			if choice.Message.Content != nil {
 				text = *choice.Message.Content
-			}
-			// The keyword gate stripped tools but the model says the message needs
-			// them (typos the regex can't see — "ส้างแดชบอด"). Retry ONCE with the
-			// full prompt + tools; the sentinel itself is never saved as a reply.
-			// ponytail: one extra round only on gate misses, ~2.7k tok — same price
-			// a correctly-routed message pays anyway. Accepted trade-offs: the retry
-			// consumes one loop iteration (roundCap gives escalated requests one fewer
-			// chained tool round — fine, typo requests are single-tool), and a
-			// post-escalation NEED_TOOLS reply would be saved raw (near-impossible;
-			// guarded only by `escalated`, deliberately not handled further).
-			if !escalated && !needsToolsFlag && strings.TrimSpace(text) == needToolsSentinel {
-				escalated = true
-				sp = systemPromptBase
-				if hasContext {
-					sp += systemPromptContextExt + dateEditRule() + bucketEditRule + fieldsEditRule
-					ctxContent := "Authoritative current dashboard state (overrides anything said earlier):\n" + body.Context
-					msgs = append(msgs, groqMessage{Role: "system", Content: &ctxContent})
-				}
-				tools = fullTools
-				callTools = fullTools
-				continue
 			}
 			assistantMsg, err := ctrl.repo.AddMessage(ctx, body.ConversationID, "assistant", text, nil, nil, nil)
 			if err != nil {
@@ -675,25 +579,15 @@ var complexSchemaTools = map[string]bool{
 	"preview_update_widget": true,
 }
 
-// previewOnlyTools are only useful when a dashboard/preview context is present.
-// Hiding them on no-context requests saves tokens from the tools list.
-var previewOnlyTools = map[string]bool{
-	"preview_add_widget":    true,
-	"preview_remove_widget": true,
-	"preview_update_widget": true,
-}
-
-// buildGroqTools returns the tool list filtered by role and context.
+// buildGroqTools returns the tool list filtered by role.
+// Always includes preview tools (they're part of the unified prompt).
 // Simple tools use slim (description-only) form; complex tools keep full schemas.
-func buildGroqTools(role string, hasContext bool) []map[string]any {
+func buildGroqTools(role string) []map[string]any {
 	canWrite := role == "admin" || role == "editor"
 	out := make([]map[string]any, 0, len(AllTools()))
 	for _, t := range AllTools() {
 		name := t["name"].(string)
 		if isWriteTool(name) && !canWrite {
-			continue
-		}
-		if previewOnlyTools[name] && !hasContext {
 			continue
 		}
 		if complexSchemaTools[name] {
@@ -826,18 +720,6 @@ func parseRetryAfter(header string, body []byte) time.Duration {
 }
 
 func strPtr(s string) *string { return &s }
-
-// needsTools returns true when the message likely needs a tool — a metric read, action request,
-// or reference to a machine/dashboard. Used only to zero-out tools for pure greetings on
-// no-context requests, so they don't pay for the full tool list.
-var needsToolsRe = regexp.MustCompile(`(?i)@|\b(` +
-	`speed|temp(erature)?|weight|pressure|humidity|voltage|current|power|flow|level|count|status|` +
-	`show|create|dashboard|add|widget|remove|alert|machine|trend|gauge|kpi|production|sku` +
-	`)\b|` +
-	`ดู|แสดง|เร็ว|อุณห|น้ำหนัก|ความดัน|กระแส|กำลัง|` +
-	`สร้าง|เพิ่ม|ลบ|แก้|เปลี่ยน|เครื่อง|แจ้งเตือน|ผลิต`)
-
-func needsTools(msg string) bool { return needsToolsRe.MatchString(msg) }
 
 // editRe / rangeRe classify a focused-widget message so we know whether the
 // on-screen context can answer it without a tool:

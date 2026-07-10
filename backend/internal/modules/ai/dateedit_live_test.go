@@ -3,8 +3,8 @@ package ai
 // Live check that a "view yesterday" phrasing on a focused line-chart routes to the
 // EDIT tool (preview_update_widget), not a read tool (get_telemetry_series/_trend) — the
 // bug where the AI summarized the current window instead of changing it. Exercises the
-// exact prompt the Chat handler builds for this flow (systemPromptContextExt + dateEditRule
-// + an authoritative dashboard-state message + forced tool_choice:"required").
+// exact prompt the Chat handler builds for this flow (systemPromptUnified
+// + an authoritative dashboard-state message with today's date + forced tool_choice:"required").
 // Skips without GROQ_API_KEY. Run:
 //   cd backend; go test ./internal/modules/ai/ -run TestDateEditRoutesToUpdate -v
 //
@@ -31,11 +31,12 @@ func TestDateEditRoutesToUpdate(t *testing.T) {
 	config.Env = &config.Config{GroqApiKey: key}
 
 	// Same assembly as controller.Chat on the focused tool path.
-	sp := systemPromptBase + systemPromptContextExt + dateEditRule()
+	sp := systemPromptUnified
 	ctxContent := "Authoritative current dashboard state (overrides anything said earlier):\n" +
 		`- [FOCUSED] line-chart "Trend", machine CW-01, metric weight, ` +
-		"window 2026-07-05T22:55 → 2026-07-06T21:02"
-	tools := buildGroqTools("editor", true)
+		"window 2026-07-05T22:55 → 2026-07-06T21:02\n" +
+		dateLineForRequest()
+	tools := buildGroqTools("editor")
 	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
 
 	// Both phrasings mean "yesterday". "วันก่อนหน้า" (previous day) once matched no classifier

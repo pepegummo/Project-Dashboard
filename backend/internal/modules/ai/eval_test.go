@@ -171,7 +171,7 @@ func TestBakeOff(t *testing.T) {
 	}
 	config.Env = &config.Config{GroqApiKey: key}
 
-	tools := buildGroqTools("admin", true) // full tool set for bake-off
+	tools := buildGroqTools("admin") // full tool set for bake-off
 
 	type tally struct {
 		score, total int
@@ -185,7 +185,7 @@ func TestBakeOff(t *testing.T) {
 		}
 		fmt.Printf("\n========== MODEL: %s ==========\n", model)
 		for _, tc := range bakeCases {
-			sp := systemPromptBase + systemPromptContextExt // bake-off always uses full prompt
+			sp := systemPromptUnified // bake-off always uses full prompt
 			msgs := []groqMessage{{Role: "system", Content: &sp}}
 			msgs = append(msgs, tc.history...)
 			msgs = append(msgs, groqMessage{Role: "user", Content: strPtr(tc.message)})
