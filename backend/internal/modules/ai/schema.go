@@ -190,6 +190,43 @@ var PreviewUpdateWidgetTool = map[string]any{
 	},
 }
 
+// ClassifyIntentTool is the router-internal forced-tool-call schema used by
+// ClassifyIntent (router.go). It is deliberately NOT in AllTools() — it is never
+// offered to the main chat model, only forced by name on the small router model.
+// Unlike the slim tools above, the schema itself IS the output contract, so every
+// slot is spelled out in full.
+var ClassifyIntentTool = map[string]any{
+	"name":        "classify_intent",
+	"description": "Classify a factory-dashboard chat message into one structured intent plus any explicitly-named slots.",
+	"input_schema": map[string]any{
+		"type":     "object",
+		"required": []string{"intent", "confidence"},
+		"properties": map[string]any{
+			"intent": map[string]any{
+				"type":        "string",
+				"enum":        []string{"chat", "read_metric", "read_agg", "edit_widget", "compare", "create_dashboard", "alerts", "production"},
+				"description": "The single best-matching intent category.",
+			},
+			"machine": map[string]any{"type": "string", "description": "Machine name/code, only if explicitly named (e.g. CW-01). Empty if not mentioned — never guess."},
+			"metric":  map[string]any{"type": "string", "description": "Sensor field key, only if explicitly named (e.g. speed, temperature). Empty if not mentioned."},
+			"fields":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Multiple metric field keys, for a compare/overlay request only."},
+			"bucket":  map[string]any{"type": "string", "description": "Time bucket/interval, only if explicitly named, e.g. '15m', '22m', '1h'."},
+			"dateRange": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"start": map[string]any{"type": "string", "description": "Start date as YYYY-MM-DD."},
+					"end":   map[string]any{"type": "string", "description": "End date as YYYY-MM-DD."},
+				},
+				"description": "Explicit or resolved date range. Omit fields not mentioned.",
+			},
+			"targetWidget": map[string]any{"type": "string", "description": "Widget title, only if the user names or @-mentions one."},
+			"status":       map[string]any{"type": "string", "enum": []string{"all", "good", "reject"}, "description": "Piece status filter, only if explicitly named (production intent)."},
+			"sku":          map[string]any{"type": "string", "description": "SKU filter, only if explicitly named."},
+			"confidence":   map[string]any{"type": "number", "description": "0..1 — how sure you are of the chosen intent."},
+		},
+	},
+}
+
 // AllTools is the complete set handed to the LLM and exposed via GET /api/ai/tools.
 func AllTools() []map[string]any {
 	return []map[string]any{

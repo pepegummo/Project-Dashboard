@@ -2,6 +2,7 @@ package ai
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -632,15 +633,16 @@ func buildGroqTools(role string) []map[string]any {
 // callGroq sends messages to Groq with the default model. Pass nil tools for a
 // plain (no-function-call) request. toolChoice: "" = auto, "required" = force a tool call.
 func callGroq(messages []groqMessage, tools []map[string]any, toolChoice string) (*groqResponse, error) {
-	resp, _, err := callGroqModel(groqModel, messages, tools, toolChoice)
+	resp, _, err := callGroqModel(context.Background(), groqModel, messages, tools, toolChoice)
 	return resp, err
 }
 
-// callGroqModel is callGroq with an explicit model — used by the bake-off harness
-// to compare candidates.
+// callGroqModel is callGroq with an explicit model and a caller-supplied context (so
+// e.g. the intent router can bound its call with a short timeout) — used by the
+// bake-off harness to compare candidates too.
 // Returns the successful attempt's HTTP round-trip duration (excludes retry sleeps and
 // failed attempts) so the bake-off can time model speed, not rate-limit backoff.
-func callGroqModel(model string, messages []groqMessage, tools []map[string]any, toolChoice string) (*groqResponse, time.Duration, error) {
+func callGroqModel(ctx context.Context, model string, messages []groqMessage, tools []map[string]any, toolChoice string) (*groqResponse, time.Duration, error) {
 	reqBody := map[string]any{
 		"model":            model,
 		"messages":         messages,
@@ -673,7 +675,7 @@ func callGroqModel(model string, messages []groqMessage, tools []map[string]any,
 	lastErr := fmt.Errorf("the AI service is busy (rate limit). Please wait a few seconds and try again")
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		req, err := http.NewRequest("POST", groqBaseURL, bytes.NewReader(bodyBytes))
+		req, err := http.NewRequestWithContext(ctx, "POST", groqBaseURL, bytes.NewReader(bodyBytes))
 		if err != nil {
 			return nil, 0, err
 		}
@@ -708,7 +710,7 @@ func callGroqModel(model string, messages []groqMessage, tools []map[string]any,
 			// without tools so the user gets a plain-text reply instead of an error.
 			if (strings.Contains(result.Error.Message, "Failed to call a function") ||
 				strings.Contains(result.Error.Message, "Tool call validation failed")) && len(tools) > 0 {
-				return callGroqModel(model, messages, nil, "")
+				return callGroqModel(ctx, model, messages, nil, "")
 			}
 			return nil, 0, fmt.Errorf("Groq API: %s", result.Error.Message)
 		}

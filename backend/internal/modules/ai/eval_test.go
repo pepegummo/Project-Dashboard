@@ -11,6 +11,7 @@ package ai
 // Delete this file once a model is chosen.
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -202,7 +203,7 @@ func TestBakeOff(t *testing.T) {
 			time.Sleep(10 * time.Second) // dodge free-tier rate limits (8k tokens/min)
 			// httpLat is the successful HTTP round only — excludes callGroqModel's internal
 			// 429 retry sleeps, so latency reflects model speed, not rate-limit backoff.
-			resp, httpLat, err := callGroqModel(model, msgs, tools, "")
+			resp, httpLat, err := callGroqModel(context.Background(), model, msgs, tools, "")
 			if err != nil {
 				fmt.Printf("  ERROR: %v\n", err)
 				continue

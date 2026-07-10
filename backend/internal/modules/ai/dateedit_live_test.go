@@ -11,6 +11,7 @@ package ai
 // Prompt-only routing is probabilistic — run a few times to gauge reliability.
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"strings"
@@ -52,7 +53,7 @@ func TestDateEditRoutesToUpdate(t *testing.T) {
 		}
 		// Exercise the real deterministic path: force preview_update_widget BY NAME (object
 		// tool_choice through callGroqModel), the same as Chat does for a focused relative-date.
-		resp, _, err := callGroqModel(groqModel, msgs, tools, forceFunc("preview_update_widget"))
+		resp, _, err := callGroqModel(context.Background(), groqModel, msgs, tools, forceFunc("preview_update_widget"))
 		if err != nil {
 			t.Fatalf("[%s] groq error: %v", msg, err)
 		}
