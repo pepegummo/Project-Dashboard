@@ -9,6 +9,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // ── Deterministic checks ─────────────────────────────────────────────────────
@@ -369,5 +370,62 @@ func TestSummarizeToolLog(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("summary %q missing %q", got, want)
 		}
+	}
+}
+
+func TestTruncateRunesRuneSafe(t *testing.T) {
+	// Every rune here ("ความเร็ว...") is a multi-byte UTF-8 sequence — a naive
+	// s[:n] byte slice at an odd n would split one and corrupt the string
+	// (produces invalid UTF-8 / a replacement-char mangled string).
+	thai := strings.Repeat("ความเร็ว", 50) // well over any of our caps, all multi-byte runes
+	for _, max := range []int{1, 2, 3, 5, 7, 10, 50, 150} {
+		got := truncateRunes(thai, max)
+		if n := len([]rune(got)); n != max {
+			t.Errorf("truncateRunes(_, %d): got %d runes, want %d", max, n, max)
+		}
+		if !utf8.ValidString(got) {
+			t.Errorf("truncateRunes(_, %d) produced invalid UTF-8: %q", max, got)
+		}
+	}
+
+	// Shorter than max — returned unchanged.
+	if got := truncateRunes("สั้น", 100); got != "สั้น" {
+		t.Errorf("truncateRunes(short, 100) = %q, want unchanged", got)
+	}
+}
+
+func TestBuildRepairMessagesIncludesOriginalAnswer(t *testing.T) {
+	base := []groqMessage{
+		{Role: "system", Content: strPtr("system prompt")},
+		{Role: "user", Content: strPtr("ความเร็ว CW-01 เท่าไหร่")},
+	}
+	originalAnswer := "อุณหภูมิของ CW-02 ตอนนี้อยู่ที่ 78 องศา"
+	got := buildRepairMessages(base, originalAnswer, "answered the wrong machine/metric")
+
+	if len(got) != len(base)+2 {
+		t.Fatalf("len(got) = %d, want %d (base + assistant answer + VERIFIER message)", len(got), len(base)+2)
+	}
+
+	// The assistant's original (mismatched) answer must be present so the
+	// VERIFIER instruction that follows refers to something the model can see.
+	answerMsg := got[len(base)]
+	if answerMsg.Role != "assistant" {
+		t.Errorf("message before VERIFIER = role %q, want %q", answerMsg.Role, "assistant")
+	}
+	if answerMsg.Content == nil || *answerMsg.Content != originalAnswer {
+		t.Errorf("assistant message content = %v, want %q", answerMsg.Content, originalAnswer)
+	}
+
+	verifierMsg := got[len(base)+1]
+	if verifierMsg.Role != "system" {
+		t.Errorf("last message role = %q, want %q", verifierMsg.Role, "system")
+	}
+	if verifierMsg.Content == nil || !strings.Contains(*verifierMsg.Content, "answered the wrong machine/metric") {
+		t.Errorf("VERIFIER message = %v, want it to contain the problem string", verifierMsg.Content)
+	}
+
+	// base itself must be untouched (no aliasing surprises for the caller).
+	if len(base) != 2 {
+		t.Errorf("base was mutated: len = %d, want 2", len(base))
 	}
 }

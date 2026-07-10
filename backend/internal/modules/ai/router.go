@@ -178,9 +178,7 @@ func VerifyAnswer(ctx context.Context, userMessage string, intentSummary string,
 	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
 
-	if len(finalAnswer) > 1500 {
-		finalAnswer = finalAnswer[:1500]
-	}
+	finalAnswer = truncateRunes(finalAnswer, 1500)
 	if intentSummary == "" {
 		intentSummary = "router declined"
 	}

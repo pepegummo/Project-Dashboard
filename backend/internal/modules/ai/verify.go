@@ -234,6 +234,17 @@ func decidePostRepairOutcome(detOKAfterRepair bool, firstClarifyingQuestion stri
 
 // ── Small helpers ────────────────────────────────────────────────────────────
 
+// truncateRunes truncates s to at most max runes (not bytes) so multi-byte UTF-8
+// text — Thai in particular, this whole app is bilingual — is never split
+// mid-rune, which byte-slicing (s[:n]) can do and which corrupts the string.
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max])
+}
+
 // summarizeToolLog renders a compact "name(args); name(args)" string for
 // VerifyAnswer's toolsUsed input — args truncated so a chatty round doesn't blow
 // the verify prompt's token budget.
@@ -243,13 +254,25 @@ func summarizeToolLog(log []toolExecution) string {
 	}
 	parts := make([]string, 0, len(log))
 	for _, t := range log {
-		args := t.args
-		if len(args) > 150 {
-			args = args[:150]
-		}
-		parts = append(parts, t.name+"("+args+")")
+		parts = append(parts, t.name+"("+truncateRunes(t.args, 150)+")")
 	}
 	return strings.Join(parts, "; ")
+}
+
+// buildRepairMessages assembles the message list for the single repair round:
+// the base conversation, THEN the assistant's original (mismatched) answer —
+// otherwise the VERIFIER instruction below refers to an answer the model can no
+// longer see, since Chat()'s main loop captures the final answer as plain text
+// rather than appending it to msgs — THEN the VERIFIER instruction naming the
+// specific problem to fix.
+func buildRepairMessages(base []groqMessage, finalAnswer string, problem string) []groqMessage {
+	repairInstruction := "VERIFIER: the previous answer did not match the user's request: " + problem +
+		". Fix it. If the request is genuinely ambiguous, reply only with one short clarifying question in the user's language."
+	out := make([]groqMessage, 0, len(base)+2)
+	out = append(out, base...)
+	out = append(out, groqMessage{Role: "assistant", Content: strPtr(finalAnswer)})
+	out = append(out, groqMessage{Role: "system", Content: strPtr(repairInstruction)})
+	return out
 }
 
 // clarifyingQuestionOrFallback returns the verifier's clarifying question, or a

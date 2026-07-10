@@ -619,9 +619,7 @@ func (ctrl *Controller) verifyAndMaybeRepair(c *fiber.Ctx, ctx context.Context, 
 		if problem == "" && verdict != nil {
 			problem = verdict.Problem
 		}
-		repairMsg := "VERIFIER: the previous answer did not match the user's request: " + problem +
-			". Fix it. If the request is genuinely ambiguous, reply only with one short clarifying question in the user's language."
-		repairMsgs := append(append([]groqMessage{}, req.msgs...), groqMessage{Role: "system", Content: strPtr(repairMsg)})
+		repairMsgs := buildRepairMessages(req.msgs, req.finalText, problem)
 
 		repairedText, repairLog, repairPersisted, repairErr := ctrl.runRepairRound(c, ctx, req.convID, repairMsgs, req.tools)
 		if newMessages != nil {
@@ -635,6 +633,11 @@ func (ctrl *Controller) verifyAndMaybeRepair(c *fiber.Ctx, ctx context.Context, 
 			break
 		}
 
+		// Deliberately checked against repairLog ONLY, not req.toolLog+repairLog: an
+		// honest text-only repair (no new tool calls — e.g. it just asks a
+		// clarifying question) has an empty repairLog and must read as "checks
+		// pass," not re-trip the ORIGINAL round's now-superseded failure and get
+		// trapped in askback forever.
 		_, detFailedAgain := runDeterministicChecks(ctx, req.orgID, req.contextText, repairLog, resolveMachineID, getMachineFieldsForMachine)
 		firstClarify := ""
 		if verdict != nil {
