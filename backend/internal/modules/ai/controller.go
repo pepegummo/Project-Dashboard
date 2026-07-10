@@ -436,6 +436,9 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 
 	firstToolChoice, roundCap := dispatchIntent(intentRes, routerOK, focused, inlineData, role, machineValid)
 
+	var finalText string
+	var toolLog []toolExecution
+
 	callTools := tools
 	for i := 0; i < 5; i++ {
 		tc := ""
@@ -472,44 +475,19 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 		choice := resp.Choices[0]
 
 		if choice.FinishReason != "tool_calls" || len(choice.Message.ToolCalls) == 0 {
-			text := ""
 			if choice.Message.Content != nil {
-				text = *choice.Message.Content
+				finalText = *choice.Message.Content
 			}
-			assistantMsg, err := ctrl.repo.AddMessage(ctx, body.ConversationID, "assistant", text, nil, nil, nil)
-			if err != nil {
-				return err
-			}
-			newMessages = append(newMessages, *assistantMsg)
 			break
 		}
 
 		msgs = append(msgs, choice.Message)
 
-		for _, tc := range choice.Message.ToolCalls {
-			toolInputRaw := json.RawMessage(tc.Function.Arguments)
-
-			result, dispatchErr := ctrl.dispatch(c, tc.Function.Name, toolInputRaw)
-			resultJSON, _ := json.Marshal(result)
-			if dispatchErr != nil {
-				resultJSON, _ = json.Marshal(map[string]any{"error": dispatchErr.Error()})
-			}
-
-			tn := tc.Function.Name
-			toolMsg, _ := ctrl.repo.AddMessage(ctx, body.ConversationID, "tool",
-				"Tool executed: "+tc.Function.Name, &tn,
-				toolInputRaw, json.RawMessage(resultJSON))
-			if toolMsg != nil {
-				newMessages = append(newMessages, *toolMsg)
-			}
-
-			resultStr := string(resultJSON)
-			msgs = append(msgs, groqMessage{
-				Role:       "tool",
-				ToolCallID: tc.ID,
-				Content:    &resultStr,
-			})
-		}
+		var roundPersisted []Message
+		var roundLog []toolExecution
+		msgs, roundPersisted, roundLog = ctrl.runToolRound(c, ctx, body.ConversationID, choice.Message.ToolCalls, msgs)
+		newMessages = append(newMessages, roundPersisted...)
+		toolLog = append(toolLog, roundLog...)
 
 		// Cap chained tool rounds, then force a text summary. roundCap comes from
 		// dispatchIntent (0 for a focused-widget message, else 1) — each round
@@ -521,7 +499,208 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 		}
 	}
 
+	// Verify-then-repair (Phase 5), scoped to requests where at least one tool
+	// executed — pure chat (toolLog empty) skips this entirely: zero added cost.
+	if len(toolLog) > 0 {
+		finalText = ctrl.verifyAndMaybeRepair(c, ctx, verifyRequest{
+			convID:      body.ConversationID,
+			userMessage: body.Message,
+			contextText: body.Context,
+			orgID:       user.OrgId,
+			msgs:        msgs,
+			tools:       tools,
+			intentRes:   intentRes,
+			routerOK:    routerOK,
+			toolLog:     toolLog,
+			finalText:   finalText,
+		}, &newMessages)
+	}
+
+	assistantMsg, err := ctrl.repo.AddMessage(ctx, body.ConversationID, "assistant", finalText, nil, nil, nil)
+	if err != nil {
+		return err
+	}
+	newMessages = append(newMessages, *assistantMsg)
+
 	return c.JSON(fiber.Map{"success": true, "data": newMessages, "intent": chatIntentResponse(intentRes, routerOK)})
+}
+
+// runToolRound dispatches every tool call from one Groq response, persists each
+// as a "tool" message, appends the tool result into msgs for the next completion
+// call, and returns the accumulated log entries for verification. Shared by the
+// main loop above and the single repair round (verifyAndMaybeRepair) so both stay
+// byte-identical in how they dispatch/persist/append.
+func (ctrl *Controller) runToolRound(c *fiber.Ctx, ctx context.Context, convID string, calls []groqToolCall, msgs []groqMessage) ([]groqMessage, []Message, []toolExecution) {
+	var persisted []Message
+	var log []toolExecution
+	for _, tc := range calls {
+		toolInputRaw := json.RawMessage(tc.Function.Arguments)
+
+		result, dispatchErr := ctrl.dispatch(c, tc.Function.Name, toolInputRaw)
+		resultJSON, _ := json.Marshal(result)
+		if dispatchErr != nil {
+			resultJSON, _ = json.Marshal(map[string]any{"error": dispatchErr.Error()})
+		}
+
+		tn := tc.Function.Name
+		toolMsg, _ := ctrl.repo.AddMessage(ctx, convID, "tool",
+			"Tool executed: "+tc.Function.Name, &tn,
+			toolInputRaw, json.RawMessage(resultJSON))
+		if toolMsg != nil {
+			persisted = append(persisted, *toolMsg)
+		}
+
+		resultStr := string(resultJSON)
+		msgs = append(msgs, groqMessage{
+			Role:       "tool",
+			ToolCallID: tc.ID,
+			Content:    &resultStr,
+		})
+		log = append(log, toolExecution{name: tc.Function.Name, args: tc.Function.Arguments, resultJSON: resultStr})
+	}
+	return msgs, persisted, log
+}
+
+// ── Verify-then-repair (Phase 5) ─────────────────────────────────────────────
+
+// verifyRequest bundles the per-request inputs verifyAndMaybeRepair needs — kept
+// as a struct rather than a long positional argument list since most fields are
+// just Chat()'s own locals threaded through unchanged.
+type verifyRequest struct {
+	convID      string
+	userMessage string
+	contextText string
+	orgID       string
+	msgs        []groqMessage    // full conversation so far, for the repair round
+	tools       []map[string]any // role-filtered tool set, for the repair round
+	intentRes   IntentResult
+	routerOK    bool
+	toolLog     []toolExecution
+	finalText   string
+}
+
+// verifyAndMaybeRepair runs the Phase 5 verify-then-repair loop: deterministic
+// checks (free) -> LLM verify (router model, bounded) -> at most ONE repair round
+// -> a clarifying question if still wrong. Only called when at least one tool
+// executed this request (Chat()'s scope-rule gate). Every failure path here
+// (verifier timeout/parse error, DB lookup miss, repair-round Groq error)
+// degrades to returning req.finalText unchanged — verification can never break
+// or block Chat(). newMessages accumulates any tool messages persisted during
+// the repair round, same shape as the main loop's.
+func (ctrl *Controller) verifyAndMaybeRepair(c *fiber.Ctx, ctx context.Context, req verifyRequest, newMessages *[]Message) string {
+	start := time.Now()
+
+	detProblem, detFailed := runDeterministicChecks(ctx, req.orgID, req.contextText, req.toolLog, resolveMachineID, getMachineFieldsForMachine)
+
+	var verdict *VerifyResult
+	if !detFailed {
+		intentSummary := "router declined"
+		if req.routerOK {
+			intentSummary = req.intentRes.Intent
+		}
+		if vr, ok := VerifyAnswer(ctx, req.userMessage, intentSummary, req.finalText, summarizeToolLog(req.toolLog)); ok {
+			verdict = &vr
+		}
+	}
+
+	outcome := decideVerifyOutcome(!detFailed, verdict, false, req.routerOK)
+	resultText := req.finalText
+	logVerdict := verdictLabel(outcome)
+
+	switch outcome {
+	case outcomeDeliver:
+		// keep resultText as-is
+
+	case outcomeAskBack:
+		resultText = clarifyingQuestionOrFallback(verdict)
+
+	case outcomeRepair:
+		problem := detProblem
+		if problem == "" && verdict != nil {
+			problem = verdict.Problem
+		}
+		repairMsg := "VERIFIER: the previous answer did not match the user's request: " + problem +
+			". Fix it. If the request is genuinely ambiguous, reply only with one short clarifying question in the user's language."
+		repairMsgs := append(append([]groqMessage{}, req.msgs...), groqMessage{Role: "system", Content: strPtr(repairMsg)})
+
+		repairedText, repairLog, repairPersisted, repairErr := ctrl.runRepairRound(c, ctx, req.convID, repairMsgs, req.tools)
+		if newMessages != nil {
+			*newMessages = append(*newMessages, repairPersisted...)
+		}
+
+		if repairErr != nil {
+			// Repair round's own Groq call failed — degrade to the original answer
+			// rather than blocking the request on infrastructure trouble.
+			logVerdict = "repair-error"
+			break
+		}
+
+		_, detFailedAgain := runDeterministicChecks(ctx, req.orgID, req.contextText, repairLog, resolveMachineID, getMachineFieldsForMachine)
+		firstClarify := ""
+		if verdict != nil {
+			firstClarify = verdict.ClarifyingQuestion
+		}
+		post := decidePostRepairOutcome(!detFailedAgain, firstClarify, len(repairLog) > 0)
+		if post == outcomeAskBack {
+			logVerdict = "askback"
+			resultText = clarifyingQuestionOrFallback(verdict)
+		} else if repairedText != "" {
+			logVerdict = "repair"
+			resultText = repairedText
+		} else {
+			// Guard against an empty repair response silently blanking out an
+			// otherwise-fine original answer — degrade to the original instead.
+			logVerdict = "repair-empty"
+		}
+	}
+
+	log.Printf("ai verify: verdict=%s intent=%s det=%s dur=%s",
+		logVerdict, intentLabel(req.intentRes, req.routerOK), detLabel(!detFailed), time.Since(start))
+
+	return resultText
+}
+
+// runRepairRound re-enters the main-model loop once (brief §3 rule 3: roundCap 1
+// — up to one round of tool calls, then a forced text summary), mirroring the
+// cap pattern of Chat()'s main loop via runToolRound. tool_choice is left auto
+// ("") throughout; tools stay attached (role-filtered, passed in by the caller).
+// A Groq error here is returned to the caller, which degrades to the original
+// (pre-repair) answer rather than failing the request.
+func (ctrl *Controller) runRepairRound(c *fiber.Ctx, ctx context.Context, convID string, msgs []groqMessage, tools []map[string]any) (text string, toolLog []toolExecution, persisted []Message, err error) {
+	const repairRoundCap = 1
+	callTools := tools
+	for i := 0; i < 5; i++ {
+		resp, callErr := callGroq(msgs, callTools, "")
+		if callErr != nil && strings.Contains(callErr.Error(), "Tool choice is none") {
+			resp, callErr = callGroq(msgs, tools, "")
+		}
+		if callErr != nil {
+			return "", toolLog, persisted, callErr
+		}
+		if len(resp.Choices) == 0 {
+			return "", toolLog, persisted, fmt.Errorf("Groq returned no choices")
+		}
+
+		choice := resp.Choices[0]
+		if choice.FinishReason != "tool_calls" || len(choice.Message.ToolCalls) == 0 {
+			if choice.Message.Content != nil {
+				text = *choice.Message.Content
+			}
+			return text, toolLog, persisted, nil
+		}
+
+		msgs = append(msgs, choice.Message)
+		var roundPersisted []Message
+		var roundLog []toolExecution
+		msgs, roundPersisted, roundLog = ctrl.runToolRound(c, ctx, convID, choice.Message.ToolCalls, msgs)
+		persisted = append(persisted, roundPersisted...)
+		toolLog = append(toolLog, roundLog...)
+
+		if i >= repairRoundCap {
+			callTools = nil
+		}
+	}
+	return text, toolLog, persisted, nil
 }
 
 // chatIntentResponse exposes the router's classification (Task 2/3) to the frontend so

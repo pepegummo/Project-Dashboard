@@ -227,6 +227,33 @@ var ClassifyIntentTool = map[string]any{
 	},
 }
 
+// VerifyAnswerTool is the router-internal forced-tool-call schema used by
+// VerifyAnswer (router.go), Phase 5's LLM-verify step. Deliberately NOT in
+// AllTools() — like classify_intent, it's never offered to the main chat model,
+// only forced by name on the small router model.
+var VerifyAnswerTool = map[string]any{
+	"name":        "verify_answer",
+	"description": "Judge whether an assistant's answer actually addresses the user's request.",
+	"input_schema": map[string]any{
+		"type":     "object",
+		"required": []string{"matches_intent"},
+		"properties": map[string]any{
+			"matches_intent": map[string]any{
+				"type":        "boolean",
+				"description": "true if the answer addresses what the user asked, even partially, as long as it HONESTLY says what it could not do. false if it performed/answered a DIFFERENT action, metric, or machine than requested, or fabricated a value the tool results don't support.",
+			},
+			"problem": map[string]any{
+				"type":        "string",
+				"description": "If matches_intent is false, a short specific reason (e.g. \"edited the wrong widget\", \"answered temperature, user asked speed\"). Empty if matches_intent is true.",
+			},
+			"clarifying_question": map[string]any{
+				"type":        "string",
+				"description": "Only if matches_intent is false AND the request was genuinely ambiguous (not simply answered wrong) — ONE short clarifying question, in the user's language (Thai or English, matching the user's message). Empty otherwise.",
+			},
+		},
+	},
+}
+
 // AllTools is the complete set handed to the LLM and exposed via GET /api/ai/tools.
 func AllTools() []map[string]any {
 	return []map[string]any{

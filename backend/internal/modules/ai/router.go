@@ -142,3 +142,84 @@ func parseIntentResult(rawJSON string) (IntentResult, bool) {
 	}
 	return r, true
 }
+
+// ── Verify-then-repair (Phase 5) ──────────────────────────────────────────────
+
+// VerifyResult is the strict JSON contract returned by the verify_answer tool
+// call (schema.go: VerifyAnswerTool).
+type VerifyResult struct {
+	MatchesIntent      bool   `json:"matches_intent"`
+	Problem            string `json:"problem,omitempty"`
+	ClarifyingQuestion string `json:"clarifying_question,omitempty"`
+}
+
+// verifySystemPrompt is a small, static prompt (~250 tok) so Groq can
+// prompt-cache it across verify calls, mirroring routerSystemPrompt. The schema
+// (not prose here) carries the output contract.
+const verifySystemPrompt = `You check whether an assistant's answer actually addresses the user's request in a factory-dashboard chat app. Always call verify_answer — never reply in prose.
+
+MISMATCH (matches_intent: false) when the answer:
+- performed or staged a DIFFERENT action than the one requested (e.g. edited the wrong widget, created instead of previewing, changed the wrong thing)
+- answers about a different metric or machine than the user asked about
+- states or implies a value that the tool results don't actually show (fabrication)
+
+MATCH (matches_intent: true) when the answer correctly addresses the request — including a partial answer that HONESTLY says what it could not do.
+
+If mismatch AND the request was genuinely ambiguous (not simply answered wrong), set clarifying_question to ONE short question in the user's language (Thai or English, matching the user's message) that would resolve it. Leave clarifying_question empty when the fix is obvious and needs no user input.`
+
+// VerifyAnswer makes one forced-tool-call request to routerModel judging whether
+// finalAnswer actually addresses userMessage, given the router's intent summary
+// and which tools ran. Mirrors ClassifyIntent: 6s bounded timeout, static
+// system prompt, forced tool_choice. Returns (zero, false) on any error, timeout,
+// or malformed JSON — callers MUST treat false as "no verdict" (pass), never as
+// a mismatch; the verifier's own infrastructure failing must never block or
+// repair an otherwise-fine answer.
+func VerifyAnswer(ctx context.Context, userMessage string, intentSummary string, finalAnswer string, toolsUsed string) (VerifyResult, bool) {
+	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+
+	if len(finalAnswer) > 1500 {
+		finalAnswer = finalAnswer[:1500]
+	}
+	if intentSummary == "" {
+		intentSummary = "router declined"
+	}
+	if toolsUsed == "" {
+		toolsUsed = "none"
+	}
+
+	sp := verifySystemPrompt
+	userContent := "User message: " + userMessage +
+		"\nRouter intent: " + intentSummary +
+		"\nTools used: " + toolsUsed +
+		"\nAssistant's final answer: " + finalAnswer
+	msgs := []groqMessage{
+		{Role: "system", Content: &sp},
+		{Role: "user", Content: strPtr(userContent)},
+	}
+
+	tools := []map[string]any{toGroqTool(VerifyAnswerTool)}
+	resp, _, err := callGroqModel(ctx, routerModel, msgs, tools, forceFunc("verify_answer"))
+	if err != nil {
+		return VerifyResult{}, false
+	}
+	if len(resp.Choices) == 0 {
+		return VerifyResult{}, false
+	}
+	calls := resp.Choices[0].Message.ToolCalls
+	if len(calls) == 0 {
+		return VerifyResult{}, false
+	}
+	return parseVerifyResult(calls[0].Function.Arguments)
+}
+
+// parseVerifyResult is separated from the HTTP call so it's unit-testable
+// without the network: valid JSON -> (result, true); malformed -> (zero, false)
+// ("no verdict", never treated as a mismatch by callers).
+func parseVerifyResult(rawJSON string) (VerifyResult, bool) {
+	var r VerifyResult
+	if err := json.Unmarshal([]byte(rawJSON), &r); err != nil {
+		return VerifyResult{}, false
+	}
+	return r, true
+}
