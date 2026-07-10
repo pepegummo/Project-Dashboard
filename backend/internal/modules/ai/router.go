@@ -13,10 +13,14 @@ import (
 	"time"
 )
 
-// routerModel is ClassifyIntent's default model. TestRouterBakeOff compares candidates
-// by calling classifyIntentWithModel directly with an explicit model string — it does
-// not mutate this constant.
-const routerModel = "llama-3.1-8b-instant"
+// routerModel is ClassifyIntent's default model — openai/gpt-oss-20b per the live
+// TestRouterBakeOff run (2026-07-10): 20/32 vs llama-3.1-8b-instant's 0/32 (Groq's
+// function-call validator rejected llama-3.1-8b-instant's forced tool_choice output for
+// this schema on every case, tripping callGroqModel's existing no-tools fallback).
+// TestRouterBakeOff compares candidates by calling classifyIntentWithModel directly with
+// an explicit model string — it does not mutate this constant. llama stays in that
+// comparison for the record.
+const routerModel = "openai/gpt-oss-20b"
 
 // routerConfidenceFloor: results below this are treated as "not confident enough" —
 // the caller falls back to auto tools rather than acting on a shaky guess.
@@ -61,14 +65,14 @@ type IntentResult struct {
 const routerSystemPrompt = `Classify one factory-dashboard chat message (Thai or English, often with typos) by calling classify_intent. Always call the tool — never reply in prose.
 
 INTENTS (one example each):
-- chat: greeting / small talk / general question, no dashboard data needed. "สวัสดีครับ" -> chat
+- chat: greeting / small talk / general question, no dashboard data needed. Also use for a HYPOTHETICAL or conditional question about performing an action ("ถ้าฉันอยากสร้าง...", "if I wanted to create...", "how would I...") — the user is asking ABOUT an action, not requesting it now. "สวัสดีครับ" -> chat
 - read_metric: a live/current single-value read. "speed ของ CW-01 เท่าไหร่" -> read_metric
-- read_agg: an aggregate, trend, or analytical read over a time window (avg/min/max/count over time). "ผลิตกี่ชิ้นใน 22 นาที" -> read_agg
+- read_agg: a statistical aggregate or trend of a SENSOR METRIC over time — avg/min/max/แนวโน้ม — never a piece/production count. "ค่าเฉลี่ย speed เมื่อวานเท่าไหร่" -> read_agg
 - edit_widget: change an on-screen widget's date window, bucket size, metric, or add/remove it. "อยากดู 22 นาที" (widget focused) -> edit_widget
 - compare: overlay or compare two or more metrics on a chart. "เปรียบเทียบ speed กับ temp" -> compare
 - create_dashboard: create a new dashboard — classify by meaning even through typos. "ส้างแดชบอด cw-01" -> create_dashboard
 - alerts: active alerts/alarms (NOT alert-rule setup, which is a redirect elsewhere). "ตอนนี้มีแจ้งเตือนอะไรบ้าง" -> alerts
-- production: production/piece counts. "ผลิตวันนี้กี่ชิ้น" -> production
+- production: counting units PRODUCED — piece counts, production counts, SKU counts. "ผลิตกี่ชิ้นใน 22 นาที" -> production
 
 SLOTS — fill a slot only when the message explicitly states it. Never invent or guess a value; leave it empty if absent:
 - machine: machine name/code, e.g. CW-01.
