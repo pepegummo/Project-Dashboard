@@ -539,6 +539,9 @@ function buildDashboardContext(text = '', focusedIds: string[] = []): string {
       // named "Weights" can actually show reject count). Send it so the AI stops
       // guessing meaning from the title, matching the focus/live-dashboard branches.
       if (w.metric) parts.push(`metric ${w.metric}`);
+      // Chart widgets overlay several metrics via fields[] (not a single metric) — emit them so
+      // the AI can see what the chart shows and route a "compare A, B" edit to it.
+      if (w.type === 'chart' && Array.isArray(w.fields) && w.fields.length) parts.push(`fields ${w.fields.join(', ')}`);
       if (w.machineUuid) {
         const val = telemetryStore.getFieldValue(w.machineUuid, w.metric);
         if (val !== undefined && val !== null) {
@@ -600,6 +603,11 @@ function buildDashboardContext(text = '', focusedIds: string[] = []): string {
           }
         }
       }
+      // Chart widgets overlay several metrics via config.fields[] — emit them so a focused custom
+      // chart isn't shown metric-less (which made the AI confuse it with a sibling widget).
+      if (w.widgetType === 'chart' && Array.isArray(w.config?.fields) && w.config.fields.length) {
+        parts.push(`fields ${w.config.fields.join(', ')}`);
+      }
       const bucket = widgetViewStateStore.bucketStates[w.id] ?? w.config?.bucket;
       if (bucket) parts.push(`bucket ${bucket}`);
       if (w.config?.sku) parts.push(`sku ${w.config.sku}`);
@@ -634,7 +642,10 @@ async function sendMessage() {
       conversationId.value = conv.id;
     }
 
-    const messages = await api.chat(conversationId.value!, text, buildDashboardContext(text, mentionSnapshot.map(w => w.id)));
+    // Analytical intent must key off what the user typed, not the message with @mentions
+    // appended: a chart titled "Trend" made "@Trend" match ANALYTICAL_RE, wrongly injecting
+    // on-screen data and routing a "view yesterday" edit onto the no-tool context-answer path.
+    const messages = await api.chat(conversationId.value!, text, buildDashboardContext(rawText, mentionSnapshot.map(w => w.id)));
 
     for (const msg of messages) {
       if (msg.role === 'assistant' && msg.content?.trim()) {
@@ -731,6 +742,7 @@ async function sendMessage() {
       if (msg.toolName === 'preview_update_widget') {
         const r = msg.toolResult as any;
         const previewCard = canvasCards.value.find(c => c.kind === 'preview' || c.kind === 'focus' || c.kind === 'dashboard') as any;
+        let applied = false;
         if (r?.widgetTitle && r.changes && previewCard) {
           const idx = findPreviewWidgetIdx(previewCard, r.widgetTitle);
           if (idx >= 0) {
@@ -748,7 +760,13 @@ async function sendMessage() {
             // the same widget still triggers the highlight watch; set after the remount settles.
             previewHighlightId.value = undefined;
             nextTick(() => { previewHighlightId.value = `preview-${idx}`; });
+            applied = true;
           }
+        }
+        // No preview card matched → the user edited a widget on the LIVE grid (clicked it).
+        // Persist the change to that widget's config so the chart updates and it sticks.
+        if (!applied && r?.widgetTitle && r.changes) {
+          await applyChangesToLiveWidget(r.widgetTitle, r.changes);
         }
       }
     }
@@ -985,6 +1003,41 @@ async function confirmCreate(dashboardName: string, layouts: Record<string, Widg
     showToast(`Error: ${e?.message ?? 'Failed to create dashboard'}`);
   } finally {
     processing.value = false;
+  }
+}
+
+// preview_update_widget config-level fields that are safe to apply straight onto a live
+// widget's config. Column-level edits (title/machine/type) stay in the preview flow.
+const LIVE_CONFIG_KEYS = ['startDateTime', 'endDateTime', 'liveMode', 'points', 'bucket', 'min', 'max', 'unit', 'chartType', 'scaling'] as const;
+
+// Apply an AI preview_update_widget change to a LIVE dashboard widget the user clicked.
+// Persisted: PATCH the widget config via dashboardStore.updateWidget so the change sticks —
+// visible on the AI-page grid AND on the real dashboard opened from main, surviving reload.
+// updateWidget re-fetches currentDashboard, which changes GridStackCanvas's fingerprint and
+// remounts the widget so LineChartWidget re-seeds its window from the new config.
+async function applyChangesToLiveWidget(title: string, changes: Record<string, any>) {
+  const widgets = dashboardStore.currentDashboard?.widgets;
+  if (!widgets?.length) return;
+  const rt = title.toLowerCase();
+  const matches = widgets.filter(w => {
+    const wt = (w.title ?? w.widgetType ?? '').toLowerCase();
+    return wt === rt || wt.includes(rt) || rt.includes(wt);
+  });
+  if (!matches.length) return;
+  // Prefer the clicked/mentioned widget when a title is ambiguous across the grid.
+  const mentionedIds = new Set(mentionedWidgets.value.map(w => w.id));
+  const target = matches.find(w => mentionedIds.has(w.id)) ?? matches[0];
+
+  const patch: Record<string, unknown> = {};
+  for (const k of LIVE_CONFIG_KEYS) if (k in changes) patch[k] = changes[k];
+  // An absolute window is ignored while a chart is in live mode — switch it to historical.
+  if ('startDateTime' in changes || 'endDateTime' in changes) patch.liveMode = false;
+  if (!Object.keys(patch).length) return;
+
+  try {
+    await dashboardStore.updateWidget(target.id, { config: { ...(target.config ?? {}), ...patch } });
+  } catch (e: any) {
+    showToast(`Error: ${e?.message ?? 'Could not update widget.'}`);
   }
 }
 

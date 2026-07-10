@@ -99,6 +99,55 @@ guessing a metric from conversation history:
   Never fabricate machine or metric — always read them from the context entry's "metric" field for that widget. The widget's "title" (e.g. "Trend", "Speed Gauge") is a display label, NEVER a metric value — never pass it as the metric argument.
   If multiple widgets are mentioned, answer each from its own context entry — do not reuse one widget's metric for another.`
 
+// dateEditRule is appended to systemPromptContextExt so the model can (1) resolve
+// relative dates the user speaks ("เมื่อวาน", "yesterday", "last week") into the
+// absolute YYYY-MM-DD that preview_update_widget needs, and (2) treat "change the
+// chart's shown range" as an EDIT (preview_update_widget) rather than a read-and-
+// summarize. Without today's date it had no way to compute "yesterday" and fell back
+// to summarizing the trend. Only on the context path (~55 tok); the date string
+// breaks this prompt's Groq cache once per day, which is free.
+// ponytail: server-local date. In Docker that's UTC — near midnight it can be a day
+// off plant-local. If the plant isn't near UTC, have the frontend pass its local date.
+// ponytail: prompt-only routing has a ceiling — the model is still handed read tools
+// with tool_choice:"required", so it can still pick a read tool for a "view yesterday"
+// phrasing. If misroutes persist, force tool_choice:preview_update_widget deterministically
+// on focused-chart + relative-date messages (upgrade path).
+func dateEditRule() string {
+	today := time.Now().Format("2006-01-02")
+	return "\nToday is " + today + " (plant-local). Resolve relative dates from it: " +
+		"yesterday/เมื่อวาน = the day before today, today/วันนี้ = " + today +
+		", last week/สัปดาห์ที่แล้ว = the 7 days ending today. " +
+		"Changing what a focused line-chart displays for a time period — including a plain " +
+		"VIEW/SEE request (\"ดู\"/\"view\"/\"see\": \"อยากดูเวลาเมื่อวาน\", \"ดูเวลาเมื่อวาน\", " +
+		"\"ดูของเมื่อวาน\", \"show yesterday\", \"เปลี่ยนเป็นเมื่อวาน\", \"ดูของสัปดาห์ที่แล้ว\") — is an " +
+		"EDIT of that chart, NOT a data read: call preview_update_widget with start_date and " +
+		"end_date as YYYY-MM-DD. Do NOT call get_telemetry_series, get_telemetry_trend, or " +
+		"show_metric to change what a focused chart shows — those only return data and will NOT " +
+		"update the widget the user is looking at. Never answer by summarizing the trend. " +
+		"The chart's currently-shown window is NOT a date reference — compute yesterday/last week " +
+		"only from today's date above, never from the on-screen window."
+}
+
+// bucketEditRule is the daily-count/chart sibling of dateEditRule: changing a focused
+// widget's bar interval (bucket size) is an EDIT, not a data read. Any <number><m|h|d>
+// is valid (backend accepts ^(\d{1,4})(m|h|d)$), so the model must never claim the widget
+// only supports its current interval. Static (~50 tok, Groq-cacheable), appended wherever
+// dateEditRule() is.
+const bucketEditRule = "\nChanging a focused count/chart widget's bar interval (bucket size) — a bare " +
+	"\"<N> minutes/hours\", \"22 นาที\", \"ทุก 15 นาที\", \"รายชั่วโมง\", or \"every 15 min\" — is an EDIT of " +
+	"that widget: call preview_update_widget with bucket as <number><m|h|d> (22 นาที → \"22m\", 1 ชั่วโมง → " +
+	"\"1h\"). Any bucket like \"22m\" is valid — never say the widget only supports its current interval, and " +
+	"do NOT call get_production_count or get_telemetry_series to resize the bars (those only read)."
+
+// fieldsEditRule teaches the model that a metric-overlay change on a focused chart widget is an
+// EDIT: "เปรียบเทียบ/compare/overlay A, B" replaces the chart's fields[]. Chart widgets carry
+// config.fields (an array) — reassign them via preview_update_widget, never read+summarize.
+const fieldsEditRule = "\nComparing or overlaying metrics on a focused chart widget — \"เปรียบเทียบ weight, " +
+	"speed\", \"compare speed and throughput\", \"overlay X vs Y\" — is an EDIT of that chart: call " +
+	"preview_update_widget with fields as the metric field keys, e.g. fields:[\"weight\",\"speed\"] " +
+	"(match the user's metric words to the machine's real field keys). Do NOT refuse because the " +
+	"widget currently shows other metrics, and do NOT call a read tool to compare — just reassign fields[]."
+
 // ── Groq / OpenAI-compatible API types ───────────────────────────────────────
 
 type groqMessage struct {
@@ -389,7 +438,7 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	// shown window, bucket/sku/config) needs no tool round either. Guardrail: edits
 	// and aggregate/range questions still take the tool path.
 	focused := hasContext && strings.Contains(body.Message, "@")
-	contextRead := focused && !editRe.MatchString(body.Message) && !rangeRe.MatchString(body.Message) && !skuRe.MatchString(body.Message)
+	contextRead := focused && !editRe.MatchString(body.Message) && !rangeRe.MatchString(body.Message) && !skuRe.MatchString(body.Message) && !bucketRe.MatchString(body.Message) && !compareRe.MatchString(body.Message)
 	// answerFromContext = one no-tool call from the on-screen context.
 	answerFromContext := inlineData || contextRead
 
@@ -401,7 +450,7 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	} else if answerFromContext {
 		sp = systemPromptContextAnswer
 	} else if hasContext {
-		sp += systemPromptContextExt
+		sp += systemPromptContextExt + dateEditRule() + bucketEditRule + fieldsEditRule
 	}
 	msgs := []groqMessage{{Role: "system", Content: &sp}}
 	msgs = append(msgs, buildGroqMessages(history)...)
@@ -413,7 +462,9 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 		msgs = append(msgs, groqMessage{Role: "system", Content: &ctxContent})
 	}
 
-	fullTools := buildGroqTools(middleware.GetUser(c).Role, hasContext)
+	role := middleware.GetUser(c).Role
+	canWrite := role == "admin" || role == "editor"
+	fullTools := buildGroqTools(role, hasContext)
 	tools := fullTools
 
 	// Pure conversational messages (greetings, "what can you do?") get no tools —
@@ -424,13 +475,38 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 		tools = nil
 	}
 
-	// Force a tool call only when an @WidgetTitle mention is present — the one signal that
-	// guarantees the model has a concrete widget (and its context block) to act on. Forcing
-	// on a broader keyword guess risks the model emitting an invalid function call when the
-	// message is too vague, which Groq rejects (400) and triggers a costly full retry.
-	// Never force when we're answering from context — we want a plain-text answer.
+	// Force a tool call when either (a) an @WidgetTitle mention is present, or (b) the
+	// message is a clear EDIT with a dashboard/preview context on screen — both give the
+	// model a concrete widget to act on. Without this an unmentioned edit like
+	// "เปลี่ยนเป็นเมื่อวานหน่อย" role-played the change in prose instead of calling
+	// preview_update_widget. Forcing on a vague message risks an invalid function call
+	// (Groq 400) — but editRe is specific, and a forced-but-refused call already falls
+	// back to auto below. Never force when we're answering from context (want plain text).
+	// ponytail: on a multi-widget dashboard with no focus, the model may target the wrong
+	// widget — acceptable for the common single-chart case; click the widget to pin it.
+	editIntent := hasContext && editRe.MatchString(body.Message)
+	// A relative-date window change on a focused chart ("ดูเมื่อวาน", "วันก่อนหน้า", "show
+	// yesterday") is deterministically forced to preview_update_widget BY NAME — plain
+	// tool_choice:"required" let the model escape to get_telemetry_series and summarize, and
+	// describe the on-screen window as "yesterday" instead of computing it from today. Guarded:
+	// writers only (a viewer's toolset lacks the tool — forcing a missing function 400s) and not
+	// an aggregate read ("ค่าเฉลี่ยเมื่อวาน" wants a number). The forced call then resolves the
+	// date from today via dateEditRule and cannot summarize.
+	rangeEdit := (focused || editIntent) && canWrite && relDateRe.MatchString(body.Message) && !aggReadRe.MatchString(body.Message)
+	// A bucket/interval change ("อยากดู 22 นาที", "ทุก 15 นาที", "1h") on a focused count/chart
+	// widget is the daily-count sibling of rangeEdit: force preview_update_widget BY NAME so the
+	// model resizes the bars instead of refusing or reading. Same guards — writers only, and
+	// aggReadRe carves out count questions ("ผลิตกี่ชิ้นใน 22 นาที").
+	bucketEdit := (focused || editIntent) && canWrite && bucketRe.MatchString(body.Message) && !aggReadRe.MatchString(body.Message)
+	// A metric-overlay change ("เปรียบเทียบ weight, speed", "compare X and Y") on a focused chart
+	// widget is the "chart"-widget sibling: force preview_update_widget BY NAME so the model
+	// reassigns fields[] instead of refusing that the chart shows other metrics. No aggReadRe
+	// carve-out — comparing metrics is inherently an overlay edit, not a single-number read.
+	fieldsEdit := (focused || editIntent) && canWrite && compareRe.MatchString(body.Message)
 	firstToolChoice := ""
-	if focused && !answerFromContext {
+	if (rangeEdit || bucketEdit || fieldsEdit) && !answerFromContext {
+		firstToolChoice = forceFunc("preview_update_widget")
+	} else if (focused || editIntent) && !answerFromContext {
 		firstToolChoice = "required"
 	}
 
@@ -488,7 +564,7 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 				escalated = true
 				sp = systemPromptBase
 				if hasContext {
-					sp += systemPromptContextExt
+					sp += systemPromptContextExt + dateEditRule() + bucketEditRule + fieldsEditRule
 					ctxContent := "Authoritative current dashboard state (overrides anything said earlier):\n" + body.Context
 					msgs = append(msgs, groqMessage{Role: "system", Content: &ctxContent})
 				}
@@ -649,7 +725,16 @@ func callGroqModel(model string, messages []groqMessage, tools []map[string]any,
 	if len(tools) > 0 {
 		reqBody["tools"] = tools
 		if toolChoice != "" {
-			reqBody["tool_choice"] = toolChoice
+			// "" = auto, "required"/"none" = string; a leading "{" means a forced-function
+			// object (forceFunc) that Groq needs as JSON, not a quoted string.
+			if strings.HasPrefix(toolChoice, "{") {
+				var tc map[string]any
+				if err := json.Unmarshal([]byte(toolChoice), &tc); err == nil {
+					reqBody["tool_choice"] = tc
+				}
+			} else {
+				reqBody["tool_choice"] = toolChoice
+			}
 		}
 	}
 
@@ -760,7 +845,48 @@ func needsTools(msg string) bool { return needsToolsRe.MatchString(msg) }
 //   - rangeIntent → the answer needs an aggregate/time-range fetch not guaranteed in context.
 // A focused read that is neither can be answered straight from the injected context.
 var editRe = regexp.MustCompile(`(?i)\b(change|set|update|rename|move|remove|delete|add)\b|เปลี่ยน|แก้|ตั้ง|ลบ|เพิ่ม|ย้าย`)
-var rangeRe = regexp.MustCompile(`(?i)\b(avg|average|mean|sum|total|min|max|peak|trend|forecast|predict|analy\w*|over|last|past|hour|day|week|month|yesterday|today)\b|เฉลี่ย|รวม|สูงสุด|ต่ำสุด|ย้อนหลัง|เมื่อวาน|วันนี้|แนวโน้ม|วิเคราะห์|ทำนาย`)
+// The Thai "X ก่อน / ก่อนหน้า" (ago/previous) constructs must be here too: without
+// them a focused "ดูวันก่อนหน้า" (view previous day) fell through to contextRead, got the
+// no-tool context-answer prompt, and the model role-played the edit as a prose promise it
+// could not fulfill. Bare "ก่อน" is excluded — it means "first/beforehand" too often.
+var rangeRe = regexp.MustCompile(`(?i)\b(avg|average|mean|sum|total|min|max|peak|trend|forecast|predict|analy\w*|over|last|past|hour|day|week|month|yesterday|today|previous|prior)\b|เฉลี่ย|รวม|สูงสุด|ต่ำสุด|ย้อนหลัง|เมื่อวาน|วันนี้|วันก่อน|อาทิตย์ก่อน|สัปดาห์ก่อน|เดือนก่อน|ก่อนหน้า|ที่ผ่านมา|แนวโน้ม|วิเคราะห์|ทำนาย`)
+
+// relDateRe / aggReadRe deterministically route a focused-chart time-window change.
+// relDateRe = a relative date phrase (a window edit: "ดูเมื่อวาน", "วันก่อนหน้า", "show yesterday").
+// aggReadRe = an aggregate the user wants as a NUMBER ("ค่าเฉลี่ยเมื่อวาน") — a read, not a window
+// change, so it must NOT be forced onto preview_update_widget. Prose alone (dateEditRule) failed:
+// forced to call "some" tool, the model picked get_telemetry_series and summarized instead of
+// editing, and described the on-screen window as "yesterday". Forcing the tool by name fixes both.
+var relDateRe = regexp.MustCompile(`(?i)\b(yesterday|today|tonight|last\s+(week|month|day)|this\s+(week|month)|previous|prior)\b|เมื่อวาน|เมื่อคืน|วันนี้|วันก่อน|ก่อนหน้า|สัปดาห์ที่แล้ว|สัปดาห์ก่อน|อาทิตย์ก่อน|อาทิตย์ที่แล้ว|เดือนที่แล้ว|เดือนก่อน|ที่ผ่านมา`)
+var aggReadRe = regexp.MustCompile(`(?i)\b(avg|average|mean|sum|total|min|max|peak|count|how\s+many|how\s+much)\b|เฉลี่ย|รวม|สูงสุด|ต่ำสุด|จำนวน|กี่|เท่าไหร่|เท่าไร`)
+
+// bucketRe deterministically routes a focused count/chart widget's bar-interval (bucket)
+// change, exactly like relDateRe does for a date window. It matches a duration+unit
+// ("22 นาที", "22m", "15 minutes", "1 ชั่วโมง") or an "every N / ราย..." interval phrase.
+// Without it "อยากดู 22 นาที" had no edit verb (editRe) and no range word (rangeRe — it lacks
+// "minute"/นาที), so contextRead swallowed it onto the no-tool answer path and the model
+// refused ("the widget only provides 15-minute intervals"). Vocabulary mirrors the frontend
+// bucket parser at AIAssistantPage.vue. aggReadRe still carves out count reads
+// ("ผลิตกี่ชิ้นใน 22 นาที") so a number question is not forced onto an edit. The bare word
+// "bucket" is deliberately excluded — it would hijack "what bucket is this?" context reads.
+// ponytail: the abbreviation "min" collides with aggReadRe's "min" (minimum), so a bare
+// "30 min" degrades to the generic force-required path instead of force-by-name — still an
+// edit. Thai นาที and the full word "minutes" are unambiguous. Not worth disambiguating.
+var bucketRe = regexp.MustCompile(`(?i)\b\d+\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours)\b|\d+\s*(นาที|ชั่วโมง|ชม)|ทุก\s*\d+|ราย(นาที|ชั่วโมง|วัน)`)
+
+// compareRe routes a metric-overlay change on a focused chart widget ("เปรียบเทียบ weight,
+// speed", "compare X and Y", "overlay speed vs throughput") — the "chart"-widget sibling of
+// rangeEdit/bucketEdit. Replacing which fields a custom chart overlays is an EDIT
+// (preview_update_widget with fields[]), not a read. Without it "อยากดูเปรียบเทียบ weight, speed"
+// had no edit verb and no range word, so contextRead swallowed it onto the no-tool path and the
+// model refused. Typo-tolerant on the metric names themselves (the compare keyword is the anchor).
+var compareRe = regexp.MustCompile(`(?i)\bcompare\b|\bversus\b|\bvs\b|\boverlay\b|เปรียบเทียบ|เทียบ|ซ้อน`)
+
+// forceFunc builds an OpenAI/Groq tool_choice object that forces one named function.
+// callGroqModel detects the leading "{" and sends it as an object rather than a string.
+func forceFunc(name string) string {
+	return `{"type":"function","function":{"name":"` + name + `"}}`
+}
 
 // skuRe: a SKU question needs get_skus — the available-SKU list is never in the
 // injected context, so it must NOT take the no-tool contextRead path.
