@@ -19,18 +19,19 @@ All references below point at the real code under `backend/internal/modules/ai/`
 | **UI** | Vue 3 chat page; sends the message plus the on-screen dashboard/widget context | `frontend/src/pages/AIAssistantPage.vue`, `frontend/src/services/api.service.ts` |
 | **API / Backend** | Fiber routes under `/api/ai` (JWT-gated); the `Chat` handler orchestrates the tool loop | `routes.go`, `controller.go` |
 | **Tool layer** | read / preview / write tools exposed to the model (`AllTools()`); a dispatch switch runs each against the DB | `schema.go`, `tool_actions.go`, `dashboard_action.go` |
-| **LLM (external)** | Groq, OpenAI-compatible chat-completions API | `https://api.groq.com/openai/v1/chat/completions`, model `openai/gpt-oss-120b` (temporary — see §3) |
+| **LLM (external)** | Groq, OpenAI-compatible chat-completions API | `https://api.groq.com/openai/v1/chat/completions`; main model `openai/gpt-oss-120b`, router model `openai/gpt-oss-20b` (see §3) |
 | **Database** | TimescaleDB / Postgres — telemetry + dashboards + AI conversation history | shared `database.Pool` |
 
 **External services / secrets:** the only AI secret is `GROQ_API_KEY` (`config/env.go`).
-The model id itself is a hardcoded constant (`controller.go:25`), not an environment
-variable. If the key is empty the endpoint returns `503 AI_UNAVAILABLE`.
+The model ids are hardcoded constants (`groqModel`, `routerModel`), not environment
+variables. If the key is empty the endpoint returns `503 AI_UNAVAILABLE`.
 
 ### Tool catalog
 
-`AllTools()` (`schema.go:194`) hands the model the read / preview / write tools below.
-Write tools require admin/editor (`writeTools`, `schema.go:214`); preview tools are only
-sent when a dashboard context is present. `create_custom_dashboard` is deliberately **not**
+`AllTools()` hands the model the read / preview / write tools below.
+Write tools require admin/editor (`writeTools`); preview tools are role-gated the same way
+(`buildGroqTools` filters by role, not by whether a dashboard is open — they're always
+attached now). `create_custom_dashboard` is deliberately **not**
 in `AllTools()` — the UI calls it directly via `POST /api/ai/tools/execute` only after the
 user clicks Confirm.
 
@@ -62,13 +63,13 @@ user clicks Confirm.
 
 Groq calls are **non-streaming** (single POST, whole body read), sent with
 `reasoning_format: hidden`. A 429 whose wait is short (≤ 3 s) is retried silently up to 3×;
-a longer wait (capped at 30 s by `parseRetryAfter`, `controller.go:722`) aborts instead and
-surfaces to the UI as HTTP 429 `RATE_LIMIT` with a `retryAfter` hint (`rateLimitError`,
-`controller.go:460-465,680-689`) so the user is told to retry rather than sitting on a hung request.
+a longer wait (capped at 30 s by `parseRetryAfter`) aborts instead and
+surfaces to the UI as HTTP 429 `RATE_LIMIT` with a `retryAfter` hint (`rateLimitError`)
+so the user is told to retry rather than sitting on a hung request.
 
 The on-screen preview / selected Active dashboard is also persisted per user in
-`ai_preview_drafts` (`GET/PUT/DELETE /api/ai/preview-draft`, `PUT /api/ai/selected-dashboard` —
-`repository.go:113-170`) so it survives a page refresh; this is UI view-state plumbing, not part
+`ai_preview_drafts` (`GET/PUT/DELETE /api/ai/preview-draft`, `PUT /api/ai/selected-dashboard`)
+so it survives a page refresh; this is UI view-state plumbing, not part
 of the LLM loop.
 
 ### Architecture diagram
@@ -113,20 +114,20 @@ flowchart LR
 
 ### System-prompt strategy
 
-The system prompt is now **unified and byte-stable** (`systemPromptUnified`, `controller.go:30`),
+The system prompt is now **unified and byte-stable** (`systemPromptUnified`),
 sent on all requests with the full role-filtered tool set **always attached**. The design is
 **single-shot**; Groq prompt caching (50% input discount on static prefixes) makes this economical.
 
 **Two-stage intent classification:**
 
-1. **Router (Phase 2)** — `ClassifyIntent` in `router.go:20` makes **one forced tool call** to
+1. **Router (Phase 2)** — `ClassifyIntent` makes **one forced tool call** to
    `openai/gpt-oss-20b` with the `classify_intent` schema (`schema.go`). Returns strict JSON
    `{intent ∈ {chat, read_metric, read_agg, edit_widget, compare, create_dashboard, alerts, production}, 
    machine, metric, fields[], bucket, dateRange, targetWidget, status, sku, confidence}`. 
    Confidence floor 0.5; unknown intent, invalid JSON, timeout (6s), or low confidence → not-ok. 
    Router failure **never blocks** chat — falls back to auto tools.
 
-2. **Dispatcher** — `dispatchIntent` in `controller.go:1021` (pure deterministic function) maps 
+2. **Dispatcher** — `dispatchIntent` (pure deterministic function) maps 
    intent → tool_choice + roundCap. not-ok → auto tools (fallback identical to pre-router behavior).
    Focused + inline on-screen data + read/chat intent → tool_choice "none". read/agg/production
    with machine slot → forced tool by name (degrades to "required" if machine unresolved or absent
@@ -152,7 +153,7 @@ sent on all requests with the full role-filtered tool set **always attached**. T
 
 **Token techniques:**
 - **Slim tool schemas** — simple tools send name + description only (arg hints embedded), full JSON
-  schema only for widget-nested tools (`toGroqToolSlim` in `controller.go:573`); ~50–80 tokens/tool.
+  schema only for widget-nested tools (`toGroqToolSlim`); ~50–80 tokens/tool.
 - **Context injected last** — the authoritative dashboard state is appended *after* history so
   recency makes it win over any stale earlier turn.
 - **Round cap** — a focused `@widget` question gets 0 extra tool rounds, others 1, because each
@@ -329,7 +330,7 @@ sequenceDiagram
 `preview_update_widget` patches any of `new_title` (rename), `metric`, `bucket`
 (time bucket), `unit`, `min`, `max`, `start_date`/`end_date`, `sku`, `status`, `machine`,
 `type`, plus the chart-widget fields `fields` (overlaid metrics), `chartType` (line/bar/area),
-`points`, and `scaling` (`schema.go:165-191`). It **stages** the change — on a new preview *or* an open Active
+`points`, and `scaling` (`schema.go`). It **stages** the change — on a new preview *or* an open Active
 dashboard — and nothing is written until the user clicks Confirm/Save (see "Preview vs
 Active dashboard" below).
 
@@ -461,12 +462,17 @@ focused-count-now, focused-alarm-panel, relative-date-edit.
 
 | Model | Score | Confidence floor | Verdict |
 |-------|-------|------------------|---------|
-| `openai/gpt-oss-20b` | **28 / 32** | 0.5 | **live router** (`routerModel` in `router.go:23`) — forced `classify_intent` tool, all edge cases handled |
+| `openai/gpt-oss-20b` | **28 / 32** | 0.5 | **live router** (`routerModel`) — forced `classify_intent` tool, all edge cases handled |
 | `openai/gpt-oss-120b` | — | — | not evaluated for router (too expensive for frequent calls) |
 | `llama-3.1-8b-instant` | **1 / 32** | — | kept in eval for the record; Groq's validator rejects forced tool_choice output |
 
 The 20b router handles all high-confidence requests (0.5 floor); low-confidence or failed
 classifications fall back to auto tools (identical to pre-router behavior).
+
+**Scoring note:** the router's 28/32 uses **corrected scoring** — per-case accept-sets (more
+than one right answer is allowed per case) and the ambiguous case passes by declining to
+classify — which is **not apples-to-apples** with the main bake-off's strict `got == want`
+check below. Don't compare the two numbers directly.
 
 ### Main model bake-off: Chat Tool Selection (2026-07-06)
 
@@ -479,7 +485,7 @@ cases passed on both gpt-oss models.**
 | Model | Score | Completed / 23 | Avg prompt tok | Median latency | Verdict |
 |-------|-------|----------------|----------------|----------------|---------|
 | `qwen/qwen3-32b` | **13 / 13** | 13 (10 ⏳) | ~3,282 | ~0.90 s | **replaced** — heaviest tokens, most rate-limited (completed only 13) |
-| `openai/gpt-oss-120b` | **21 / 22** | 22 (1 ⏳) | ~2,698 | ~0.92 s | **live main model** (`groqModel` in `controller.go:27`) — used after router dispatch |
+| `openai/gpt-oss-120b` | **21 / 22** | 22 (1 ⏳) | ~2,698 | ~0.92 s | **live main model** (`groqModel`) — used after router dispatch |
 | `openai/gpt-oss-20b` | **23 / 23** | 23 (0 ⏳) | ~2,697 | **~0.83 s** | router model; previously evaluated as main (see history below) |
 
 #### Main model per-case results
@@ -562,7 +568,7 @@ than concentrating on one hard case. `120b` is the main model; `20b` is now the 
 ### Decision (applied)
 
 **Main model** (per run 2026-07-06):
-- The live constant (`groqModel` in `controller.go:27`) runs **`openai/gpt-oss-120b`** for the main
+- The live constant (`groqModel`) runs **`openai/gpt-oss-120b`** for the main
   chat loop. While `20b` scored **23/23** in the main model bake-off, the router-based architecture
   enables a cleaner split: `120b` handles the tool-calling loop (higher reasoning capacity with
   minimal latency cost), and `20b` handles the deterministic intent classification.
@@ -574,7 +580,7 @@ than concentrating on one hard case. `120b` is the main model; `20b` is now the 
   current name-only `got == want` check does not inspect.
 
 **Router model** (per `TestRouterBakeOff`, 2026-07-10):
-- The live constant (`routerModel` in `router.go:23`) runs **`openai/gpt-oss-20b`** for `ClassifyIntent`.
+- The live constant (`routerModel`) runs **`openai/gpt-oss-20b`** for `ClassifyIntent`.
   Scored **28/32** on intent classification with a 0.5 confidence floor; low-confidence or invalid
   classifications fall back to auto tools (identical to pre-router behavior), so router failure never
   blocks chat.
