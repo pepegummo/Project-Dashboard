@@ -213,7 +213,12 @@ func decideVerifyOutcome(detOK bool, verifyVerdict *VerifyResult, repaired bool,
 		return outcomeAskBack
 	}
 	if !routerOK {
-		return outcomeAskBack // rule 5: ambiguous-from-start shortcut
+		// rule 5: ambiguous-from-start shortcut. Accepted trade-off: a transient router
+		// failure combined with a verify false-positive mismatch will ask-back on an
+		// answer that was actually fine. Self-limiting in practice — verify shares the
+		// router model's rate bucket, so a router 429 usually means verify 429s too,
+		// which yields a nil verdict (treated as pass, see line 208) and delivers instead.
+		return outcomeAskBack
 	}
 	return outcomeRepair
 }

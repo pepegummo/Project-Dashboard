@@ -968,7 +968,7 @@ async function confirmCreate(dashboardName: string, layouts: Record<string, Widg
 
 // preview_update_widget config-level fields that are safe to apply straight onto a live
 // widget's config. Column-level edits (title/machine/type) stay in the preview flow.
-const LIVE_CONFIG_KEYS = ['startDateTime', 'endDateTime', 'liveMode', 'points', 'bucket', 'min', 'max', 'unit', 'chartType', 'scaling'] as const;
+const LIVE_CONFIG_KEYS = ['startDateTime', 'endDateTime', 'liveMode', 'points', 'bucket', 'min', 'max', 'unit', 'chartType', 'scaling', 'sku', 'status', 'fields'] as const;
 
 // Apply an AI preview_update_widget change to a LIVE dashboard widget the user clicked.
 // Persisted: PATCH the widget config via dashboardStore.updateWidget so the change sticks —
@@ -990,9 +990,14 @@ async function applyChangesToLiveWidget(title: string, changes: Record<string, a
 
   const patch: Record<string, unknown> = {};
   for (const k of LIVE_CONFIG_KEYS) if (k in changes) patch[k] = changes[k];
+  // The widget config stores the metric under `field`, not `metric` — translate it.
+  if ('metric' in changes) patch.field = changes.metric;
   // An absolute window is ignored while a chart is in live mode — switch it to historical.
   if ('startDateTime' in changes || 'endDateTime' in changes) patch.liveMode = false;
-  if (!Object.keys(patch).length) return;
+  if (!Object.keys(patch).length) {
+    showToast(`Couldn't apply that change to "${target.title ?? target.widgetType}".`);
+    return;
+  }
 
   try {
     await dashboardStore.updateWidget(target.id, { config: { ...(target.config ?? {}), ...patch } });
