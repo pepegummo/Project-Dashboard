@@ -295,6 +295,34 @@ export interface AiChatIntent {
   confidence: number;
 }
 
+// ─── Ask Data (NL → SQL → ECharts) ───────────────────────────────────────────
+export interface AskDataResult {
+  sql: string;
+  columns: string[];
+  rows: unknown[][];
+  echartOption: Record<string, unknown>;
+}
+
+export interface AskBoardSummary {
+  id: string;
+  name: string;
+  updatedAt: string;
+  chartCount: number;
+}
+
+export interface AskBoardChart {
+  id: string;
+  question: string;
+  sql: string;
+  echartOption: Record<string, unknown>;
+}
+
+export interface AskBoard {
+  id: string;
+  name: string;
+  charts: AskBoardChart[];
+}
+
 // ─── API ─────────────────────────────────────────────────────────────────────
 export interface ApiResponse<T> {
   success: true;

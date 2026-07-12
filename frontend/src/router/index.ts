@@ -53,6 +53,12 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true, title: 'AI Assistant' },
   },
   {
+    path: '/ask',
+    name: 'AskData',
+    component: () => import('@/pages/AskDataPage.vue'),
+    meta: { requiresAuth: true, title: 'Ask Data' },
+  },
+  {
     path: '/:pathMatch(.*)*',
     redirect: '/dashboards',
   },

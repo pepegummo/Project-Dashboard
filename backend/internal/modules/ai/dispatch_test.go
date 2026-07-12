@@ -25,7 +25,7 @@ func TestDispatchIntentFallbackIsAuto(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			res := IntentResult{Intent: "read_metric", Machine: "CW-01", Confidence: 0.9}
-			toolChoice, roundCap := dispatchIntent(res, false, tc.focused, tc.inline, tc.role, tc.machine)
+			toolChoice, roundCap := dispatchIntent(res, false, tc.focused, tc.inline, tc.role, tc.machine, false)
 			if toolChoice != "" {
 				t.Errorf("toolChoice = %q, want \"\" (auto)", toolChoice)
 			}
@@ -38,7 +38,7 @@ func TestDispatchIntentFallbackIsAuto(t *testing.T) {
 
 func TestDispatchIntentChat(t *testing.T) {
 	res := IntentResult{Intent: "chat", Confidence: 0.9}
-	toolChoice, _ := dispatchIntent(res, true, false, false, "viewer", false)
+	toolChoice, _ := dispatchIntent(res, true, false, false, "viewer", false, false)
 	if toolChoice != "" {
 		t.Errorf("chat intent toolChoice = %q, want \"\" (auto)", toolChoice)
 	}
@@ -50,7 +50,7 @@ func TestDispatchIntentFocusedInlineReadIsNone(t *testing.T) {
 	for _, intent := range []string{"chat", "read_metric", "read_agg"} {
 		t.Run(intent, func(t *testing.T) {
 			res := IntentResult{Intent: intent, Machine: "CW-01", Confidence: 0.9}
-			toolChoice, roundCap := dispatchIntent(res, true, true, true, "viewer", true)
+			toolChoice, roundCap := dispatchIntent(res, true, true, true, "viewer", true, false)
 			if toolChoice != "none" {
 				t.Errorf("toolChoice = %q, want %q", toolChoice, "none")
 			}
@@ -67,7 +67,7 @@ func TestDispatchIntentReadNoMachineNoFocusIsRequired(t *testing.T) {
 	for _, intent := range []string{"read_metric", "read_agg", "production"} {
 		t.Run(intent, func(t *testing.T) {
 			res := IntentResult{Intent: intent, Confidence: 0.9} // no Machine
-			toolChoice, _ := dispatchIntent(res, true, false, false, "viewer", false)
+			toolChoice, _ := dispatchIntent(res, true, false, false, "viewer", false, false)
 			if toolChoice != "required" {
 				t.Errorf("toolChoice = %q, want %q", toolChoice, "required")
 			}
@@ -87,7 +87,7 @@ func TestDispatchIntentReadForcesByNameWithMachineSlot(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.intent, func(t *testing.T) {
 			res := IntentResult{Intent: tc.intent, Machine: "CW-01", Confidence: 0.9}
-			toolChoice, _ := dispatchIntent(res, true, false, false, "viewer", true)
+			toolChoice, _ := dispatchIntent(res, true, false, false, "viewer", true, false)
 			want := forceFunc(tc.wantFunc)
 			if toolChoice != want {
 				t.Errorf("toolChoice = %q, want %q", toolChoice, want)
@@ -99,7 +99,7 @@ func TestDispatchIntentReadForcesByNameWithMachineSlot(t *testing.T) {
 func TestDispatchIntentReadForcesByNameWhenFocusedNoMachine(t *testing.T) {
 	// No machine slot, but a focused widget on screen supplies one implicitly.
 	res := IntentResult{Intent: "read_metric", Confidence: 0.9}
-	toolChoice, _ := dispatchIntent(res, true, true, false, "viewer", false)
+	toolChoice, _ := dispatchIntent(res, true, true, false, "viewer", false, false)
 	want := forceFunc("show_metric")
 	if toolChoice != want {
 		t.Errorf("toolChoice = %q, want %q", toolChoice, want)
@@ -110,7 +110,7 @@ func TestDispatchIntentReadDegradesOnInvalidMachine(t *testing.T) {
 	// Router named a machine that did NOT resolve in the DB — never force with a
 	// hallucinated machine, degrade to "required" even though focused is true.
 	res := IntentResult{Intent: "read_metric", Machine: "NOT-A-REAL-MACHINE", Confidence: 0.9}
-	toolChoice, _ := dispatchIntent(res, true, true, false, "viewer", false)
+	toolChoice, _ := dispatchIntent(res, true, true, false, "viewer", false, false)
 	if toolChoice != "required" {
 		t.Errorf("toolChoice = %q, want %q (invalid machine slot must degrade)", toolChoice, "required")
 	}
@@ -119,7 +119,7 @@ func TestDispatchIntentReadDegradesOnInvalidMachine(t *testing.T) {
 func TestDispatchIntentAlertsAlwaysForces(t *testing.T) {
 	// alerts is org-scoped — no machine-slot exception, forces regardless of focus.
 	res := IntentResult{Intent: "alerts", Confidence: 0.9}
-	toolChoice, _ := dispatchIntent(res, true, false, false, "viewer", false)
+	toolChoice, _ := dispatchIntent(res, true, false, false, "viewer", false, false)
 	want := forceFunc("get_active_alerts")
 	if toolChoice != want {
 		t.Errorf("toolChoice = %q, want %q", toolChoice, want)
@@ -132,7 +132,7 @@ func TestDispatchIntentViewerEditNeverForces(t *testing.T) {
 	for _, intent := range []string{"edit_widget", "compare"} {
 		for _, focused := range []bool{true, false} {
 			res := IntentResult{Intent: intent, TargetWidget: "Trend", Confidence: 0.9}
-			toolChoice, _ := dispatchIntent(res, true, focused, false, "viewer", false)
+			toolChoice, _ := dispatchIntent(res, true, focused, false, "viewer", false, false)
 			if toolChoice != "" {
 				t.Errorf("intent=%s focused=%v: toolChoice = %q, want \"\" (viewer must never be forced)", intent, focused, toolChoice)
 			}
@@ -143,7 +143,7 @@ func TestDispatchIntentViewerEditNeverForces(t *testing.T) {
 func TestDispatchIntentEditWidgetFocusedForcesByName(t *testing.T) {
 	for _, role := range []string{"editor", "admin"} {
 		res := IntentResult{Intent: "edit_widget", TargetWidget: "Trend", Confidence: 0.9}
-		toolChoice, _ := dispatchIntent(res, true, true, false, role, false)
+		toolChoice, _ := dispatchIntent(res, true, true, false, role, false, false)
 		want := forceFunc("preview_update_widget")
 		if toolChoice != want {
 			t.Errorf("role=%s: toolChoice = %q, want %q", role, toolChoice, want)
@@ -153,24 +153,42 @@ func TestDispatchIntentEditWidgetFocusedForcesByName(t *testing.T) {
 
 func TestDispatchIntentEditWidgetNotFocusedIsRequired(t *testing.T) {
 	res := IntentResult{Intent: "edit_widget", Confidence: 0.9}
-	toolChoice, _ := dispatchIntent(res, true, false, false, "editor", false)
+	toolChoice, _ := dispatchIntent(res, true, false, false, "editor", false, false)
 	if toolChoice != "required" {
 		t.Errorf("toolChoice = %q, want %q", toolChoice, "required")
 	}
 }
 
-func TestDispatchIntentCompareFocusedForcesByName(t *testing.T) {
-	res := IntentResult{Intent: "compare", Fields: []string{"speed", "temp"}, Confidence: 0.9}
-	toolChoice, _ := dispatchIntent(res, true, true, false, "editor", false)
-	want := forceFunc("preview_update_widget")
-	if toolChoice != want {
-		t.Errorf("toolChoice = %q, want %q", toolChoice, want)
+func TestDispatchIntentCompareRoutesByChartExistence(t *testing.T) {
+	// A comparison resolves to a custom chart: update the existing one when a chart
+	// is on the dashboard, else add a new one. Focus does not matter (a line-chart
+	// cannot overlay fields).
+	cases := []struct {
+		name        string
+		focused     bool
+		chartExists bool
+		wantFunc    string
+	}{
+		{"chart-exists-focused", true, true, "preview_update_widget"},
+		{"chart-exists-unfocused", false, true, "preview_update_widget"},
+		{"no-chart-focused", true, false, "preview_add_widget"},
+		{"no-chart-unfocused", false, false, "preview_add_widget"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := IntentResult{Intent: "compare", Fields: []string{"speed", "weight"}, Confidence: 0.9}
+			toolChoice, _ := dispatchIntent(res, true, tc.focused, false, "editor", false, tc.chartExists)
+			want := forceFunc(tc.wantFunc)
+			if toolChoice != want {
+				t.Errorf("toolChoice = %q, want %q", toolChoice, want)
+			}
+		})
 	}
 }
 
 func TestDispatchIntentCreateDashboardForcesForEditor(t *testing.T) {
 	res := IntentResult{Intent: "create_dashboard", Machine: "CW-01", Confidence: 0.9}
-	toolChoice, _ := dispatchIntent(res, true, false, false, "editor", false)
+	toolChoice, _ := dispatchIntent(res, true, false, false, "editor", false, false)
 	want := forceFunc("preview_dashboard")
 	if toolChoice != want {
 		t.Errorf("toolChoice = %q, want %q", toolChoice, want)
@@ -179,7 +197,7 @@ func TestDispatchIntentCreateDashboardForcesForEditor(t *testing.T) {
 
 func TestDispatchIntentCreateDashboardViewerIsAuto(t *testing.T) {
 	res := IntentResult{Intent: "create_dashboard", Confidence: 0.9}
-	toolChoice, _ := dispatchIntent(res, true, false, false, "viewer", false)
+	toolChoice, _ := dispatchIntent(res, true, false, false, "viewer", false, false)
 	if toolChoice != "" {
 		t.Errorf("toolChoice = %q, want \"\" (viewer cannot create)", toolChoice)
 	}
@@ -187,10 +205,10 @@ func TestDispatchIntentCreateDashboardViewerIsAuto(t *testing.T) {
 
 func TestDispatchIntentRoundCapFollowsFocused(t *testing.T) {
 	res := IntentResult{Intent: "chat", Confidence: 0.9}
-	if _, cap := dispatchIntent(res, true, true, false, "viewer", false); cap != 0 {
+	if _, cap := dispatchIntent(res, true, true, false, "viewer", false, false); cap != 0 {
 		t.Errorf("roundCap = %d, want 0 when focused", cap)
 	}
-	if _, cap := dispatchIntent(res, true, false, false, "viewer", false); cap != 1 {
+	if _, cap := dispatchIntent(res, true, false, false, "viewer", false, false); cap != 1 {
 		t.Errorf("roundCap = %d, want 1 when not focused", cap)
 	}
 }

@@ -1,5 +1,5 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
-import type { ApiResponse, Dashboard, DashboardWidget, Machine, MachineField, Alert, AlertEvent, AiConversation, AiMessage, AiChatIntent, AiTool, TelemetrySeries, TelemetrySnapshot, OrgOption } from '@/types';
+import type { ApiResponse, Dashboard, DashboardWidget, Machine, MachineField, Alert, AlertEvent, AiConversation, AiMessage, AiChatIntent, AiTool, TelemetrySeries, TelemetrySnapshot, OrgOption, AskDataResult, AskBoardSummary, AskBoard } from '@/types';
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:4000';
 
@@ -309,6 +309,47 @@ class ApiService {
   async executeAiTool(toolName: string, params: Record<string, unknown> = {}) {
     const { data } = await this.client.post<ApiResponse<unknown>>('/ai/tools/execute', { toolName, params });
     return data.data;
+  }
+
+  // ─── Ask Data (NL → SQL → ECharts) ──────────────────────────────────────────
+  async askData(question: string, context?: { question: string; sql: string }) {
+    // Two LLM round-trips (SQL + chart) → allow more than the default 15s.
+    // context = previous turn, so a follow-up ("make it a bar chart") refines it.
+    const { data } = await this.client.post<ApiResponse<AskDataResult>>('/ai/ask', { question, context }, { timeout: 60_000 });
+    return data.data;
+  }
+
+  async runSql(sql: string) {
+    const { data } = await this.client.post<ApiResponse<{ columns: string[]; rows: unknown[][] }>>('/ai/run-sql', { sql });
+    return data.data;
+  }
+
+  async listBoards() {
+    const { data } = await this.client.get<ApiResponse<AskBoardSummary[]>>('/ai/boards');
+    return data.data;
+  }
+
+  async createBoard(name: string) {
+    const { data } = await this.client.post<ApiResponse<{ id: string; name: string }>>('/ai/boards', { name });
+    return data.data;
+  }
+
+  async getBoard(id: string) {
+    const { data } = await this.client.get<ApiResponse<AskBoard>>(`/ai/boards/${id}`);
+    return data.data;
+  }
+
+  async deleteBoard(id: string) {
+    await this.client.delete(`/ai/boards/${id}`);
+  }
+
+  async addBoardChart(boardId: string, payload: { question: string; sql: string; echartOption: Record<string, unknown> }) {
+    const { data } = await this.client.post<ApiResponse<{ id: string }>>(`/ai/boards/${boardId}/charts`, payload);
+    return data.data;
+  }
+
+  async deleteBoardChart(boardId: string, chartId: string) {
+    await this.client.delete(`/ai/boards/${boardId}/charts/${chartId}`);
   }
 
   async getConversations() {

@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth.store';
 import { useAlertStore } from '@/stores/alert.store';
 import {
-  LayoutDashboard, MonitorSpeaker, Bell, Bot,
+  LayoutDashboard, MonitorSpeaker, Bell, Bot, Sparkles,
   Factory, ChevronRight, LogOut, Settings, X, Building2,
 } from 'lucide-vue-next';
 
@@ -21,6 +21,7 @@ const navItems = [
   { to: '/machines',    icon: MonitorSpeaker,    label: 'Machines' },
   { to: '/alerts',      icon: Bell,              label: 'Alerts', badge: true },
   { to: '/ai',          icon: Bot,               label: 'AI Assistant' },
+  { to: '/ask',         icon: Sparkles,          label: 'Ask Data' },
 ];
 
 const isActive = (path: string) => route.path.startsWith(path);

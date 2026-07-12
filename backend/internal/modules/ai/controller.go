@@ -85,7 +85,9 @@ RELATIVE DATES: Resolve relative dates from today's date (appended separately pe
 
 BUCKET EDITS: Changing a focused count/chart widget's bar interval (bucket size) — a bare "<N> minutes/hours", "22 นาที", "ทุก 15 นาที", "รายชั่วโมง", or "every 15 min" — is an EDIT of that widget: call preview_update_widget with bucket as <number><m|h|d> (22 นาที → "22m", 1 ชั่วโมง → "1h"). Any bucket like "22m" is valid — never say the widget only supports its current interval, and do NOT call get_production_count or get_telemetry_series to resize the bars (those only read).
 
-METRIC OVERLAYS: Comparing or overlaying metrics on a focused chart widget — "เปรียบเทียบ weight, speed", "compare speed and throughput", "overlay X vs Y" — is an EDIT of that chart: call preview_update_widget with fields as the metric field keys, e.g. fields:["weight","speed"] (match the user's metric words to the machine's real field keys). Do NOT refuse because the widget currently shows other metrics, and do NOT call a read tool to compare — just reassign fields[].`
+METRIC OVERLAYS: Comparing or overlaying metrics — "เปรียบเทียบ weight, speed", "compare speed and throughput", "overlay X vs Y" — ALWAYS resolves to a custom chart widget (type "chart"), NEVER a line-chart (a line-chart shows one metric and cannot compare). Match the user's metric words to the machine's real field keys, e.g. fields:["weight","speed"]. Never call a read tool (show_metric / get_telemetry_series) to compare — those only return data and will not build a comparison.
+- If a custom chart (type "chart") is already on the dashboard → EDIT it: preview_update_widget with fields as the metric field keys. Do NOT refuse because it currently shows other metrics — just reassign fields[].
+- If NO custom chart exists yet → ADD one: preview_add_widget with type:"chart", fields:[the metric keys], and for exactly two metrics scaling:"dual" (they usually have different units; dual axis keeps both readable).`
 
 // dateLineForRequest returns "Today is YYYY-MM-DD (plant-local)." to append to
 // the dynamic context (dashboard state message) so the model can resolve relative dates.
@@ -387,6 +389,10 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	// Feeds both dispatchIntent's tool-choice rules and the chained-round cap below.
 	focused := hasContext && strings.Contains(body.Message, "@")
 
+	// chartExists = a custom chart (type "chart") is already on the dashboard.
+	// Lets dispatchIntent route a `compare` to update-the-chart vs add-a-chart.
+	chartExists := customChartRe.MatchString(body.Context)
+
 	// Always use the unified prompt; append today's date to the dynamic context.
 	sp := systemPromptUnified
 	msgs := []groqMessage{{Role: "system", Content: &sp}}
@@ -434,7 +440,7 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 		_, machineValid = resolveMachineID(ctx, user.OrgId, intentRes.Machine)
 	}
 
-	firstToolChoice, roundCap := dispatchIntent(intentRes, routerOK, focused, inlineData, role, machineValid)
+	firstToolChoice, roundCap := dispatchIntent(intentRes, routerOK, focused, inlineData, role, machineValid, chartExists)
 
 	var finalText string
 	var toolLog []toolExecution
@@ -960,6 +966,11 @@ func canWrite(role string) bool {
 // focusedContextSummary reformats that into "focused widget: <title> (<type>,
 // machine <machine>, metric/bucket <x>)" — the shape router_eval_test.go's
 // TestRouterBakeOff cases (Task 2) were scored against.
+// customChartRe matches a custom-chart widget line in the frontend dashboard
+// context, e.g. `- [FOCUSED] chart "Metrics", ...`. Anchored on the `chart` type
+// token so it does NOT match `line-chart "..."`.
+var customChartRe = regexp.MustCompile(`(?m)^-\s+(?:\[FOCUSED\]\s+)?chart\s+"`)
+
 var focusedLineRe = regexp.MustCompile(`(?m)^.*\[FOCUSED\].*$`)
 var focusedHeaderRe = regexp.MustCompile(`\[FOCUSED\]\s+([\w-]+)\s+"([^"]*)"`)
 var focusedMachineRe = regexp.MustCompile(`\bmachine\s+([^\s,]+)`)
@@ -1018,7 +1029,7 @@ func hasMachineSlot(res IntentResult, focused bool, machineValid bool) bool {
 // !ok (router failed/declined/ambiguous) is the fallback path: plain tool_choice
 // "" (auto) with the same roundCap formula as every other path — indistinguishable
 // from having no router at all (pre-router behavior).
-func dispatchIntent(res IntentResult, ok bool, focused bool, inlineData bool, role string, machineValid bool) (toolChoice string, roundCap int) {
+func dispatchIntent(res IntentResult, ok bool, focused bool, inlineData bool, role string, machineValid bool, chartExists bool) (toolChoice string, roundCap int) {
 	roundCap = 1
 	if focused {
 		roundCap = 0
@@ -1055,9 +1066,7 @@ func dispatchIntent(res IntentResult, ok bool, focused bool, inlineData bool, ro
 	case "alerts":
 		// Org-scoped, no machine slot involved — no exception needed.
 		return forceFunc("get_active_alerts"), roundCap
-	case "edit_widget", "compare":
-		// compare is the fields[]-overlay sibling of edit_widget — identical
-		// write/focus gating (both stage a preview_update_widget edit).
+	case "edit_widget":
 		if !canWrite(role) {
 			return "", roundCap
 		}
@@ -1065,6 +1074,17 @@ func dispatchIntent(res IntentResult, ok bool, focused bool, inlineData bool, ro
 			return forceFunc("preview_update_widget"), roundCap
 		}
 		return "required", roundCap
+	case "compare":
+		// A comparison always resolves to a custom chart (type "chart"): update the
+		// existing one, or add a new one when the dashboard has none (a line-chart
+		// cannot overlay fields, so "focused" alone is not enough to update).
+		if !canWrite(role) {
+			return "", roundCap
+		}
+		if chartExists {
+			return forceFunc("preview_update_widget"), roundCap
+		}
+		return forceFunc("preview_add_widget"), roundCap
 	case "create_dashboard":
 		if canWrite(role) {
 			return forceFunc("preview_dashboard"), roundCap

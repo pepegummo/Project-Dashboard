@@ -24,4 +24,14 @@ func RegisterRoutes(router fiber.Router) {
 	router.Put("/selected-dashboard", ctrl.PutSelectedDashboard)
 
 	router.Post("/chat", ctrl.Chat)
+
+	// Ask-Data: NL → hardened SQL → ECharts, plus saved boards (nl2sql.go, boards.go)
+	router.Post("/ask", AskData)
+	router.Post("/run-sql", RunSQL)
+	router.Get("/boards", ListBoards)
+	router.Post("/boards", CreateBoard)
+	router.Get("/boards/:id", GetBoard)
+	router.Delete("/boards/:id", DeleteBoard)
+	router.Post("/boards/:id/charts", AddBoardChart)
+	router.Delete("/boards/:id/charts/:chartId", DeleteBoardChart)
 }

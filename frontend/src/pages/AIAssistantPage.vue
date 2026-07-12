@@ -722,10 +722,10 @@ async function sendMessage() {
             applied = true;
           }
         }
-        // No preview card matched → the user edited a widget on the LIVE grid (clicked it).
-        // Persist the change to that widget's config so the chart updates and it sticks.
-        if (!applied && r?.widgetTitle && r.changes) {
-          await applyChangesToLiveWidget(r.widgetTitle, r.changes);
+        // No card matched. Live-edit was removed: all edits now go through the preview
+        // canvas, so tell the user to open the dashboard in preview first.
+        if (!applied && r?.widgetTitle) {
+          showToast(`เปิด dashboard ใน preview ก่อนแก้ "${r.widgetTitle}" / Open the dashboard in preview to edit it.`);
         }
       }
     }
@@ -963,46 +963,6 @@ async function confirmCreate(dashboardName: string, layouts: Record<string, Widg
     showToast(`Error: ${e?.message ?? 'Failed to create dashboard'}`);
   } finally {
     processing.value = false;
-  }
-}
-
-// preview_update_widget config-level fields that are safe to apply straight onto a live
-// widget's config. Column-level edits (title/machine/type) stay in the preview flow.
-const LIVE_CONFIG_KEYS = ['startDateTime', 'endDateTime', 'liveMode', 'points', 'bucket', 'min', 'max', 'unit', 'chartType', 'scaling', 'sku', 'status', 'fields'] as const;
-
-// Apply an AI preview_update_widget change to a LIVE dashboard widget the user clicked.
-// Persisted: PATCH the widget config via dashboardStore.updateWidget so the change sticks —
-// visible on the AI-page grid AND on the real dashboard opened from main, surviving reload.
-// updateWidget re-fetches currentDashboard, which changes GridStackCanvas's fingerprint and
-// remounts the widget so LineChartWidget re-seeds its window from the new config.
-async function applyChangesToLiveWidget(title: string, changes: Record<string, any>) {
-  const widgets = dashboardStore.currentDashboard?.widgets;
-  if (!widgets?.length) return;
-  const rt = title.toLowerCase();
-  const matches = widgets.filter(w => {
-    const wt = (w.title ?? w.widgetType ?? '').toLowerCase();
-    return wt === rt || wt.includes(rt) || rt.includes(wt);
-  });
-  if (!matches.length) return;
-  // Prefer the clicked/mentioned widget when a title is ambiguous across the grid.
-  const mentionedIds = new Set(mentionedWidgets.value.map(w => w.id));
-  const target = matches.find(w => mentionedIds.has(w.id)) ?? matches[0];
-
-  const patch: Record<string, unknown> = {};
-  for (const k of LIVE_CONFIG_KEYS) if (k in changes) patch[k] = changes[k];
-  // The widget config stores the metric under `field`, not `metric` — translate it.
-  if ('metric' in changes) patch.field = changes.metric;
-  // An absolute window is ignored while a chart is in live mode — switch it to historical.
-  if ('startDateTime' in changes || 'endDateTime' in changes) patch.liveMode = false;
-  if (!Object.keys(patch).length) {
-    showToast(`Couldn't apply that change to "${target.title ?? target.widgetType}".`);
-    return;
-  }
-
-  try {
-    await dashboardStore.updateWidget(target.id, { config: { ...(target.config ?? {}), ...patch } });
-  } catch (e: any) {
-    showToast(`Error: ${e?.message ?? 'Could not update widget.'}`);
   }
 }
 

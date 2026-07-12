@@ -266,6 +266,49 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool) error {
 			user_agent  TEXT,
 			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
+
+		// ── Ask-Data org-scoped views (NL→SQL safety) ────────────────────────
+		// The text-to-SQL feature (modules/ai/nl2sql.go) lets the LLM query ONLY
+		// these views. Each bakes in the org filter via the app.current_org GUC set
+		// per-request in a read-only tx, so a generated query cannot escape its org
+		// even if it omits a WHERE. current_setting(..., true) → NULL when unset,
+		// which matches no rows (safe deny).
+		`CREATE OR REPLACE VIEW v_machines AS
+			SELECT m.id, m.name, m.type, m.status
+			FROM machines m
+			JOIN production_lines pl ON pl.id = m.production_line_id
+			JOIN factories f         ON f.id = pl.factory_id
+			WHERE f.organization_id = current_setting('app.current_org', true)::uuid`,
+		`CREATE OR REPLACE VIEW v_machine_fields AS
+			SELECT mf.machine_id, m.name AS machine_name, mf.key, mf.label, mf.unit
+			FROM machine_fields mf
+			JOIN v_machines m ON m.id = mf.machine_id`,
+		// timestamp <= now() hides future-dated seed rows so "past N" windows have a
+		// real upper bound (data runs ahead of the wall clock). Ask-Data-only view.
+		`CREATE OR REPLACE VIEW v_telemetry AS
+			SELECT t.machine_id, m.name AS machine_name, t.timestamp AS ts, t.data
+			FROM telemetry_raw t
+			JOIN v_machines m ON m.id = t.machine_id
+			WHERE t.timestamp <= now()`,
+
+		// ── ai_boards / ai_board_charts (saved NL→SQL→ECharts charts) ────────
+		`CREATE TABLE IF NOT EXISTS ai_boards (
+			id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+			organization_id UUID        NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			user_id         UUID        NOT NULL REFERENCES users(id),
+			name            TEXT        NOT NULL,
+			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`CREATE TABLE IF NOT EXISTS ai_board_charts (
+			id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+			board_id      UUID        NOT NULL REFERENCES ai_boards(id) ON DELETE CASCADE,
+			question      TEXT        NOT NULL,
+			sql           TEXT        NOT NULL,
+			echart_option JSONB       NOT NULL DEFAULT '{}'::jsonb,
+			"order"       INTEGER     NOT NULL DEFAULT 0,
+			created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
 	}
 
 	for _, stmt := range ddl {
