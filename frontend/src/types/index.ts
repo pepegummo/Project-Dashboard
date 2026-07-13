@@ -301,6 +301,7 @@ export interface AskDataResult {
   columns: string[];
   rows: unknown[][];
   echartOption: Record<string, unknown>;
+  answer?: string; // set instead of the fields above when the question is answered in prose
 }
 
 export interface AskBoardSummary {

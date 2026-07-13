@@ -41,18 +41,44 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    Start([question]) --> Ctx["buildSchemaContext<br/>(views + machine names + metric keys)"]
+    Start([question]) --> Ctx["buildSchemaContext<br/>(views + machine names + metric keys + text dims: sku)"]
     Ctx --> Emit["emitSQL → Groq (emit_sql)"]
     Emit --> Ans{answerable?}
     Ans -- ไม่ใช่คำถามข้อมูล --> Err422[/"422: ไม่ใช่คำถามเกี่ยวกับข้อมูล"/]
     Ans -- ใช่ --> Valid["validateSQL<br/>(SELECT เดียว / ไม่มี keyword ต้องห้าม)"]
     Valid --> Run["runScoped<br/>(read-only tx + org GUC + timeout)"]
-    Run --> EChart["emitEChart → Groq (emit_echart_option)"]
-    EChart --> Resp[/"{ sql, columns, rows, echartOption }"/]
-    Resp --> Render["withDataset(): รวม option + rows → dataset<br/>แล้ววาดด้วย v-chart"]
+    Run --> Num{"มีคอลัมน์ตัวเลข?<br/>hasNumericColumn"}
+    Num -- ไม่มี (ผลลัพธ์เป็นข้อความล้วน) --> Table["ข้าม emitEChart<br/>echartOption = {}"]
+    Num -- มี --> Empty{rows ว่าง<br/>0 แถว?}
+    Empty -- ใช่ --> EmptyTable["ข้าม emitEChart<br/>echartOption = {}"]
+    Empty -- ไม่ --> EChart["emitEChart → Groq (emit_echart_option)"]
+    EChart --> Sanitize["sanitizeEChartOption<br/>(ตัด dataset/data ที่แอบฝัง<br/>เช็ก encode คอลัมน์จริง ผิด → {})"]
+    Table --> Resp[/"{ sql, columns, rows, echartOption }"/]
+    EmptyTable --> Resp
+    Sanitize --> Resp
+    Resp --> Render["echartOption ว่าง ({}) → วาดเป็นตาราง<br/>ไม่ว่าง → withDataset() + v-chart"]
+    Valid -- ข้อผิดพลาด --> Retry{เทิร์นซ้ำ ≤ 3?}
+    Retry -- ใช่ --> Emit
+    Retry -- ไม่ --> Err[/"400: SQL ไม่ถูกต้อง"/]
+    Run -- ข้อผิดพลาด --> Retry
 ```
 
+**การจัดการข้อผิดพลาด กรณีผลลัพธ์ว่าง และ sanitization:**
+
+1. **SQL ที่ validate หรือรันพัง** — backend ส่งข้อความข้อผิดพลาดกลับให้ LLM แก้เอง (ไม่แสดงให้ผู้ใช้เห็น) สูงสุด 3 ครั้ง ภายใน timeout รวม 45 วินาที หลังจากนั้นถ้ายังผิดก็ส่ง 400 กลับไปยัง frontend
+2. **ผลลัพธ์ 0 แถว** — ข้ามการเรียก Groq รอบสร้างกราฟ ส่ง `echartOption = {}` กลับมา ฝั่ง frontend เช็ก `rows.length === 0` เอง (`resultIsEmpty`) แล้วแสดงข้อความ "No data matched — try a wider time range or check the machine name." แทนตาราง/กราฟ
+3. **Sanitization** — ฝั่ง Go ตัด `dataset` / `data` ที่ LLM อาจแอบฝังไว้ในกราฟ, เช็ก encode ของคอลัมน์ที่อ้างอิงจริง ถ้าผิดก็คืน `echartOption = {}` ให้วาดเป็นตาราง
+
 ข้อมูลถูกวาดโดยเอา `echartOption` (ไม่มีข้อมูลในตัว) มารวมกับ `rows` เป็น `dataset` ตอน render — รันซ้ำก็แค่เปลี่ยนข้อมูล ส่วนการเข้ารหัสกราฟคงเดิม
+
+**Chart หรือ Table** — backend เช็ก `hasNumericColumn(cols, rows)` หลังรัน SQL: ถ้าผลลัพธ์ไม่มีคอลัมน์ตัวเลขเลย (เช่น "list machines", "มี sku อะไรบ้าง" ที่ได้ข้อความล้วน) จะ **ข้ามการเรียก Groq รอบสร้างกราฟ** แล้วส่ง `echartOption` เป็น `{}` กลับมา ฝั่ง frontend ใช้ `{}` เป็นสัญญาณว่า "วาดเป็นตาราง" (`isTabular()`) แทนที่จะฝืนวาดกราฟที่ว่างเปล่า — ใช้กับทั้งผลลัพธ์สดและกราฟที่บันทึกไว้ใน board
+
+**กฎที่ฝังใน prompt ของ `emitSQL`** (ควบคุมว่า LLM สร้าง SQL แบบไหน):
+- **ช่วงเวลาแบบ relative** ("ย้อนหลัง N ชม./วัน") → `WHERE ts > now() - interval 'N ...'` เสมอ ห้าม hardcode วันที่
+- **คำถามแนวโน้ม** → `time_bucket('<interval>', ts)` + `ORDER BY bucket` (เลือก interval ให้ได้จำนวนจุดพอเหมาะ)
+- **จับชื่อเครื่องด้วย `machine_name ILIKE '%<code>%'`** ไม่ใช่ `=` เพราะชื่อจริงมี prefix (ผู้ใช้พิมพ์ "CW-01" แต่ในฐานข้อมูลคือ "Checkweigher CW-01") — ถ้าใช้ `=` จะได้ 0 แถว = กราฟว่าง
+- **มิติแบบข้อความ (text dimension)** — นอกจาก metric ตัวเลขแล้ว `data` JSONB ยังเก็บมิติข้อความ โดยเฉพาะ `sku` (อ่านด้วย `data->>'sku'`) `buildSchemaContext` บอก LLM ว่ามีมิตินี้ ไม่งั้น LLM จะไม่รู้จักและตอบว่า "ไม่ใช่คำถามข้อมูล"
+- **คำถามแบบ listing** ("มี sku อะไรบ้าง", "which SKUs", "list machines") = `SELECT DISTINCT ...` ไม่ใช่ time series และถือเป็น **answerable=true** — `answerable=false` เฉพาะทักทาย/คุยเล่นเท่านั้น
 
 ---
 
@@ -73,10 +99,14 @@ sequenceDiagram
     G-->>B: SQL
     B->>D: รัน SQL ใน read-only tx
     D-->>B: columns + rows
-    B->>G: emit_echart_option (question + ตัวอย่างแถว)
-    G-->>B: echartOption
+    alt มีคอลัมน์ตัวเลข
+        B->>G: emit_echart_option (question + ตัวอย่างแถว)
+        G-->>B: echartOption
+    else ข้อความล้วน
+        Note over B: ข้าม Groq, echartOption = {}
+    end
     B-->>P: sql + columns + rows + echartOption
-    P->>P: วาดกราฟ + เก็บ prev = {question, sql}
+    P->>P: วาดกราฟ/ตาราง + เก็บ prev = {question, sql}
     U->>P: เทิร์นถัดไป "อยากได้กราฟแท่ง"
     P->>B: askData("อยากได้กราฟแท่ง", prev)
     Note over B,G: emit_sql ใช้ SQL เดิม → emit_echart วาดเป็นกราฟแท่ง

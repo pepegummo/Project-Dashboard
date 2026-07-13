@@ -9,6 +9,8 @@ const question = ref('');
 const asking = ref(false);
 const askError = ref('');
 const result = ref<AskDataResult | null>(null);
+// Snapshot of the question the current result answered (textarea keeps changing).
+const askedQuestion = ref('');
 // Previous turn, so a follow-up ("make it a bar chart") refines it instead of being rejected.
 const prev = ref<{ question: string; sql: string } | null>(null);
 
@@ -22,9 +24,16 @@ function withDataset(option: Record<string, unknown>, columns: string[], rows: u
   return { ...(option ?? {}), dataset: { source: [safeCols, ...safeRows] } };
 }
 
+// An empty option ({}) is the backend's "render as a table" signal (text-only result).
+function isTabular(option: Record<string, unknown> | null | undefined) {
+  return !option || Object.keys(option).length === 0;
+}
+
 const resultOption = computed(() =>
   result.value ? withDataset(result.value.echartOption, result.value.columns, result.value.rows) : null,
 );
+const resultIsTable = computed(() => !!result.value && isTabular(result.value.echartOption));
+const resultIsEmpty = computed(() => !!result.value && !result.value.answer && (result.value.rows?.length ?? 0) === 0);
 
 async function ask() {
   const q = question.value.trim();
@@ -34,7 +43,9 @@ async function ask() {
   result.value = null;
   try {
     result.value = await api.askData(q, prev.value ?? undefined);
-    prev.value = { question: q, sql: result.value.sql };
+    askedQuestion.value = q;
+    // Only advance context on a data turn; a prose answer keeps the last data turn as context.
+    if (result.value.sql) prev.value = { question: q, sql: result.value.sql };
   } catch (e) {
     askError.value = (e as Error).message;
   } finally {
@@ -70,10 +81,15 @@ async function runChart(ch: AskBoardChart) {
   }
 }
 
-function boardChartOption(ch: AskBoardChart) {
+// Loaded {columns, rows} for a board chart, or null while loading/errored.
+function loadedData(ch: AskBoardChart) {
   const d = chartData[ch.id];
-  if (!d || d === 'loading' || d === 'error') return null;
-  return withDataset(ch.echartOption, d.columns, d.rows);
+  return !d || d === 'loading' || d === 'error' ? null : d;
+}
+
+function boardChartOption(ch: AskBoardChart) {
+  const d = loadedData(ch);
+  return d ? withDataset(ch.echartOption, d.columns, d.rows) : null;
 }
 
 async function saveToBoard() {
@@ -88,7 +104,7 @@ async function saveToBoard() {
       await loadBoards();
     }
     await api.addBoardChart(boardId, {
-      question: question.value.trim(),
+      question: askedQuestion.value,
       sql: result.value.sql,
       echartOption: result.value.echartOption,
     });
@@ -173,13 +189,31 @@ onMounted(loadBoards);
 
         <!-- Fresh result -->
         <div v-if="result" class="mt-10 rounded-2xl border border-white/10 bg-surface-100 p-6 lg:p-8">
-          <h2 class="mb-5 text-lg font-semibold text-white">{{ question.trim() }}</h2>
-          <div v-if="resultOption" class="h-[40rem] w-full">
+          <h2 class="mb-5 text-lg font-semibold text-white">{{ askedQuestion }}</h2>
+
+          <!-- Prose answer (explanation / follow-up) — no chart, no save -->
+          <div v-if="result.answer" class="whitespace-pre-wrap text-base leading-relaxed text-gray-200">{{ result.answer }}</div>
+
+          <template v-else>
+          <div v-if="resultIsEmpty" class="rounded-lg border border-white/5 bg-surface-200/50 px-5 py-8 text-center text-base text-gray-500">No data matched — try a wider time range or check the machine name.</div>
+          <div v-else-if="resultIsTable" class="max-h-[40rem] overflow-auto rounded-lg border border-white/5">
+            <table class="w-full text-left text-sm text-gray-300">
+              <thead class="sticky top-0 bg-surface-200 text-gray-400">
+                <tr><th v-for="col in result!.columns" :key="col" class="px-4 py-2 font-semibold">{{ col }}</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="(row, i) in result!.rows" :key="i" class="border-t border-white/5">
+                  <td v-for="(cell, j) in row" :key="j" class="px-4 py-2">{{ cell }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-else-if="resultOption" class="h-[40rem] w-full">
             <v-chart :option="resultOption" theme="cpf-dark" autoresize />
           </div>
 
           <!-- Save to board -->
-          <div class="mt-6 flex flex-wrap items-center gap-3 border-t border-white/5 pt-6">
+          <div v-if="!resultIsEmpty" class="mt-6 flex flex-wrap items-center gap-3 border-t border-white/5 pt-6">
             <select v-model="saveTarget" class="rounded-lg border border-white/10 bg-surface-200 px-4 py-2.5 text-base text-gray-300 outline-none">
               <option value="__new__">＋ New board…</option>
               <option v-for="b in boards" :key="b.id" :value="b.id">{{ b.name }}</option>
@@ -198,6 +232,7 @@ onMounted(loadBoards);
               <Save class="h-5 w-5" /> Save to board
             </button>
           </div>
+          </template>
         </div>
       </div>
 
@@ -212,7 +247,19 @@ onMounted(loadBoards);
               <button class="text-gray-500 hover:text-gray-200" title="Re-run" @click="runChart(ch)"><RefreshCw class="h-5 w-5" /></button>
               <button class="text-gray-500 hover:text-red-400" title="Delete" @click="deleteChart(ch)"><Trash2 class="h-5 w-5" /></button>
             </div>
-            <div v-if="boardChartOption(ch)" class="h-[34rem] w-full">
+            <div v-if="loadedData(ch) && isTabular(ch.echartOption)" class="max-h-[34rem] overflow-auto rounded-lg border border-white/5">
+              <table class="w-full text-left text-sm text-gray-300">
+                <thead class="sticky top-0 bg-surface-200 text-gray-400">
+                  <tr><th v-for="col in loadedData(ch)!.columns" :key="col" class="px-4 py-2 font-semibold">{{ col }}</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(row, i) in loadedData(ch)!.rows" :key="i" class="border-t border-white/5">
+                    <td v-for="(cell, j) in row" :key="j" class="px-4 py-2">{{ cell }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div v-else-if="boardChartOption(ch)" class="h-[34rem] w-full">
               <v-chart :option="boardChartOption(ch)" theme="cpf-dark" autoresize />
             </div>
             <div v-else-if="chartData[ch.id] === 'loading'" class="flex h-[34rem] items-center justify-center text-gray-600">
