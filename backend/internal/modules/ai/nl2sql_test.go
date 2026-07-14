@@ -172,6 +172,50 @@ func TestSanitizeEChartOption(t *testing.T) {
 			},
 		},
 		{
+			name: "duplicate series (same type+encode, per-machine names) collapse to one",
+			option: json.RawMessage(`{
+				"series": [
+					{"type": "line", "name": "CW-01", "encode": {"x": "bucket", "y": "avg_speed"}},
+					{"type": "line", "name": "CB-01", "encode": {"x": "bucket", "y": "avg_speed"}}
+				]
+			}`),
+			cols:      []string{"bucket", "machine_name", "avg_speed"},
+			wantValid: true,
+			checkFn: func(t *testing.T, result json.RawMessage) {
+				var m map[string]any
+				if err := json.Unmarshal(result, &m); err != nil {
+					t.Errorf("result should be valid JSON: %v", err)
+					return
+				}
+				series, _ := m["series"].([]any)
+				if len(series) != 1 {
+					t.Errorf("expected duplicate series collapsed to 1, got %d", len(series))
+				}
+			},
+		},
+		{
+			name: "distinct series (different encode y) both kept",
+			option: json.RawMessage(`{
+				"series": [
+					{"type": "line", "encode": {"x": "bucket", "y": "avg_speed"}},
+					{"type": "line", "encode": {"x": "bucket", "y": "max_speed"}}
+				]
+			}`),
+			cols:      []string{"bucket", "avg_speed", "max_speed"},
+			wantValid: true,
+			checkFn: func(t *testing.T, result json.RawMessage) {
+				var m map[string]any
+				if err := json.Unmarshal(result, &m); err != nil {
+					t.Errorf("result should be valid JSON: %v", err)
+					return
+				}
+				series, _ := m["series"].([]any)
+				if len(series) != 2 {
+					t.Errorf("expected both distinct series kept, got %d", len(series))
+				}
+			},
+		},
+		{
 			name: "dataset and series.data stripped",
 			option: json.RawMessage(`{
 				"dataset": {"source": [[1, 2], [3, 4]]},

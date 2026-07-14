@@ -326,6 +326,7 @@ func emitProse(ctx context.Context, question, schema string, prev *prevTurn, col
 const echartSystemPrompt = `You turn a SQL result into an ECharts option that answers the user's question, by calling emit_echart_option. Never reply in prose.
 - Pick the chart type — use ONLY 'line', 'bar', 'pie', or 'scatter': a time-bucket column → line; a category comparison → bar; parts-of-a-whole → pie.
 - A dataset with the result rows is injected AT RENDER TIME. Reference result columns BY NAME using encode (e.g. series:[{type:'line', encode:{x:'bucket', y:'avg_speed'}}]). Do NOT include any data arrays or a dataset field yourself.
+- Emit exactly ONE series even when the rows contain a category column (e.g. machine_name) — the renderer automatically splits one series into one line per category value. NEVER emit one series per machine/category: without per-series filters they would all draw identical data.
 - Set xAxis.type: 'time' for a timestamp/bucket column, 'category' for names. Add a short title, tooltip{trigger:'axis'}, and a legend when there are multiple series.
 - If the user's message explicitly names a chart type (bar/line/pie/scatter, or the same in another language e.g. Thai "กราฟแท่ง"=bar, "กราฟเส้น"=line, "วงกลม"=pie), use THAT type even if another would be more typical.
 - Column names and a few sample rows are given below for type inference only.`
@@ -458,11 +459,13 @@ func sanitizeEChartOption(option json.RawMessage, cols []string) json.RawMessage
 
 	// Validate and clean series.
 	validSeries := make([]map[string]any, 0, len(series))
+	seen := map[string]bool{}
 	for _, s := range series {
 		delete(s, "data")
 
 		// Check type is allowed.
-		if t, ok := s["type"].(string); !ok || !slices.Contains([]string{"line", "bar", "pie", "scatter"}, t) {
+		t, ok := s["type"].(string)
+		if !ok || !slices.Contains([]string{"line", "bar", "pie", "scatter"}, t) {
 			return json.RawMessage("{}")
 		}
 
@@ -476,6 +479,18 @@ func sanitizeEChartOption(option json.RawMessage, cols []string) json.RawMessage
 				}
 			}
 		}
+
+		// Series sharing type+encode are duplicates by construction — with no
+		// per-series data or filter (both stripped/absent here) they render
+		// identical rows. The model sometimes emits one per machine expecting a
+		// filter it cannot supply; keep the first — the frontend splits a single
+		// series into one line per category value.
+		encJSON, _ := json.Marshal(s["encode"])
+		key := t + string(encJSON)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		validSeries = append(validSeries, s)
 	}
 	// A chart with no series can never render — fall back to the table signal.
