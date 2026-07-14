@@ -2,8 +2,78 @@ package ai
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 )
+
+func TestParseSQLEmission(t *testing.T) {
+	cases := []struct {
+		name        string
+		raw         string
+		wantSQL     string
+		wantClarify string
+		wantErr     error // non-nil: exact error to match with errors.Is; else just "any error"
+		wantAnyErr  bool
+	}{
+		{
+			name:        "clarification set",
+			raw:         `{"answerable":true,"sql":"","clarification":"Which machine and metric?"}`,
+			wantClarify: "Which machine and metric?",
+		},
+		{
+			name:        "clarification wins over sql when both set",
+			raw:         `{"answerable":true,"sql":"SELECT 1","clarification":"Which machine?"}`,
+			wantClarify: "Which machine?",
+		},
+		{
+			name:    "not answerable and no clarification -> errNotDataQuestion",
+			raw:     `{"answerable":false,"sql":""}`,
+			wantErr: errNotDataQuestion,
+		},
+		{
+			name:    "answerable but empty sql and no clarification -> errNotDataQuestion",
+			raw:     `{"answerable":true,"sql":""}`,
+			wantErr: errNotDataQuestion,
+		},
+		{
+			name:    "valid sql passes through",
+			raw:     `{"answerable":true,"sql":"SELECT 1 FROM v_machines LIMIT 1"}`,
+			wantSQL: "SELECT 1 FROM v_machines LIMIT 1",
+		},
+		{
+			name:       "malformed JSON errors",
+			raw:        `{not json`,
+			wantAnyErr: true,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := parseSQLEmission(c.raw)
+			if c.wantErr != nil {
+				if !errors.Is(err, c.wantErr) {
+					t.Fatalf("got err=%v, want errors.Is(err, %v)", err, c.wantErr)
+				}
+				return
+			}
+			if c.wantAnyErr {
+				if err == nil {
+					t.Fatalf("expected an error, got none (result=%+v)", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got.SQL != c.wantSQL {
+				t.Errorf("SQL = %q, want %q", got.SQL, c.wantSQL)
+			}
+			if got.Clarification != c.wantClarify {
+				t.Errorf("Clarification = %q, want %q", got.Clarification, c.wantClarify)
+			}
+		})
+	}
+}
 
 func TestHasNumericColumn(t *testing.T) {
 	cases := []struct {

@@ -302,6 +302,7 @@ export interface AskDataResult {
   rows: unknown[][];
   echartOption: Record<string, unknown>;
   answer?: string; // set instead of the fields above when the question is answered in prose
+  clarification?: string; // set instead of the fields above when the question is under-specified
 }
 
 export interface AskBoardSummary {

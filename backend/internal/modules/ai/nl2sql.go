@@ -127,8 +127,9 @@ var emitSQLTool = map[string]any{
 		"type":     "object",
 		"required": []string{"answerable", "sql"},
 		"properties": map[string]any{
-			"answerable": map[string]any{"type": "boolean", "description": "false ONLY for a greeting, chit-chat, or clearly non-factory input (then leave sql empty). A data-listing question ('which SKUs', 'what machines', 'list values') is answerable=true."},
-			"sql":        map[string]any{"type": "string", "description": "One SELECT over the allowed v_ views. No semicolons, no CTEs, no writes. Always include a LIMIT."},
+			"answerable":    map[string]any{"type": "boolean", "description": "false ONLY for a greeting, chit-chat, clearly non-factory input, or a question about a previous chart/result itself (how it was computed, its interval) — then leave sql empty. A data-listing question ('which SKUs', 'what machines', 'list values') is answerable=true."},
+			"sql":           map[string]any{"type": "string", "description": "One SELECT over the allowed v_ views. No semicolons, no CTEs, no writes. Always include a LIMIT."},
+			"clarification": map[string]any{"type": "string", "description": "Set ONLY when the question IS about factory data but you cannot determine WHAT to query — no identifiable metric/machine/dimension. ONE short question in the user's language, offering concrete choices from the schema. Leave empty when a sensible default exists (no time range → assume last 24h). Never set together with sql."},
 		},
 	},
 }
@@ -184,7 +185,7 @@ Rules:
 - Exactly ONE SELECT. No semicolons, no CTEs, no INSERT/UPDATE/DELETE/DDL.
 - Any question about a time range or trend ("last N hours/days", "over time", "per hour", "trend", "history") MUST return a time series: GROUP BY time_bucket('<interval>', ts) AS bucket and ORDER BY bucket, giving many rows — never a single scalar. Pick the interval so a 24h window yields ~24 points (1 hour), a 7d window ~7 (1 day).
 - A relative window ("past/last N units", "recent", "latest", or the same in other languages — e.g. Thai "ย้อนหลัง N", "ล่าสุด") MUST be bounded with WHERE ts > now() - interval 'N <unit>'. ALWAYS use now() — never hardcode a date, never leave the window unbounded. now() is the implicit upper bound, so no end filter is needed. Questions in any language map to this same SQL.
-- Numeric metric: (data->>'speed')::float.
+- Numeric metric: (data->>'speed')::float. When reading a metric, ALWAYS filter AND data->>'<key>' IS NOT NULL — machines that never report that metric must not appear in the result.
 - A "which/what <dimension> are available / exist / does X run" question (e.g. SKUs) is a listing query, NOT a time series: SELECT DISTINCT data->>'sku' AS sku FROM v_telemetry WHERE data->>'sku' IS NOT NULL ORDER BY sku (filter by machine with machine_name ILIKE '%<code>%').
 - Match a machine by name with ILIKE '%<code>%' (e.g. machine_name ILIKE '%CW-01%'), NEVER exact =. Names include a descriptive prefix, so the user's "CW-01" is stored as "Checkweigher CW-01". Same for v_machines.name.
 - Give columns clear aliases (bucket, machine_name, avg_speed, ...). Always add LIMIT (<= 5000). Aggregate raw readings into buckets or groups rather than returning every row.`)
@@ -193,9 +194,12 @@ Rules:
 
 // prevTurn carries the immediately-previous Ask-Data turn so a follow-up ("make it a
 // bar chart", "group by day", "เอาเป็นกราฟแท่ง") can refine it instead of being rejected.
+// SQL and Clarification are mutually exclusive: a data turn sets SQL, a clarification
+// turn (B3) sets Clarification — never both.
 type prevTurn struct {
-	Question string
-	SQL      string
+	Question      string
+	SQL           string
+	Clarification string
 }
 
 // sqlFixup carries a failed SQL attempt and its error for the retry loop in AskData.
@@ -204,25 +208,40 @@ type sqlFixup struct {
 	Err string
 }
 
-func emitSQL(ctx context.Context, question, schema string, prev *prevTurn, fixup *sqlFixup) (string, error) {
+// sqlEmission is emit_sql's parsed result: either SQL (answerable) or Clarification
+// (answerable but under-specified — B3), never both. See parseSQLEmission.
+type sqlEmission struct {
+	SQL           string
+	Clarification string
+}
+
+func emitSQL(ctx context.Context, question, schema string, prev *prevTurn, fixup *sqlFixup) (sqlEmission, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	sp := "You translate a factory-analytics question into ONE read-only Postgres SELECT by calling emit_sql. Never reply in prose.\n\n" +
 		"Example — \"avg speed last 24h for CW-01\":\n" +
 		"SELECT time_bucket('1 hour', ts) AS bucket, avg((data->>'speed')::float) AS avg_speed " +
 		"FROM v_telemetry WHERE machine_name ILIKE '%CW-01%' AND ts > now() - interval '24 hours' " +
-		"GROUP BY bucket ORDER BY bucket LIMIT 5000\n\n" +
+		"AND data->>'speed' IS NOT NULL GROUP BY bucket ORDER BY bucket LIMIT 5000\n\n" +
 		"Example — \"which SKUs does CW-01 run\" (a listing question, answerable=true):\n" +
 		"SELECT DISTINCT data->>'sku' AS sku FROM v_telemetry WHERE machine_name ILIKE '%CW-01%' " +
 		"AND data->>'sku' IS NOT NULL ORDER BY sku LIMIT 100\n\n" +
 		"A \"which/what values are available\" listing question IS answerable — return the distinct values; " +
 		"set answerable=false ONLY for a greeting or chit-chat.\n\n"
-	if prev != nil {
+	switch {
+	case prev != nil && prev.SQL != "":
 		sp += "The user previously asked: \"" + prev.Question + "\"\nwhich ran this SQL:\n" + prev.SQL +
 			"\nIf the new message refines or restyles that chart (a different chart type, grouping, interval, " +
 			"filter, or metric) rather than starting a new topic, adapt the previous SQL to answer it and set " +
 			"answerable=true — for a pure chart-type change ('make it a bar chart') return the SAME SQL unchanged. " +
-			"Only set answerable=false for a greeting or chit-chat.\n\n"
+			"Set answerable=false for a greeting or chit-chat, and ALSO for a question ABOUT the previous " +
+			"chart/result itself (how it was computed, what the bucket interval is, what a point means) rather " +
+			"than a request for different data — that is answered in prose, not SQL.\n\n"
+	case prev != nil && prev.Clarification != "":
+		sp += "The user originally asked: \"" + prev.Question + "\", and you asked them a clarifying question: \"" +
+			prev.Clarification + "\". The current message is their reply to that question — combine the original " +
+			"question and this reply into ONE SQL query that answers it. Do not set clarification again; never ask " +
+			"for clarification a second time in a row.\n\n"
 	}
 	if fixup != nil {
 		sp += "Your previous attempt:\n" + fixup.SQL + "\nfailed with this Postgres/validation error:\n" +
@@ -232,23 +251,42 @@ func emitSQL(ctx context.Context, question, schema string, prev *prevTurn, fixup
 	msgs := []groqMessage{{Role: "system", Content: &sp}, {Role: "user", Content: strPtr(question)}}
 	tools := []map[string]any{toGroqTool(emitSQLTool)}
 	resp, _, err := callGroqModel(ctx, groqModel, msgs, tools, forceFunc("emit_sql"))
+	// The model declining the forced call (prose instead of a tool call, or Groq's
+	// "tool choice" validator error) means it judged the question un-SQL-able — a meta
+	// question about the previous chart, say. Degrade to the prose path, not a 502;
+	// same stance as Chat's fallback (controller.go): forced is an optimization.
 	if err != nil {
-		return "", err
+		if strings.Contains(strings.ToLower(err.Error()), "tool choice") {
+			return sqlEmission{}, errNotDataQuestion
+		}
+		return sqlEmission{}, err
 	}
 	if len(resp.Choices) == 0 || len(resp.Choices[0].Message.ToolCalls) == 0 {
-		return "", errors.New("no SQL generated")
+		return sqlEmission{}, errNotDataQuestion
 	}
+	return parseSQLEmission(resp.Choices[0].Message.ToolCalls[0].Function.Arguments)
+}
+
+// parseSQLEmission is separated from the HTTP call so it's unit-testable without the
+// network. Clarification wins over sql when both happen to be set (the model was told
+// never to do this, but the parse stays defensive). !answerable with no clarification
+// -> errNotDataQuestion (the pre-B3 contract, unchanged for the 36/36 live suite).
+func parseSQLEmission(rawJSON string) (sqlEmission, error) {
 	var a struct {
-		Answerable bool   `json:"answerable"`
-		SQL        string `json:"sql"`
+		Answerable    bool   `json:"answerable"`
+		SQL           string `json:"sql"`
+		Clarification string `json:"clarification"`
 	}
-	if err := json.Unmarshal([]byte(resp.Choices[0].Message.ToolCalls[0].Function.Arguments), &a); err != nil {
-		return "", err
+	if err := json.Unmarshal([]byte(rawJSON), &a); err != nil {
+		return sqlEmission{}, err
+	}
+	if c := strings.TrimSpace(a.Clarification); c != "" {
+		return sqlEmission{Clarification: c}, nil
 	}
 	if !a.Answerable || strings.TrimSpace(a.SQL) == "" {
-		return "", errNotDataQuestion
+		return sqlEmission{}, errNotDataQuestion
 	}
-	return a.SQL, nil
+	return sqlEmission{SQL: a.SQL}, nil
 }
 
 // emitProse answers a question that isn't a SQL query (an explanation or follow-up like
@@ -260,8 +298,10 @@ func emitProse(ctx context.Context, question, schema string, prev *prevTurn) (st
 	sp := "You are a factory-data assistant for an IoT dashboard. Answer the user's question directly and " +
 		"concisely in prose, in the SAME language as the question (Thai or English). Use the schema below to " +
 		"ground your answer in the real machines, metrics, and units. Do not output SQL or code unless asked.\n\n"
-	if prev != nil {
+	if prev != nil && prev.SQL != "" {
 		sp += "For context, the user's previous question was: \"" + prev.Question + "\" (it ran SQL: " + prev.SQL + ").\n\n"
+	} else if prev != nil && prev.Clarification != "" {
+		sp += "For context, the user's previous question was: \"" + prev.Question + "\" and you asked them: \"" + prev.Clarification + "\".\n\n"
 	}
 	sp += schema
 	msgs := []groqMessage{{Role: "system", Content: &sp}, {Role: "user", Content: strPtr(question)}}
@@ -282,10 +322,17 @@ const echartSystemPrompt = `You turn a SQL result into an ECharts option that an
 - If the user's message explicitly names a chart type (bar/line/pie/scatter, or the same in another language e.g. Thai "กราฟแท่ง"=bar, "กราฟเส้น"=line, "วงกลม"=pie), use THAT type even if another would be more typical.
 - Column names and a few sample rows are given below for type inference only.`
 
-func emitEChart(ctx context.Context, question string, cols []string, sample [][]any) (json.RawMessage, error) {
+// emitEChart generates an ECharts option. prevErr, when non-empty, is the previous
+// attempt's error text — passed back to the model as one retry (B2); pass "" for a
+// fresh (non-retry) call.
+func emitEChart(ctx context.Context, question string, cols []string, sample [][]any, prevErr string) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	payload, _ := json.Marshal(map[string]any{"question": question, "columns": cols, "sampleRows": sample})
+	payloadMap := map[string]any{"question": question, "columns": cols, "sampleRows": sample}
+	if prevErr != "" {
+		payloadMap["previousError"] = prevErr + " — return a corrected option"
+	}
+	payload, _ := json.Marshal(payloadMap)
 	sp := echartSystemPrompt
 	uc := string(payload)
 	msgs := []groqMessage{{Role: "system", Content: &sp}, {Role: "user", Content: &uc}}
@@ -304,6 +351,56 @@ func emitEChart(ctx context.Context, question string, cols []string, sample [][]
 		return nil, err
 	}
 	return a.Option, nil
+}
+
+// askVerifyPrompt is a small, static prompt (~200 tok) so Groq can prompt-cache it
+// across verify calls, mirroring verifySystemPrompt (router.go) but scoped to
+// Ask-Data's SQL+chart turns instead of the chat tool-call path.
+const askVerifyPrompt = `You check whether a generated SQL query and chart actually answer a factory-data question, by calling verify_answer. Always call the tool — never reply in prose.
+
+MISMATCH (matches_intent: false) only when the SQL or chart targets a DIFFERENT metric, machine, or time window than the question asked, or the chart type contradicts a chart type the user explicitly requested (e.g. asked for a bar chart but got a pie chart).
+
+MATCH (matches_intent: true) otherwise — including a result that is imperfect but honestly answers what was asked (fewer points than ideal, a slightly different aggregation, a reasonable default time window when none was specified).
+
+If mismatch, set problem to a short specific reason (e.g. "answered temperature, user asked speed"). Leave clarifying_question empty — Ask-Data repairs automatically rather than asking the user.`
+
+// verifyAskChart judges whether sqlText + option actually answer question. Mirrors
+// VerifyAnswer (router.go) exactly: 6s bounded timeout, routerModel, forced
+// verify_answer tool call. Returns (zero, false) on ANY error, timeout, or malformed
+// JSON — callers MUST treat false as "no verdict" (deliver as-is), never as a
+// mismatch; the verifier's own infrastructure failing must never block or repair an
+// otherwise-fine chart.
+func verifyAskChart(ctx context.Context, question, sqlText string, cols []string, sample [][]any, option json.RawMessage) (VerifyResult, bool) {
+	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+
+	var optM map[string]any
+	_ = json.Unmarshal(option, &optM)
+	payload, _ := json.Marshal(map[string]any{
+		"question":   question,
+		"sql":        truncateRunes(sqlText, 1500),
+		"columns":    cols,
+		"sampleRows": sample,
+		"option":     optM,
+	})
+
+	sp := askVerifyPrompt
+	uc := string(payload)
+	msgs := []groqMessage{{Role: "system", Content: &sp}, {Role: "user", Content: &uc}}
+
+	tools := []map[string]any{toGroqTool(VerifyAnswerTool)}
+	resp, _, err := callGroqModel(ctx, routerModel, msgs, tools, forceFunc("verify_answer"))
+	if err != nil {
+		return VerifyResult{}, false
+	}
+	if len(resp.Choices) == 0 {
+		return VerifyResult{}, false
+	}
+	calls := resp.Choices[0].Message.ToolCalls
+	if len(calls) == 0 {
+		return VerifyResult{}, false
+	}
+	return parseVerifyResult(calls[0].Function.Arguments)
 }
 
 // hasNumericColumn reports whether any column holds numeric values — the signal that
@@ -418,8 +515,9 @@ func AskData(c *fiber.Ctx) error {
 	var body struct {
 		Question string `json:"question"`
 		Context  *struct {
-			Question string `json:"question"`
-			SQL      string `json:"sql"`
+			Question      string `json:"question"`
+			SQL           string `json:"sql"`
+			Clarification string `json:"clarification"`
 		} `json:"context"`
 	}
 	if err := c.BodyParser(&body); err != nil || strings.TrimSpace(body.Question) == "" {
@@ -428,9 +526,15 @@ func AskData(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
+	// prev's SQL and Clarification are mutually exclusive (see prevTurn) — SQL wins
+	// if a caller somehow sent both.
 	var prev *prevTurn
-	if body.Context != nil && strings.TrimSpace(body.Context.SQL) != "" {
-		prev = &prevTurn{Question: body.Context.Question, SQL: body.Context.SQL}
+	if body.Context != nil {
+		if s := strings.TrimSpace(body.Context.SQL); s != "" {
+			prev = &prevTurn{Question: body.Context.Question, SQL: body.Context.SQL}
+		} else if c := strings.TrimSpace(body.Context.Clarification); c != "" {
+			prev = &prevTurn{Question: body.Context.Question, Clarification: body.Context.Clarification}
+		}
 	}
 	question := strings.TrimSpace(body.Question)
 	schema := buildSchemaContext(ctx, user.OrgId)
@@ -441,7 +545,7 @@ func AskData(c *fiber.Ctx) error {
 	var sqlText string
 	var fixup *sqlFixup
 	for attempt := 1; attempt <= 3; attempt++ {
-		rawSQL, err := emitSQL(ctx, question, schema, prev, fixup)
+		emission, err := emitSQL(ctx, question, schema, prev, fixup)
 		if errors.Is(err, errNotDataQuestion) {
 			// Not a SQL query — answer in prose instead.
 			answer, perr := emitProse(ctx, question, schema, prev)
@@ -453,14 +557,19 @@ func AskData(c *fiber.Ctx) error {
 		if err != nil {
 			return c.Status(502).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": "could not generate a query: " + err.Error()}})
 		}
+		if emission.Clarification != "" {
+			// B3: the question is about factory data but under-specified — ask back
+			// instead of guessing. No SQL ran, no chart to build.
+			return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"clarification": emission.Clarification}})
+		}
 
-		sqlText, err = validateSQL(rawSQL)
+		sqlText, err = validateSQL(emission.SQL)
 		if err != nil {
 			if attempt < 3 {
-				fixup = &sqlFixup{SQL: rawSQL, Err: err.Error()}
+				fixup = &sqlFixup{SQL: emission.SQL, Err: err.Error()}
 				continue
 			}
-			return c.Status(400).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": "generated query rejected: " + err.Error()}, "sql": rawSQL})
+			return c.Status(400).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": "generated query rejected: " + err.Error()}, "sql": emission.SQL})
 		}
 
 		cols, rows, err = runScoped(ctx, user.OrgId, sqlText)
@@ -476,20 +585,69 @@ func AskData(c *fiber.Ctx) error {
 
 	// Text-only results or empty results have no numeric axis — render as a table.
 	// Empty option ({}) is the frontend's "table" signal; also skips a wasted Groq call.
+	// B2: one retry on a chart-generation error before degrading to the table — a
+	// second failure still leaves option "{}" (HTTP 200, never a 502 here).
 	option := json.RawMessage("{}")
 	if len(rows) > 0 && hasNumericColumn(cols, rows) {
-		echartOpt, err := emitEChart(ctx, body.Question, cols, sampleRows(rows, 20))
+		echartOpt, err := emitEChart(ctx, body.Question, cols, sampleRows(rows, 20), "")
 		if err != nil {
-			return c.Status(502).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": "could not build a chart: " + err.Error()}, "sql": sqlText})
+			echartOpt, err = emitEChart(ctx, body.Question, cols, sampleRows(rows, 20), err.Error())
 		}
-		option = sanitizeEChartOption(echartOpt, cols)
+		if err == nil {
+			option = sanitizeEChartOption(echartOpt, cols)
+		}
 	}
+
+	// B1: judge gate, chart turns only (table/prose turns are free — no call). Call
+	// budget per turn: SQL 1(-3 on retry) + chart 1(-2 on retry) + judge 1 (~1s);
+	// worst case with the judge's one repair round adds SQL 1 + chart 1(-2) more —
+	// still well inside the 45s handler ctx, and a repair failure degrades to the
+	// table, never a 502.
+	if string(option) != "{}" {
+		sqlText, cols, rows, option = verifyAndRepairChart(ctx, user.OrgId, question, sqlText, cols, rows, option, schema, prev)
+	}
+
 	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{
 		"sql":          sqlText,
 		"columns":      cols,
 		"rows":         rows,
 		"echartOption": option,
 	}})
+}
+
+// verifyAndRepairChart runs the B1 judge on a delivered chart and, on a MISMATCH
+// verdict, ONE repair round: re-emit SQL with the verifier's problem as a fixup,
+// re-run it, and re-chart — no second judge call on the repaired result. Any
+// failure along the repair path degrades to the table signal ("{}") over the
+// ORIGINAL rows, never an error response — the judge must never turn an already
+// delivered answer into a 502.
+func verifyAndRepairChart(ctx context.Context, orgID, question, sqlText string, cols []string, rows [][]any, option json.RawMessage, schema string, prev *prevTurn) (string, []string, [][]any, json.RawMessage) {
+	v, ok := verifyAskChart(ctx, question, sqlText, cols, sampleRows(rows, 5), option)
+	if !ok || v.MatchesIntent {
+		return sqlText, cols, rows, option
+	}
+
+	emission, err := emitSQL(ctx, question, schema, prev, &sqlFixup{SQL: sqlText, Err: "verifier: " + v.Problem})
+	if err != nil || emission.Clarification != "" || emission.SQL == "" {
+		return sqlText, cols, rows, json.RawMessage("{}")
+	}
+	repairedSQL, err := validateSQL(emission.SQL)
+	if err != nil {
+		return sqlText, cols, rows, json.RawMessage("{}")
+	}
+	repairedCols, repairedRows, err := runScoped(ctx, orgID, repairedSQL)
+	if err != nil || len(repairedRows) == 0 || !hasNumericColumn(repairedCols, repairedRows) {
+		return sqlText, cols, rows, json.RawMessage("{}")
+	}
+	repairedOpt, err := emitEChart(ctx, question, repairedCols, sampleRows(repairedRows, 20), "")
+	if err != nil {
+		return sqlText, cols, rows, json.RawMessage("{}")
+	}
+	sanitized := sanitizeEChartOption(repairedOpt, repairedCols)
+	if string(sanitized) == "{}" {
+		return sqlText, cols, rows, json.RawMessage("{}")
+	}
+	return repairedSQL, repairedCols, repairedRows, sanitized
 }
 
 // RunSQL re-executes a stored query (board reopen → live data). POST /ai/run-sql

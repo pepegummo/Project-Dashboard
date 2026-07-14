@@ -312,7 +312,7 @@ class ApiService {
   }
 
   // ─── Ask Data (NL → SQL → ECharts) ──────────────────────────────────────────
-  async askData(question: string, context?: { question: string; sql: string }) {
+  async askData(question: string, context?: { question: string; sql: string; clarification?: string }) {
     // Two LLM round-trips (SQL + chart) → allow more than the default 15s.
     // context = previous turn, so a follow-up ("make it a bar chart") refines it.
     const { data } = await this.client.post<ApiResponse<AskDataResult>>('/ai/ask', { question, context }, { timeout: 60_000 });

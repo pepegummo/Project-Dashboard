@@ -7,7 +7,7 @@ import { LineChart, GaugeChart, BarChart, PieChart, ScatterChart } from 'echarts
 import {
   GridComponent, TooltipComponent, LegendComponent,
   DataZoomComponent, MarkLineComponent, TitleComponent,
-  DatasetComponent,
+  DatasetComponent, TransformComponent,
 } from 'echarts/components';
 
 import App from './App.vue';
@@ -20,7 +20,7 @@ use([
   LineChart, GaugeChart, BarChart, PieChart, ScatterChart,
   GridComponent, TooltipComponent, LegendComponent,
   DataZoomComponent, MarkLineComponent, TitleComponent,
-  DatasetComponent,
+  DatasetComponent, TransformComponent,
 ]);
 
 // Dark theme for Ask Data charts — LLM-authored options carry no colors, so without
