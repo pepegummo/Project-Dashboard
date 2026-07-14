@@ -2,7 +2,15 @@
 import { ref, computed, onMounted, reactive } from 'vue';
 import { api } from '@/services/api.service';
 import type { AskDataResult, AskBoardSummary, AskBoard, AskBoardChart } from '@/types';
-import { Sparkles, Loader2, Save, Trash2, RefreshCw } from 'lucide-vue-next';
+import { Sparkles, Loader2, Save, Trash2, RefreshCw, User } from 'lucide-vue-next';
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
+
+// Answers arrive as markdown (tables, headers, bold). Sanitize before v-html —
+// this is LLM output crossing into the DOM.
+function renderMd(text: string) {
+  return DOMPurify.sanitize(marked.parse(text, { async: false }));
+}
 
 // ── Ask state ────────────────────────────────────────────────────────────────
 const question = ref('');
@@ -247,13 +255,17 @@ onMounted(loadBoards);
           <div class="mb-4 flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-gray-500">
             <Sparkles class="h-3.5 w-3.5 text-primary-400" /> Answers
           </div>
-          <div class="space-y-5">
+          <div class="space-y-7">
             <div v-for="(n, i) in notes" :key="i">
-              <p class="text-sm font-semibold text-primary-300">{{ n.q }}</p>
-              <p
-                class="mt-1.5 whitespace-pre-wrap text-base leading-relaxed"
-                :class="n.kind === 'clarification' ? 'italic text-amber-300' : 'text-gray-200'"
-              >{{ n.text }}</p>
+              <div class="flex items-start gap-2.5">
+                <User class="mt-0.5 h-4 w-4 flex-shrink-0 text-primary-400" />
+                <p class="text-sm font-semibold text-primary-300">{{ n.q }}</p>
+              </div>
+              <div class="mt-2.5 flex items-start gap-2.5">
+                <Sparkles class="mt-1 h-4 w-4 flex-shrink-0 text-gray-500" />
+                <p v-if="n.kind === 'clarification'" class="whitespace-pre-wrap text-base italic leading-relaxed text-amber-300">{{ n.text }}</p>
+                <div v-else class="md-answer min-w-0 flex-1 text-base leading-relaxed text-gray-200" v-html="renderMd(n.text)" />
+              </div>
             </div>
           </div>
         </div>
@@ -340,3 +352,30 @@ onMounted(loadBoards);
     </div>
   </div>
 </template>
+
+<style scoped>
+/* Rendered markdown answers — v-html children need :deep(). Dark-theme, compact. */
+.md-answer :deep(p) { margin: 0.5rem 0; }
+.md-answer :deep(p:first-child) { margin-top: 0; }
+.md-answer :deep(h1), .md-answer :deep(h2), .md-answer :deep(h3), .md-answer :deep(h4) {
+  color: #f3f4f6; font-weight: 600; margin: 1.1rem 0 0.4rem; font-size: 1.05rem;
+}
+.md-answer :deep(strong) { color: #f3f4f6; }
+.md-answer :deep(ul), .md-answer :deep(ol) { margin: 0.5rem 0; padding-left: 1.4rem; }
+.md-answer :deep(ul) { list-style: disc; }
+.md-answer :deep(ol) { list-style: decimal; }
+.md-answer :deep(li) { margin: 0.3rem 0; }
+.md-answer :deep(table) {
+  display: block; overflow-x: auto; border-collapse: collapse;
+  margin: 0.75rem 0; font-size: 0.875rem;
+}
+.md-answer :deep(th), .md-answer :deep(td) {
+  border: 1px solid rgba(255, 255, 255, 0.1); padding: 0.4rem 0.8rem; text-align: left;
+}
+.md-answer :deep(th) { background: rgba(255, 255, 255, 0.05); color: #d1d5db; font-weight: 600; }
+.md-answer :deep(code) {
+  background: rgba(255, 255, 255, 0.08); border-radius: 0.25rem;
+  padding: 0.1rem 0.35rem; font-size: 0.85em;
+}
+.md-answer :deep(hr) { border-color: rgba(255, 255, 255, 0.08); margin: 0.75rem 0; }
+</style>

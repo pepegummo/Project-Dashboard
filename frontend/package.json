@@ -13,9 +13,11 @@
   "dependencies": {
     "@vueuse/core": "^10.11.0",
     "axios": "^1.7.2",
+    "dompurify": "^3.4.12",
     "echarts": "^5.5.0",
     "gridstack": "^10.3.1",
     "lucide-vue-next": "^0.395.0",
+    "marked": "^18.0.6",
     "pinia": "^2.1.7",
     "vue": "^3.4.29",
     "vue-echarts": "^6.7.3",

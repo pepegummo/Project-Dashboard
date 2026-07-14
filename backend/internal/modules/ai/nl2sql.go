@@ -291,8 +291,10 @@ func parseSQLEmission(rawJSON string) (sqlEmission, error) {
 
 // emitProse answers a question that isn't a SQL query (an explanation or follow-up like
 // "how do they differ") in plain text — the fallback for emitSQL's answerable=false branch.
-// Grounded in the same schema context; a plain completion (no tools).
-func emitProse(ctx context.Context, question, schema string, prev *prevTurn) (string, error) {
+// Grounded in the same schema context; a plain completion (no tools). cols/rows, when
+// non-empty, are the ACTUAL re-executed result of prev.SQL — without them the model
+// invents numbers for "analyze the chart" questions.
+func emitProse(ctx context.Context, question, schema string, prev *prevTurn, cols []string, rows [][]any) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	sp := "You are a factory-data assistant for an IoT dashboard. Answer the user's question directly and " +
@@ -300,6 +302,12 @@ func emitProse(ctx context.Context, question, schema string, prev *prevTurn) (st
 		"ground your answer in the real machines, metrics, and units. Do not output SQL or code unless asked.\n\n"
 	if prev != nil && prev.SQL != "" {
 		sp += "For context, the user's previous question was: \"" + prev.Question + "\" (it ran SQL: " + prev.SQL + ").\n\n"
+		if len(cols) > 0 {
+			sp += "That SQL was just re-executed; its ACTUAL result is below (" + fmt.Sprint(len(rows)) +
+				" rows, evenly sampled if truncated). Ground EVERY number, time range, and machine name in these " +
+				"rows — never invent or estimate values not present. If the rows don't cover what's asked, say so.\n" +
+				serializeRows(cols, rows) + "\n"
+		}
 	} else if prev != nil && prev.Clarification != "" {
 		sp += "For context, the user's previous question was: \"" + prev.Question + "\" and you asked them: \"" + prev.Clarification + "\".\n\n"
 	}
@@ -504,6 +512,48 @@ func sampleRows(rows [][]any, n int) [][]any {
 	return rows[:n]
 }
 
+// downsampleRows picks ~n rows evenly across the whole result (unlike sampleRows'
+// head-only cut) so a trend question sees the full time span, not just its start.
+func downsampleRows(rows [][]any, n int) [][]any {
+	if len(rows) <= n {
+		return rows
+	}
+	out := make([][]any, 0, n)
+	step := float64(len(rows)) / float64(n)
+	for i := 0; i < n; i++ {
+		out = append(out, rows[int(float64(i)*step)])
+	}
+	return out
+}
+
+// serializeRows renders a result compactly for a prose prompt: one header line of
+// column names, then one comma-separated line per row.
+func serializeRows(cols []string, rows [][]any) string {
+	var b strings.Builder
+	b.WriteString(strings.Join(cols, ", "))
+	b.WriteByte('\n')
+	for _, r := range rows {
+		parts := make([]string, len(r))
+		for i, v := range r {
+			switch t := v.(type) {
+			case time.Time:
+				parts[i] = t.Format(time.RFC3339)
+			case pgtype.Numeric:
+				if f, err := t.Float64Value(); err == nil {
+					parts[i] = fmt.Sprintf("%g", f.Float64)
+				} else {
+					parts[i] = fmt.Sprint(v)
+				}
+			default:
+				parts[i] = fmt.Sprint(v)
+			}
+		}
+		b.WriteString(strings.Join(parts, ", "))
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
 // ── HTTP handlers ────────────────────────────────────────────────────────────
 
 // AskData: question → SQL → rows → ECharts option. POST /ai/ask
@@ -547,8 +597,19 @@ func AskData(c *fiber.Ctx) error {
 	for attempt := 1; attempt <= 3; attempt++ {
 		emission, err := emitSQL(ctx, question, schema, prev, fixup)
 		if errors.Is(err, errNotDataQuestion) {
-			// Not a SQL query — answer in prose instead.
-			answer, perr := emitProse(ctx, question, schema, prev)
+			// Not a SQL query — answer in prose. Re-run the previous turn's SQL first
+			// (same validate + org-scoped guards) so an "analyze the chart" answer is
+			// grounded in the real rows; on any re-run failure just answer without them.
+			var pcols []string
+			var prows [][]any
+			if prev != nil && prev.SQL != "" {
+				if s, verr := validateSQL(prev.SQL); verr == nil {
+					if cs, rs, rerr := runScoped(ctx, user.OrgId, s); rerr == nil {
+						pcols, prows = cs, downsampleRows(rs, 200)
+					}
+				}
+			}
+			answer, perr := emitProse(ctx, question, schema, prev, pcols, prows)
 			if perr != nil {
 				return c.Status(502).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": "could not answer: " + perr.Error()}})
 			}
