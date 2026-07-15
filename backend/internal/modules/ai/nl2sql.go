@@ -365,21 +365,23 @@ func emitEChart(ctx context.Context, question string, cols []string, sample [][]
 // askVerifyPrompt is a small, static prompt (~200 tok) so Groq can prompt-cache it
 // across verify calls, mirroring verifySystemPrompt (router.go) but scoped to
 // Ask-Data's SQL+chart turns instead of the chat tool-call path.
-const askVerifyPrompt = `You check whether a generated SQL query and chart actually answer a factory-data question, by calling verify_answer. Always call the tool — never reply in prose.
+const askVerifyPrompt = `You check whether a generated SQL query — and its chart, when one is present — actually answers a factory-data question, by calling verify_answer. Always call the tool — never reply in prose.
 
-MISMATCH (matches_intent: false) only when the SQL or chart targets a DIFFERENT metric, machine, or time window than the question asked, or the chart type contradicts a chart type the user explicitly requested (e.g. asked for a bar chart but got a pie chart).
+The option field may be an empty object {} — that means the result is delivered as a plain table with no chart. In that case judge only whether the SQL and sample rows answer the question; chart-type rules do not apply.
 
-MATCH (matches_intent: true) otherwise — including a result that is imperfect but honestly answers what was asked (fewer points than ideal, a slightly different aggregation, a reasonable default time window when none was specified).
+MISMATCH (matches_intent: false) only when the SQL or chart targets a DIFFERENT metric, machine, or time window than the question asked, or (chart present only) the chart type contradicts a chart type the user explicitly requested (e.g. asked for a bar chart but got a pie chart).
+
+MATCH (matches_intent: true) otherwise — including a result that is imperfect but honestly answers what was asked (fewer points than ideal, a slightly different aggregation, a reasonable default time window when none was specified, an empty result when the data may genuinely contain no matching rows).
 
 If mismatch, set problem to a short specific reason (e.g. "answered temperature, user asked speed"). Leave clarifying_question empty — Ask-Data repairs automatically rather than asking the user.`
 
-// verifyAskChart judges whether sqlText + option actually answer question. Mirrors
-// VerifyAnswer (router.go) exactly: 6s bounded timeout, routerModel(), forced
-// verify_answer tool call. Returns (zero, false) on ANY error, timeout, or malformed
-// JSON — callers MUST treat false as "no verdict" (deliver as-is), never as a
-// mismatch; the verifier's own infrastructure failing must never block or repair an
-// otherwise-fine chart.
-func verifyAskChart(ctx context.Context, question, sqlText string, cols []string, sample [][]any, option json.RawMessage) (VerifyResult, bool) {
+// verifyAskAnswer judges whether sqlText (+ option, which may be the empty table
+// signal "{}") actually answer question. Mirrors VerifyAnswer (router.go) exactly:
+// 6s bounded timeout, routerModel(), forced verify_answer tool call. Returns (zero,
+// false) on ANY error, timeout, or malformed JSON — callers MUST treat false as "no
+// verdict" (deliver as-is), never as a mismatch; the verifier's own infrastructure
+// failing must never block or repair an otherwise-fine chart.
+func verifyAskAnswer(ctx context.Context, question, sqlText string, cols []string, sample [][]any, option json.RawMessage) (VerifyResult, bool) {
 	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
 
@@ -674,13 +676,13 @@ func AskData(c *fiber.Ctx) error {
 		}
 	}
 
-	// B1: judge gate, chart turns only (table/prose turns are free — no call). Call
-	// budget per turn: SQL 1(-3 on retry) + chart 1(-2 on retry) + judge 1 (~1s);
-	// worst case with the judge's one repair round adds SQL 1 + chart 1(-2) more —
-	// still well inside the 45s handler ctx, and a repair failure degrades to the
-	// table, never a 502.
-	if string(option) != "{}" {
-		sqlText, cols, rows, option = verifyAndRepairChart(ctx, user.OrgId, question, sqlText, cols, rows, option, schema, prev)
+	// B1: judge gate on chart AND table turns (prose turns are free — no call; empty
+	// results are skipped — nothing to judge beyond the SQL text). Call budget per
+	// turn: SQL 1(-3 on retry) + chart 0-2 + judge 1 (~1s); worst case with the
+	// judge's one repair round adds SQL 1 + chart 0-1 more — still well inside the
+	// 45s handler ctx, and a repair failure degrades to the table signal, never a 502.
+	if len(rows) > 0 {
+		sqlText, cols, rows, option = verifyAndRepairAnswer(ctx, user.OrgId, question, sqlText, cols, rows, option, schema, prev)
 	}
 
 	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{
@@ -691,14 +693,15 @@ func AskData(c *fiber.Ctx) error {
 	}})
 }
 
-// verifyAndRepairChart runs the B1 judge on a delivered chart and, on a MISMATCH
-// verdict, ONE repair round: re-emit SQL with the verifier's problem as a fixup,
-// re-run it, and re-chart — no second judge call on the repaired result. Any
-// failure along the repair path degrades to the table signal ("{}") over the
-// ORIGINAL rows, never an error response — the judge must never turn an already
+// verifyAndRepairAnswer runs the B1 judge on a delivered answer — chart AND table
+// turns — and, on a MISMATCH verdict, ONE repair round: re-emit SQL with the
+// verifier's problem as a fixup, re-run it, and re-chart if the repaired result is
+// chartable — no second judge call on the repaired result. If the repaired SQL
+// fails to emit, validate, or run, or returns no rows, the ORIGINAL rows are kept
+// (chart degraded to the table signal "{}") — the judge must never turn an already
 // delivered answer into a 502.
-func verifyAndRepairChart(ctx context.Context, orgID, question, sqlText string, cols []string, rows [][]any, option json.RawMessage, schema string, prev *prevTurn) (string, []string, [][]any, json.RawMessage) {
-	v, ok := verifyAskChart(ctx, question, sqlText, cols, sampleRows(rows, 5), option)
+func verifyAndRepairAnswer(ctx context.Context, orgID, question, sqlText string, cols []string, rows [][]any, option json.RawMessage, schema string, prev *prevTurn) (string, []string, [][]any, json.RawMessage) {
+	v, ok := verifyAskAnswer(ctx, question, sqlText, cols, sampleRows(rows, 5), option)
 	if !ok || v.MatchesIntent {
 		return sqlText, cols, rows, option
 	}
@@ -712,18 +715,20 @@ func verifyAndRepairChart(ctx context.Context, orgID, question, sqlText string, 
 		return sqlText, cols, rows, json.RawMessage("{}")
 	}
 	repairedCols, repairedRows, err := runScoped(ctx, orgID, repairedSQL)
-	if err != nil || len(repairedRows) == 0 || !hasNumericColumn(repairedCols, repairedRows) {
+	if err != nil || len(repairedRows) == 0 {
 		return sqlText, cols, rows, json.RawMessage("{}")
+	}
+
+	// Repaired rows accepted. Chart them if chartable; otherwise deliver as a table —
+	// ponytail: no second judge round on the repaired result, by design (bounded cost).
+	if !hasNumericColumn(repairedCols, repairedRows) {
+		return repairedSQL, repairedCols, repairedRows, json.RawMessage("{}")
 	}
 	repairedOpt, err := emitEChart(ctx, question, repairedCols, sampleRows(repairedRows, 20), "")
 	if err != nil {
-		return sqlText, cols, rows, json.RawMessage("{}")
+		return repairedSQL, repairedCols, repairedRows, json.RawMessage("{}")
 	}
-	sanitized := sanitizeEChartOption(repairedOpt, repairedCols)
-	if string(sanitized) == "{}" {
-		return sqlText, cols, rows, json.RawMessage("{}")
-	}
-	return repairedSQL, repairedCols, repairedRows, sanitized
+	return repairedSQL, repairedCols, repairedRows, sanitizeEChartOption(repairedOpt, repairedCols)
 }
 
 // RunSQL re-executes a stored query (board reopen → live data). POST /ai/run-sql

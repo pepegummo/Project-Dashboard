@@ -257,7 +257,7 @@ func TestAskDataLiveQuestions(t *testing.T) {
 	}
 }
 
-// TestVerifyAskChartLive exercises verifyAskChart (B1) against live Groq: a
+// TestVerifyAskChartLive exercises verifyAskAnswer (B1) against live Groq: a
 // question paired with SQL/chart that either genuinely answers it (MatchesIntent
 // true) or targets a different metric than asked (MatchesIntent false). Thai +
 // English variants of each. Same liveKeyOrSkip/pace guard as the rest of this file.
@@ -303,9 +303,9 @@ func TestVerifyAskChartLive(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			pace()
-			v, ok := verifyAskChart(ctx, c.question, c.sqlText, c.cols, c.sample, c.option)
+			v, ok := verifyAskAnswer(ctx, c.question, c.sqlText, c.cols, c.sample, c.option)
 			if !ok {
-				t.Fatalf("verifyAskChart returned no verdict")
+				t.Fatalf("verifyAskAnswer returned no verdict")
 			}
 			if v.MatchesIntent != c.wantMatch {
 				t.Errorf("MatchesIntent = %v, want %v (problem=%q)", v.MatchesIntent, c.wantMatch, v.Problem)
