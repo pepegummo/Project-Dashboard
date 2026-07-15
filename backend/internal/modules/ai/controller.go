@@ -24,8 +24,19 @@ import (
 // rate-limits, smallest prompts (~2.7k tok), fastest (~0.83s median); 120b scored 21/22
 // (one nondeterministic preview_* slip) and buys no accuracy edge. 20b is also cheaper and
 // Groq prompt-caches the stable base prefix. See docs/AI_ARCHITECTURE.md §3.
-const groqModel = "openai/gpt-oss-120b"
-const groqBaseURL = "https://api.groq.com/openai/v1/chat/completions"
+// Overridable via AI_MODEL / AI_BASE_URL env vars (config.Load); defaults below.
+func aiModel() string { return envOr(config.Env.AIModel, "openai/gpt-oss-120b") }
+func aiBaseURL() string {
+	return envOr(config.Env.AIBaseURL, "https://api.groq.com/openai/v1/chat/completions")
+}
+
+// envOr falls back when the config field is empty (tests build config.Env by hand).
+func envOr(v, def string) string {
+	if v != "" {
+		return v
+	}
+	return def
+}
 
 // systemPromptUnified is the single, byte-stable system prompt sent on all requests
 // with the full role-filtered tool set. Merged from:
@@ -102,14 +113,14 @@ func dateLineForRequest() string {
 
 // ── Groq / OpenAI-compatible API types ───────────────────────────────────────
 
-type groqMessage struct {
+type aiMessage struct {
 	Role       string         `json:"role"`
 	Content    *string        `json:"content"` // pointer so null stays null (tool-call turns)
-	ToolCalls  []groqToolCall `json:"tool_calls,omitempty"`
+	ToolCalls  []aiToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 }
 
-type groqToolCall struct {
+type aiToolCall struct {
 	ID       string `json:"id"`
 	Type     string `json:"type"`
 	Function struct {
@@ -118,9 +129,9 @@ type groqToolCall struct {
 	} `json:"function"`
 }
 
-type groqResponse struct {
+type aiResponse struct {
 	Choices []struct {
-		Message      groqMessage `json:"message"`
+		Message      aiMessage `json:"message"`
 		FinishReason string      `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *struct {
@@ -156,7 +167,7 @@ func (ctrl *Controller) dispatch(c *fiber.Ctx, toolName string, rawArgs json.Raw
 
 	// Mutating tools require admin or editor — viewers can only read. Preview tools
 	// stage dashboard edits (no DB write) but are gated the same way as an actual
-	// write — mirrors the exclusion in buildGroqTools in case a client forges the call.
+	// write — mirrors the exclusion in buildAITools in case a client forges the call.
 	if (isWriteTool(toolName) || previewTools[toolName]) && user.Role != "admin" && user.Role != "editor" {
 		return nil, fmt.Errorf("permission denied: role %q cannot perform %q (requires admin or editor)", user.Role, toolName)
 	}
@@ -343,7 +354,7 @@ func (ctrl *Controller) DeletePreviewDraft(c *fiber.Ctx) error {
 // ── Chat ──────────────────────────────────────────────────────────────────────
 
 func (ctrl *Controller) Chat(c *fiber.Ctx) error {
-	if config.Env.GroqApiKey == "" {
+	if config.Env.AIApiKey == "" {
 		return middleware.NewAppError(503, "AI_UNAVAILABLE", "GROQ_API_KEY is not configured")
 	}
 
@@ -395,8 +406,8 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 
 	// Always use the unified prompt; append today's date to the dynamic context.
 	sp := systemPromptUnified
-	msgs := []groqMessage{{Role: "system", Content: &sp}}
-	msgs = append(msgs, buildGroqMessages(history)...)
+	msgs := []aiMessage{{Role: "system", Content: &sp}}
+	msgs = append(msgs, buildAIMessages(history)...)
 	// Inject the on-screen dashboard preview AFTER history so the current state is
 	// the last thing the model sees — recency makes it win over any stale earlier
 	// turn that named the old config (e.g. a metric the user has since changed).
@@ -406,17 +417,17 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	if hasContext {
 		ctxContent := "Authoritative current dashboard state (overrides anything said earlier):\n" +
 			body.Context + "\n" + dateLineForRequest()
-		msgs = append(msgs, groqMessage{Role: "system", Content: &ctxContent})
+		msgs = append(msgs, aiMessage{Role: "system", Content: &ctxContent})
 	} else {
 		dateContent := dateLineForRequest()
-		msgs = append(msgs, groqMessage{Role: "system", Content: &dateContent})
+		msgs = append(msgs, aiMessage{Role: "system", Content: &dateContent})
 	}
 
 	user := middleware.GetUser(c)
 	role := user.Role
 	// Always build the full role-filtered tool set (previews are always available now,
 	// not just when context is present).
-	tools := buildGroqTools(role)
+	tools := buildAITools(role)
 
 	// Intent router (Phase 3): classify the message into a small enum, then let
 	// dispatchIntent decide deterministically. Design law: the model classifies, Go
@@ -451,19 +462,19 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 		if i == 0 {
 			tc = firstToolChoice
 		}
-		resp, err := callGroq(msgs, callTools, tc)
+		resp, err := callAI(msgs, callTools, tc)
 		if err != nil {
 			// qwen3 reasoning models try to chain tools even on no-tool summary calls.
 			// Groq surfaces this as "Tool choice is none" — retry with the full toolset.
 			if strings.Contains(err.Error(), "Tool choice is none") {
-				resp, err = callGroq(msgs, tools, "")
+				resp, err = callAI(msgs, tools, "")
 			}
 			// We forced tool_choice:"required" on turn 0 (dashboard context present),
 			// but the model chose to answer in plain text. That's a valid answer —
 			// retry with auto so it can.
 			// ponytail: required is an optimization, not a hard constraint.
 			if err != nil && strings.Contains(err.Error(), "Tool choice is required") {
-				resp, err = callGroq(msgs, callTools, "")
+				resp, err = callAI(msgs, callTools, "")
 			}
 		}
 		if err != nil {
@@ -472,10 +483,10 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 				return &middleware.AppError{StatusCode: 429, Code: "RATE_LIMIT",
 					Message: rl.Error(), Details: fiber.Map{"retryAfter": rl.seconds}}
 			}
-			return middleware.NewAppError(502, "AI_ERROR", fmt.Sprintf("Groq API error: %v", err))
+			return middleware.NewAppError(502, "AI_ERROR", fmt.Sprintf("AI API error: %v", err))
 		}
 		if len(resp.Choices) == 0 {
-			return middleware.NewAppError(502, "AI_ERROR", "Groq returned no choices")
+			return middleware.NewAppError(502, "AI_ERROR", "AI returned no choices")
 		}
 
 		choice := resp.Choices[0]
@@ -536,7 +547,7 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 // call, and returns the accumulated log entries for verification. Shared by the
 // main loop above and the single repair round (verifyAndMaybeRepair) so both stay
 // byte-identical in how they dispatch/persist/append.
-func (ctrl *Controller) runToolRound(c *fiber.Ctx, ctx context.Context, convID string, calls []groqToolCall, msgs []groqMessage) ([]groqMessage, []Message, []toolExecution) {
+func (ctrl *Controller) runToolRound(c *fiber.Ctx, ctx context.Context, convID string, calls []aiToolCall, msgs []aiMessage) ([]aiMessage, []Message, []toolExecution) {
 	var persisted []Message
 	var log []toolExecution
 	for _, tc := range calls {
@@ -557,7 +568,7 @@ func (ctrl *Controller) runToolRound(c *fiber.Ctx, ctx context.Context, convID s
 		}
 
 		resultStr := string(resultJSON)
-		msgs = append(msgs, groqMessage{
+		msgs = append(msgs, aiMessage{
 			Role:       "tool",
 			ToolCallID: tc.ID,
 			Content:    &resultStr,
@@ -577,7 +588,7 @@ type verifyRequest struct {
 	userMessage string
 	contextText string
 	orgID       string
-	msgs        []groqMessage    // full conversation so far, for the repair round
+	msgs        []aiMessage    // full conversation so far, for the repair round
 	tools       []map[string]any // role-filtered tool set, for the repair round
 	intentRes   IntentResult
 	routerOK    bool
@@ -675,19 +686,19 @@ func (ctrl *Controller) verifyAndMaybeRepair(c *fiber.Ctx, ctx context.Context, 
 // ("") throughout; tools stay attached (role-filtered, passed in by the caller).
 // A Groq error here is returned to the caller, which degrades to the original
 // (pre-repair) answer rather than failing the request.
-func (ctrl *Controller) runRepairRound(c *fiber.Ctx, ctx context.Context, convID string, msgs []groqMessage, tools []map[string]any) (text string, toolLog []toolExecution, persisted []Message, err error) {
+func (ctrl *Controller) runRepairRound(c *fiber.Ctx, ctx context.Context, convID string, msgs []aiMessage, tools []map[string]any) (text string, toolLog []toolExecution, persisted []Message, err error) {
 	const repairRoundCap = 1
 	callTools := tools
 	for i := 0; i < 5; i++ {
-		resp, callErr := callGroq(msgs, callTools, "")
+		resp, callErr := callAI(msgs, callTools, "")
 		if callErr != nil && strings.Contains(callErr.Error(), "Tool choice is none") {
-			resp, callErr = callGroq(msgs, tools, "")
+			resp, callErr = callAI(msgs, tools, "")
 		}
 		if callErr != nil {
 			return "", toolLog, persisted, callErr
 		}
 		if len(resp.Choices) == 0 {
-			return "", toolLog, persisted, fmt.Errorf("Groq returned no choices")
+			return "", toolLog, persisted, fmt.Errorf("AI returned no choices")
 		}
 
 		choice := resp.Choices[0]
@@ -739,7 +750,7 @@ func chatIntentResponse(res IntentResult, ok bool) fiber.Map {
 
 // ── Groq HTTP helpers ─────────────────────────────────────────────────────────
 
-func toGroqTool(t map[string]any) map[string]any {
+func toAITool(t map[string]any) map[string]any {
 	return map[string]any{
 		"type": "function",
 		"function": map[string]any{
@@ -750,7 +761,7 @@ func toGroqTool(t map[string]any) map[string]any {
 	}
 }
 
-// toGroqToolSlim sends only name + description (no parameters/input_schema).
+// toAIToolSlim sends only name + description (no parameters/input_schema).
 // The description embeds arg hints so the model knows what JSON to produce.
 // Saves ~50–80 tokens per simple tool vs the full schema form.
 var slimToolDescriptions = map[string]string{
@@ -760,7 +771,7 @@ var slimToolDescriptions = map[string]string{
 	"preview_dashboard":   "Preview a template dashboard. Args: machine (name), template (machine_overview|machine_production|machine_maintenance).",
 }
 
-func toGroqToolSlim(t map[string]any) map[string]any {
+func toAIToolSlim(t map[string]any) map[string]any {
 	name := t["name"].(string)
 	desc, _ := t["description"].(string)
 	if slim, ok := slimToolDescriptions[name]; ok {
@@ -800,10 +811,10 @@ var previewTools = map[string]bool{
 	"preview_update_widget": true,
 }
 
-// buildGroqTools returns the tool list filtered by role. Viewers get read-only
+// buildAITools returns the tool list filtered by role. Viewers get read-only
 // tools; admin/editor also get the preview_* staging tools.
 // Simple tools use slim (description-only) form; complex tools keep full schemas.
-func buildGroqTools(role string) []map[string]any {
+func buildAITools(role string) []map[string]any {
 	out := make([]map[string]any, 0, len(AllTools()))
 	for _, t := range AllTools() {
 		name := t["name"].(string)
@@ -811,27 +822,27 @@ func buildGroqTools(role string) []map[string]any {
 			continue
 		}
 		if complexSchemaTools[name] {
-			out = append(out, toGroqTool(t))
+			out = append(out, toAITool(t))
 		} else {
-			out = append(out, toGroqToolSlim(t))
+			out = append(out, toAIToolSlim(t))
 		}
 	}
 	return out
 }
 
-// callGroq sends messages to Groq with the default model. Pass nil tools for a
+// callAI sends messages to Groq with the default model. Pass nil tools for a
 // plain (no-function-call) request. toolChoice: "" = auto, "required" = force a tool call.
-func callGroq(messages []groqMessage, tools []map[string]any, toolChoice string) (*groqResponse, error) {
-	resp, _, err := callGroqModel(context.Background(), groqModel, messages, tools, toolChoice)
+func callAI(messages []aiMessage, tools []map[string]any, toolChoice string) (*aiResponse, error) {
+	resp, _, err := callAIModel(context.Background(), aiModel(), messages, tools, toolChoice)
 	return resp, err
 }
 
-// callGroqModel is callGroq with an explicit model and a caller-supplied context (so
+// callAIModel is callAI with an explicit model and a caller-supplied context (so
 // e.g. the intent router can bound its call with a short timeout) — used by the
 // bake-off harness to compare candidates too.
 // Returns the successful attempt's HTTP round-trip duration (excludes retry sleeps and
 // failed attempts) so the bake-off can time model speed, not rate-limit backoff.
-func callGroqModel(ctx context.Context, model string, messages []groqMessage, tools []map[string]any, toolChoice string) (*groqResponse, time.Duration, error) {
+func callAIModel(ctx context.Context, model string, messages []aiMessage, tools []map[string]any, toolChoice string) (*aiResponse, time.Duration, error) {
 	reqBody := map[string]any{
 		"model":            model,
 		"messages":         messages,
@@ -864,12 +875,12 @@ func callGroqModel(ctx context.Context, model string, messages []groqMessage, to
 	lastErr := fmt.Errorf("the AI service is busy (rate limit). Please wait a few seconds and try again")
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, "POST", groqBaseURL, bytes.NewReader(bodyBytes))
+		req, err := http.NewRequestWithContext(ctx, "POST", aiBaseURL(), bytes.NewReader(bodyBytes))
 		if err != nil {
 			return nil, 0, err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+config.Env.GroqApiKey)
+		req.Header.Set("Authorization", "Bearer "+config.Env.AIApiKey)
 
 		attemptStart := time.Now() // time THIS attempt's round-trip only
 		httpResp, err := httpClient.Do(req)
@@ -889,9 +900,9 @@ func callGroqModel(ctx context.Context, model string, messages []groqMessage, to
 			return nil, 0, &rateLimitError{seconds: wait.Seconds()} // long wait — surface to user
 		}
 
-		var result groqResponse
+		var result aiResponse
 		if err := json.Unmarshal(respBytes, &result); err != nil {
-			return nil, 0, fmt.Errorf("failed to parse Groq response: %w", err)
+			return nil, 0, fmt.Errorf("failed to parse AI response: %w", err)
 		}
 		if result.Error != nil {
 			// Groq's function-call parser failed (malformed generation, e.g. gpt-oss
@@ -899,9 +910,9 @@ func callGroqModel(ctx context.Context, model string, messages []groqMessage, to
 			// without tools so the user gets a plain-text reply instead of an error.
 			if (strings.Contains(result.Error.Message, "Failed to call a function") ||
 				strings.Contains(result.Error.Message, "Tool call validation failed")) && len(tools) > 0 {
-				return callGroqModel(ctx, model, messages, nil, "")
+				return callAIModel(ctx, model, messages, nil, "")
 			}
-			return nil, 0, fmt.Errorf("Groq API: %s", result.Error.Message)
+			return nil, 0, fmt.Errorf("AI API: %s", result.Error.Message)
 		}
 		return &result, attemptLat, nil
 	}
@@ -943,7 +954,7 @@ func parseRetryAfter(header string, body []byte) time.Duration {
 func strPtr(s string) *string { return &s }
 
 // forceFunc builds an OpenAI/Groq tool_choice object that forces one named function.
-// callGroqModel detects the leading "{" and sends it as an object rather than a string.
+// callAIModel detects the leading "{" and sends it as an object rather than a string.
 func forceFunc(name string) string {
 	return `{"type":"function","function":{"name":"` + name + `"}}`
 }
@@ -951,7 +962,7 @@ func forceFunc(name string) string {
 // canWrite reports whether role may perform mutating/preview actions (admin or
 // editor). Viewers are read-only — dispatchIntent must never force a preview_*
 // tool onto a viewer's tool_choice: their tool set doesn't include it (Task 1
-// gating in buildGroqTools), and forcing a missing function 400s.
+// gating in buildAITools), and forcing a missing function 400s.
 func canWrite(role string) bool {
 	return role == "admin" || role == "editor"
 }
@@ -1096,7 +1107,7 @@ func dispatchIntent(res IntentResult, ok bool, focused bool, inlineData bool, ro
 	}
 }
 
-// buildGroqMessages converts the last few DB messages to Groq/OpenAI format.
+// buildAIMessages converts the last few DB messages to Groq/OpenAI format.
 // GetMessages now returns DESC order (newest first) to avoid a full table scan;
 // reverse here so Groq receives oldest-first conversation order.
 //
@@ -1109,7 +1120,7 @@ func dispatchIntent(res IntentResult, ok bool, focused bool, inlineData bool, ro
 // whatever the tool returned, so replaying the raw tool JSON on every later turn
 // just re-pays its token cost for no benefit; a follow-up that genuinely needs
 // fresh data makes its own tool call in the current turn anyway.
-func buildGroqMessages(msgs []Message) []groqMessage {
+func buildAIMessages(msgs []Message) []aiMessage {
 	// reverse DESC→ASC
 	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
 		msgs[i], msgs[j] = msgs[j], msgs[i]
@@ -1117,13 +1128,13 @@ func buildGroqMessages(msgs []Message) []groqMessage {
 	if len(msgs) > 3 {
 		msgs = msgs[len(msgs)-3:]
 	}
-	var result []groqMessage
+	var result []aiMessage
 	for _, m := range msgs {
 		switch m.Role {
 		case "user":
-			result = append(result, groqMessage{Role: "user", Content: strPtr(m.Content)})
+			result = append(result, aiMessage{Role: "user", Content: strPtr(m.Content)})
 		case "assistant":
-			result = append(result, groqMessage{Role: "assistant", Content: strPtr(m.Content)})
+			result = append(result, aiMessage{Role: "assistant", Content: strPtr(m.Content)})
 		}
 	}
 	return result

@@ -25,7 +25,7 @@ func TestVerifyAnswerLive(t *testing.T) {
 	if key == "" {
 		t.Skip("GROQ_API_KEY not set — skipping live verify-answer test")
 	}
-	config.Env = &config.Config{GroqApiKey: key}
+	config.Env = &config.Config{AIApiKey: key}
 
 	t.Run("known-wrong", func(t *testing.T) {
 		// User asked for CW-01's speed; the answer describes CW-02's temperature —

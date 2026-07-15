@@ -248,9 +248,9 @@ func emitSQL(ctx context.Context, question, schema string, prev *prevTurn, fixup
 			fixup.Err + "\nReturn a corrected query.\n\n"
 	}
 	sp += schema
-	msgs := []groqMessage{{Role: "system", Content: &sp}, {Role: "user", Content: strPtr(question)}}
-	tools := []map[string]any{toGroqTool(emitSQLTool)}
-	resp, _, err := callGroqModel(ctx, groqModel, msgs, tools, forceFunc("emit_sql"))
+	msgs := []aiMessage{{Role: "system", Content: &sp}, {Role: "user", Content: strPtr(question)}}
+	tools := []map[string]any{toAITool(emitSQLTool)}
+	resp, _, err := callAIModel(ctx, aiModel(), msgs, tools, forceFunc("emit_sql"))
 	// The model declining the forced call (prose instead of a tool call, or Groq's
 	// "tool choice" validator error) means it judged the question un-SQL-able — a meta
 	// question about the previous chart, say. Degrade to the prose path, not a 502;
@@ -312,8 +312,8 @@ func emitProse(ctx context.Context, question, schema string, prev *prevTurn, col
 		sp += "For context, the user's previous question was: \"" + prev.Question + "\" and you asked them: \"" + prev.Clarification + "\".\n\n"
 	}
 	sp += schema
-	msgs := []groqMessage{{Role: "system", Content: &sp}, {Role: "user", Content: strPtr(question)}}
-	resp, _, err := callGroqModel(ctx, groqModel, msgs, nil, "")
+	msgs := []aiMessage{{Role: "system", Content: &sp}, {Role: "user", Content: strPtr(question)}}
+	resp, _, err := callAIModel(ctx, aiModel(), msgs, nil, "")
 	if err != nil {
 		return "", err
 	}
@@ -344,9 +344,9 @@ func emitEChart(ctx context.Context, question string, cols []string, sample [][]
 	payload, _ := json.Marshal(payloadMap)
 	sp := echartSystemPrompt
 	uc := string(payload)
-	msgs := []groqMessage{{Role: "system", Content: &sp}, {Role: "user", Content: &uc}}
-	tools := []map[string]any{toGroqTool(emitEChartTool)}
-	resp, _, err := callGroqModel(ctx, groqModel, msgs, tools, forceFunc("emit_echart_option"))
+	msgs := []aiMessage{{Role: "system", Content: &sp}, {Role: "user", Content: &uc}}
+	tools := []map[string]any{toAITool(emitEChartTool)}
+	resp, _, err := callAIModel(ctx, aiModel(), msgs, tools, forceFunc("emit_echart_option"))
 	if err != nil {
 		return nil, err
 	}
@@ -374,7 +374,7 @@ MATCH (matches_intent: true) otherwise — including a result that is imperfect 
 If mismatch, set problem to a short specific reason (e.g. "answered temperature, user asked speed"). Leave clarifying_question empty — Ask-Data repairs automatically rather than asking the user.`
 
 // verifyAskChart judges whether sqlText + option actually answer question. Mirrors
-// VerifyAnswer (router.go) exactly: 6s bounded timeout, routerModel, forced
+// VerifyAnswer (router.go) exactly: 6s bounded timeout, routerModel(), forced
 // verify_answer tool call. Returns (zero, false) on ANY error, timeout, or malformed
 // JSON — callers MUST treat false as "no verdict" (deliver as-is), never as a
 // mismatch; the verifier's own infrastructure failing must never block or repair an
@@ -395,10 +395,10 @@ func verifyAskChart(ctx context.Context, question, sqlText string, cols []string
 
 	sp := askVerifyPrompt
 	uc := string(payload)
-	msgs := []groqMessage{{Role: "system", Content: &sp}, {Role: "user", Content: &uc}}
+	msgs := []aiMessage{{Role: "system", Content: &sp}, {Role: "user", Content: &uc}}
 
-	tools := []map[string]any{toGroqTool(VerifyAnswerTool)}
-	resp, _, err := callGroqModel(ctx, routerModel, msgs, tools, forceFunc("verify_answer"))
+	tools := []map[string]any{toAITool(VerifyAnswerTool)}
+	resp, _, err := callAIModel(ctx, routerModel(), msgs, tools, forceFunc("verify_answer"))
 	if err != nil {
 		return VerifyResult{}, false
 	}

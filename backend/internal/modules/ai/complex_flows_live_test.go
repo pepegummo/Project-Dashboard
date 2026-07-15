@@ -2,7 +2,7 @@ package ai
 
 // Complex, realistic, MULTI-INTENT live-Groq tests — the way a real user types, in
 // Thai, often with two intents in one message. These exercise the exact decision path
-// Chat() runs (router -> dispatchIntent -> callGroqModel) and assert, per round, the
+// Chat() runs (router -> dispatchIntent -> callAIModel) and assert, per round, the
 // tool the model picks and its JSON args. Those args ARE the "highlight signal": the
 // frontend flashes whichever widget matches the tool's machine/metric/fields/widget_title
 // (see AIAssistantPage.vue's resolver), so asserting them here verifies the RIGHT widget
@@ -41,7 +41,7 @@ func liveKeyOrSkip(t *testing.T) {
 	if key == "" {
 		t.Skip("GROQ_API_KEY not set — skipping live complex-flow test")
 	}
-	config.Env = &config.Config{GroqApiKey: key}
+	config.Env = &config.Config{AIApiKey: key}
 }
 
 // pace dodges the free-tier 8k tok/min limit between model calls. Modest on purpose —
@@ -54,7 +54,7 @@ type toolCallView struct {
 	args map[string]any
 }
 
-func parseCalls(m groqMessage) []toolCallView {
+func parseCalls(m aiMessage) []toolCallView {
 	var out []toolCallView
 	for _, c := range m.ToolCalls {
 		var args map[string]any
@@ -69,10 +69,10 @@ type turn struct {
 	intent    IntentResult
 	routerOK  bool
 	choice    string // tool_choice dispatchIntent decided
-	assistant groqMessage
+	assistant aiMessage
 	calls     []toolCallView
 	text      string // assistant prose when it answered instead of calling a tool
-	msgs      []groqMessage
+	msgs      []aiMessage
 	tools     []map[string]any
 }
 
@@ -86,28 +86,28 @@ func decideAndCall(t *testing.T, msg, ctxText, role string, machineValid, chartE
 	focused := strings.Contains(msg, "@")
 	inlineData := strings.Contains(ctxText, "on-screen data")
 
-	res, ok, _ := classifyIntentWithModel(ctx, routerModel, msg, focusedContextSummary(ctxText))
+	res, ok, _ := classifyIntentWithModel(ctx, routerModel(), msg, focusedContextSummary(ctxText))
 	choice, _ := dispatchIntent(res, ok, focused, inlineData, role, machineValid, chartExists)
 
 	sp := systemPromptUnified
-	msgs := []groqMessage{
+	msgs := []aiMessage{
 		{Role: "system", Content: &sp},
 		{Role: "user", Content: strPtr(msg)},
 	}
 	if ctxText != "" {
 		cc := "Authoritative current dashboard state (overrides anything said earlier):\n" + ctxText + "\n" + dateLineForRequest()
-		msgs = append(msgs, groqMessage{Role: "system", Content: &cc})
+		msgs = append(msgs, aiMessage{Role: "system", Content: &cc})
 	} else {
 		dl := dateLineForRequest()
-		msgs = append(msgs, groqMessage{Role: "system", Content: &dl})
+		msgs = append(msgs, aiMessage{Role: "system", Content: &dl})
 	}
-	tools := buildGroqTools(role)
+	tools := buildAITools(role)
 
-	resp, _, err := callGroqModel(ctx, groqModel, msgs, tools, choice)
+	resp, _, err := callAIModel(ctx, aiModel(), msgs, tools, choice)
 	// Same graceful fallback as Chat: a forced tool_choice the model declines is a valid
 	// (prose) answer — retry auto so it can ask/clarify.
 	if err != nil && (strings.Contains(err.Error(), "Tool choice is required") || strings.Contains(err.Error(), "Tool choice is none")) {
-		resp, _, err = callGroqModel(ctx, groqModel, msgs, tools, "")
+		resp, _, err = callAIModel(ctx, aiModel(), msgs, tools, "")
 	}
 	if err != nil {
 		t.Fatalf("[%s] groq error: %v", msg, err)
@@ -133,7 +133,7 @@ func nextRound(t *testing.T, tr turn, results map[string]any) turn {
 	t.Helper()
 	ctx := context.Background()
 
-	msgs := append([]groqMessage{}, tr.msgs...)
+	msgs := append([]aiMessage{}, tr.msgs...)
 	msgs = append(msgs, tr.assistant)
 	for _, c := range tr.calls {
 		payload, ok := results[c.name]
@@ -142,10 +142,10 @@ func nextRound(t *testing.T, tr turn, results map[string]any) turn {
 		}
 		b, _ := json.Marshal(payload)
 		s := string(b)
-		msgs = append(msgs, groqMessage{Role: "tool", ToolCallID: c.id, Content: &s})
+		msgs = append(msgs, aiMessage{Role: "tool", ToolCallID: c.id, Content: &s})
 	}
 
-	resp, _, err := callGroqModel(ctx, groqModel, msgs, tr.tools, "")
+	resp, _, err := callAIModel(ctx, aiModel(), msgs, tr.tools, "")
 	if err != nil {
 		t.Fatalf("nextRound groq error: %v", err)
 	}

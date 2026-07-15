@@ -29,7 +29,7 @@ func TestDateEditRoutesToUpdate(t *testing.T) {
 	if key == "" {
 		t.Skip("GROQ_API_KEY not set — skipping live date-edit routing test")
 	}
-	config.Env = &config.Config{GroqApiKey: key}
+	config.Env = &config.Config{AIApiKey: key}
 
 	// Same assembly as controller.Chat on the focused tool path.
 	sp := systemPromptUnified
@@ -37,7 +37,7 @@ func TestDateEditRoutesToUpdate(t *testing.T) {
 		`- [FOCUSED] line-chart "Trend", machine CW-01, metric weight, ` +
 		"window 2026-07-05T22:55 → 2026-07-06T21:02\n" +
 		dateLineForRequest()
-	tools := buildGroqTools("editor")
+	tools := buildAITools("editor")
 	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
 
 	// Both phrasings mean "yesterday". "วันก่อนหน้า" (previous day) once matched no classifier
@@ -46,14 +46,14 @@ func TestDateEditRoutesToUpdate(t *testing.T) {
 		if i > 0 {
 			time.Sleep(10 * time.Second) // dodge free-tier 8k tok/min limit
 		}
-		msgs := []groqMessage{
+		msgs := []aiMessage{
 			{Role: "system", Content: &sp},
 			{Role: "user", Content: strPtr(msg)},
 			{Role: "system", Content: &ctxContent},
 		}
 		// Exercise the real deterministic path: force preview_update_widget BY NAME (object
-		// tool_choice through callGroqModel), the same as Chat does for a focused relative-date.
-		resp, _, err := callGroqModel(context.Background(), groqModel, msgs, tools, forceFunc("preview_update_widget"))
+		// tool_choice through callAIModel), the same as Chat does for a focused relative-date.
+		resp, _, err := callAIModel(context.Background(), aiModel(), msgs, tools, forceFunc("preview_update_widget"))
 		if err != nil {
 			t.Fatalf("[%s] groq error: %v", msg, err)
 		}

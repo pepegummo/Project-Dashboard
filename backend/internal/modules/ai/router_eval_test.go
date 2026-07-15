@@ -4,7 +4,7 @@ package ai
 // Standalone from TestBakeOff (eval_test.go): it does not exercise the chat pipeline or
 // tool dispatch, only classifyIntentWithModel's single forced tool call. Skips without
 // GROQ_API_KEY, same .env-loading pattern as TestBakeOff, and continues past rate limits
-// (classifyIntentWithModel/callGroqModel already retry quick 429 blips internally; a long
+// (classifyIntentWithModel/callAIModel already retry quick 429 blips internally; a long
 // wait surfaces as an error here and is just logged, not retried, per the brief).
 //
 // Run:  cd backend && GROQ_API_KEY=... go test ./internal/modules/ai/ -run RouterBakeOff -v
@@ -194,7 +194,7 @@ func TestRouterBakeOff(t *testing.T) {
 	if key == "" {
 		t.Skip("GROQ_API_KEY not set — skipping live router bake-off")
 	}
-	config.Env = &config.Config{GroqApiKey: key}
+	config.Env = &config.Config{AIApiKey: key}
 
 	cases := make([]routerCase, 0, len(legacyIntentCases)+len(newRouterCases))
 	cases = append(cases, legacyIntentCases...)

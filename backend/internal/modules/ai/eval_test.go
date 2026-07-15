@@ -34,7 +34,7 @@ type bakeCase struct {
 	label   string
 	message string
 	context string        // optional on-screen preview context
-	history []groqMessage // optional prior turns (e.g. a preview was just shown)
+	history []aiMessage // optional prior turns (e.g. a preview was just shown)
 	expect  string        // human-readable expectation
 	want    string        // expected first tool name, or "" for the no-tool path (greeting/clarify/redirect)
 }
@@ -64,7 +64,7 @@ var bakeCases = []bakeCase{
 		label:   "change-preview-edit",
 		message: "เปลี่ยน metric เป็น temperature",
 		context: `{"dashboardName":"CW-01 Overview","widgets":[{"type":"line-chart","title":"Trend","machine":"CW-01","metric":"speed"}]}`,
-		history: []groqMessage{
+		history: []aiMessage{
 			{Role: "user", Content: strPtr("สร้าง dashboard ของ CW-01")},
 			{Role: "assistant", Content: strPtr("นี่คือ preview dashboard ของ CW-01 ครับ กดยืนยันเพื่อสร้าง")},
 		},
@@ -75,7 +75,7 @@ var bakeCases = []bakeCase{
 		label:   "add-preview-widget",
 		message: "เพิ่ม widget อุณหภูมิ CW-01 ด้วย",
 		context: `{"dashboardName":"CW-01 Overview","widgets":[{"type":"line-chart","title":"Trend","machine":"CW-01","metric":"speed"}]}`,
-		history: []groqMessage{
+		history: []aiMessage{
 			{Role: "user", Content: strPtr("สร้าง dashboard ของ CW-01")},
 			{Role: "assistant", Content: strPtr("นี่คือ preview dashboard ของ CW-01 ครับ")},
 		},
@@ -86,7 +86,7 @@ var bakeCases = []bakeCase{
 		label:   "delete-preview-widget",
 		message: "ลบ widget Trend ออก",
 		context: `{"dashboardName":"CW-01 Overview","widgets":[{"type":"line-chart","title":"Trend","machine":"CW-01","metric":"speed"}]}`,
-		history: []groqMessage{
+		history: []aiMessage{
 			{Role: "user", Content: strPtr("สร้าง dashboard ของ CW-01")},
 			{Role: "assistant", Content: strPtr("นี่คือ preview dashboard ของ CW-01 ครับ")},
 		},
@@ -170,9 +170,9 @@ func TestBakeOff(t *testing.T) {
 	if key == "" {
 		t.Skip("GROQ_API_KEY not set — skipping live model bake-off")
 	}
-	config.Env = &config.Config{GroqApiKey: key}
+	config.Env = &config.Config{AIApiKey: key}
 
-	tools := buildGroqTools("admin") // full tool set for bake-off
+	tools := buildAITools("admin") // full tool set for bake-off
 
 	type tally struct {
 		score, total int
@@ -187,23 +187,23 @@ func TestBakeOff(t *testing.T) {
 		fmt.Printf("\n========== MODEL: %s ==========\n", model)
 		for _, tc := range bakeCases {
 			sp := systemPromptUnified // bake-off always uses full prompt
-			msgs := []groqMessage{{Role: "system", Content: &sp}}
+			msgs := []aiMessage{{Role: "system", Content: &sp}}
 			msgs = append(msgs, tc.history...)
-			msgs = append(msgs, groqMessage{Role: "user", Content: strPtr(tc.message)})
+			msgs = append(msgs, aiMessage{Role: "user", Content: strPtr(tc.message)})
 			if tc.context != "" {
 				ctxContent := "Authoritative current dashboard state (overrides anything said earlier):\n" + tc.context + "\n" + dateLineForRequest()
-				msgs = append(msgs, groqMessage{Role: "system", Content: &ctxContent})
+				msgs = append(msgs, aiMessage{Role: "system", Content: &ctxContent})
 			} else {
 				dateContent := dateLineForRequest()
-				msgs = append(msgs, groqMessage{Role: "system", Content: &dateContent})
+				msgs = append(msgs, aiMessage{Role: "system", Content: &dateContent})
 			}
 
 			fmt.Printf("\n[%s] %q\n  expect: %s\n", tc.label, tc.message, tc.expect)
 
 			time.Sleep(10 * time.Second) // dodge free-tier rate limits (8k tokens/min)
-			// httpLat is the successful HTTP round only — excludes callGroqModel's internal
+			// httpLat is the successful HTTP round only — excludes callAIModel's internal
 			// 429 retry sleeps, so latency reflects model speed, not rate-limit backoff.
-			resp, httpLat, err := callGroqModel(context.Background(), model, msgs, tools, "")
+			resp, httpLat, err := callAIModel(context.Background(), model, msgs, tools, "")
 			if err != nil {
 				fmt.Printf("  ERROR: %v\n", err)
 				continue

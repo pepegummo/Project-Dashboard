@@ -19,7 +19,10 @@ type Config struct {
 	AnthropicApiKey string
 	GeminiApiKey    string
 	GeminiModel     string
-	GroqApiKey      string
+	AIApiKey      string
+	AIBaseURL     string
+	AIModel       string
+	AIRouterModel string
 }
 
 var Env *Config
@@ -39,7 +42,10 @@ func Load() {
 		AnthropicApiKey:  getEnv("ANTHROPIC_API_KEY", ""),
 		GeminiApiKey:     getEnv("GEMINI_API_KEY", ""),
 		GeminiModel:      getEnv("GEMINI_MODEL", "gemini-1.5-flash-latest"),
-		GroqApiKey:       getEnv("GROQ_API_KEY", ""),
+		AIApiKey:         getEnv("AI_API_KEY", getEnv("GROQ_API_KEY", "")),
+		AIBaseURL:        getEnv("AI_BASE_URL", ""),
+		AIModel:          getEnv("AI_MODEL", ""),
+		AIRouterModel:    getEnv("AI_ROUTER_MODEL", ""),
 	}
 }
 

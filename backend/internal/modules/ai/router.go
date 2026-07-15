@@ -11,16 +11,18 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"iot-dashboard/internal/config"
 )
 
 // routerModel is ClassifyIntent's default model — openai/gpt-oss-20b per the live
 // TestRouterBakeOff run (2026-07-10): 20/32 vs llama-3.1-8b-instant's 0/32 (Groq's
 // function-call validator rejected llama-3.1-8b-instant's forced tool_choice output for
-// this schema on every case, tripping callGroqModel's existing no-tools fallback).
+// this schema on every case, tripping callAIModel's existing no-tools fallback).
 // TestRouterBakeOff compares candidates by calling classifyIntentWithModel directly with
-// an explicit model string — it does not mutate this constant. llama stays in that
-// comparison for the record.
-const routerModel = "openai/gpt-oss-20b"
+// an explicit model string — it does not mutate this default. llama stays in that
+// comparison for the record. Overridable via AI_ROUTER_MODEL.
+func routerModel() string { return envOr(config.Env.AIRouterModel, "openai/gpt-oss-20b") }
 
 // routerConfidenceFloor: results below this are treated as "not confident enough" —
 // the caller falls back to auto tools rather than acting on a shaky guess.
@@ -87,11 +89,11 @@ confidence: 0..1, how sure you are of the INTENT (not the slots). Use below 0.5 
 
 // ClassifyIntent makes one forced-tool-call request to routerModel and parses the
 // result. ctx is bounded to ~6s beyond whatever the caller already set, and there are
-// no retries beyond what callGroqModel already does internally for quick 429 blips.
+// no retries beyond what callAIModel already does internally for quick 429 blips.
 // Returns (zero, false) on any error, invalid JSON, unknown intent, or confidence
 // below routerConfidenceFloor — callers treat false as "fall back to auto tools".
 func ClassifyIntent(ctx context.Context, userMessage string, contextSummary string) (IntentResult, bool) {
-	r, ok, _ := classifyIntentWithModel(ctx, routerModel, userMessage, contextSummary)
+	r, ok, _ := classifyIntentWithModel(ctx, routerModel(), userMessage, contextSummary)
 	return r, ok
 }
 
@@ -103,15 +105,15 @@ func classifyIntentWithModel(ctx context.Context, model string, userMessage stri
 	defer cancel()
 
 	sp := routerSystemPrompt
-	msgs := []groqMessage{{Role: "system", Content: &sp}}
+	msgs := []aiMessage{{Role: "system", Content: &sp}}
 	if contextSummary != "" {
 		cs := contextSummary
-		msgs = append(msgs, groqMessage{Role: "system", Content: &cs})
+		msgs = append(msgs, aiMessage{Role: "system", Content: &cs})
 	}
-	msgs = append(msgs, groqMessage{Role: "user", Content: strPtr(userMessage)})
+	msgs = append(msgs, aiMessage{Role: "user", Content: strPtr(userMessage)})
 
-	tools := []map[string]any{toGroqTool(ClassifyIntentTool)}
-	resp, lat, err := callGroqModel(ctx, model, msgs, tools, forceFunc("classify_intent"))
+	tools := []map[string]any{toAITool(ClassifyIntentTool)}
+	resp, lat, err := callAIModel(ctx, model, msgs, tools, forceFunc("classify_intent"))
 	if err != nil {
 		return IntentResult{}, false, lat
 	}
@@ -191,13 +193,13 @@ func VerifyAnswer(ctx context.Context, userMessage string, intentSummary string,
 		"\nRouter intent: " + intentSummary +
 		"\nTools used: " + toolsUsed +
 		"\nAssistant's final answer: " + finalAnswer
-	msgs := []groqMessage{
+	msgs := []aiMessage{
 		{Role: "system", Content: &sp},
 		{Role: "user", Content: strPtr(userContent)},
 	}
 
-	tools := []map[string]any{toGroqTool(VerifyAnswerTool)}
-	resp, _, err := callGroqModel(ctx, routerModel, msgs, tools, forceFunc("verify_answer"))
+	tools := []map[string]any{toAITool(VerifyAnswerTool)}
+	resp, _, err := callAIModel(ctx, routerModel(), msgs, tools, forceFunc("verify_answer"))
 	if err != nil {
 		return VerifyResult{}, false
 	}

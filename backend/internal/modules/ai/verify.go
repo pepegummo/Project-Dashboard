@@ -270,13 +270,13 @@ func summarizeToolLog(log []toolExecution) string {
 // longer see, since Chat()'s main loop captures the final answer as plain text
 // rather than appending it to msgs — THEN the VERIFIER instruction naming the
 // specific problem to fix.
-func buildRepairMessages(base []groqMessage, finalAnswer string, problem string) []groqMessage {
+func buildRepairMessages(base []aiMessage, finalAnswer string, problem string) []aiMessage {
 	repairInstruction := "VERIFIER: the previous answer did not match the user's request: " + problem +
 		". Fix it. If the request is genuinely ambiguous, reply only with one short clarifying question in the user's language."
-	out := make([]groqMessage, 0, len(base)+2)
+	out := make([]aiMessage, 0, len(base)+2)
 	out = append(out, base...)
-	out = append(out, groqMessage{Role: "assistant", Content: strPtr(finalAnswer)})
-	out = append(out, groqMessage{Role: "system", Content: strPtr(repairInstruction)})
+	out = append(out, aiMessage{Role: "assistant", Content: strPtr(finalAnswer)})
+	out = append(out, aiMessage{Role: "system", Content: strPtr(repairInstruction)})
 	return out
 }
 

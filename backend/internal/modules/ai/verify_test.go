@@ -395,7 +395,7 @@ func TestTruncateRunesRuneSafe(t *testing.T) {
 }
 
 func TestBuildRepairMessagesIncludesOriginalAnswer(t *testing.T) {
-	base := []groqMessage{
+	base := []aiMessage{
 		{Role: "system", Content: strPtr("system prompt")},
 		{Role: "user", Content: strPtr("ความเร็ว CW-01 เท่าไหร่")},
 	}
