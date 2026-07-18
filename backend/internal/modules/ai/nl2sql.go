@@ -227,7 +227,13 @@ func emitSQL(ctx context.Context, question, schema string, prev *prevTurn, fixup
 		"SELECT DISTINCT data->>'sku' AS sku FROM v_telemetry WHERE machine_name ILIKE '%CW-01%' " +
 		"AND data->>'sku' IS NOT NULL ORDER BY sku LIMIT 100\n\n" +
 		"A \"which/what values are available\" listing question IS answerable — return the distinct values; " +
-		"set answerable=false ONLY for a greeting or chit-chat.\n\n"
+		"set answerable=false ONLY for a greeting or chit-chat.\n\n" +
+		"A question asking to EXPLAIN or DEFINE a metric or term (\"what does X mean\", \"how do X and Y " +
+		"differ\", Thai \"อธิบาย\", \"คืออะไร\", \"ต่างกันยังไง\") is answered in prose, not SQL — set " +
+		"answerable=false and NEVER set clarification for it.\n" +
+		"When a reasonable default interpretation exists, answer with the default instead of asking: no time " +
+		"range → last 24h; a fuzzy condition like \"drops/low\" → below that metric's average over the window. " +
+		"Set clarification ONLY when no metric, machine, or dimension is identifiable at all.\n\n"
 	switch {
 	case prev != nil && prev.SQL != "":
 		sp += "The user previously asked: \"" + prev.Question + "\"\nwhich ran this SQL:\n" + prev.SQL +
@@ -294,12 +300,16 @@ func parseSQLEmission(rawJSON string) (sqlEmission, error) {
 // Grounded in the same schema context; a plain completion (no tools). cols/rows, when
 // non-empty, are the ACTUAL re-executed result of prev.SQL — without them the model
 // invents numbers for "analyze the chart" questions.
-func emitProse(ctx context.Context, question, schema string, prev *prevTurn, cols []string, rows [][]any) (string, error) {
+func emitProse(ctx context.Context, question, schema string, prev *prevTurn, cols []string, rows [][]any, fixup string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	sp := "You are a factory-data assistant for an IoT dashboard. Answer the user's question directly and " +
 		"concisely in prose, in the SAME language as the question (Thai or English). Use the schema below to " +
 		"ground your answer in the real machines, metrics, and units. Do not output SQL or code unless asked.\n\n"
+	if fixup != "" {
+		sp += "Your previous answer was judged as not answering the question:\n" + fixup +
+			"\nWrite a corrected answer that addresses the question directly.\n\n"
+	}
 	if prev != nil && prev.SQL != "" {
 		sp += "For context, the user's previous question was: \"" + prev.Question + "\" (it ran SQL: " + prev.SQL + ").\n\n"
 		if len(cols) > 0 {
@@ -371,9 +381,49 @@ The option field may be an empty object {} — that means the result is delivere
 
 MISMATCH (matches_intent: false) only when the SQL or chart targets a DIFFERENT metric, machine, or time window than the question asked, or (chart present only) the chart type contradicts a chart type the user explicitly requested (e.g. asked for a bar chart but got a pie chart).
 
+A chart type the user explicitly requested (pie/bar/line/scatter, in any language — e.g. Thai "กราฟแท่ง"=bar, "วงกลม"=pie) is correct BY DEFINITION, even if another type would visualize the data better — judge only the DATA (metric, machine, time window), never the style the user chose.
+
 MATCH (matches_intent: true) otherwise — including a result that is imperfect but honestly answers what was asked (fewer points than ideal, a slightly different aggregation, a reasonable default time window when none was specified, an empty result when the data may genuinely contain no matching rows).
 
 If mismatch, set problem to a short specific reason (e.g. "answered temperature, user asked speed"). Leave clarifying_question empty — Ask-Data repairs automatically rather than asking the user.`
+
+// askProseVerifyPrompt mirrors askVerifyPrompt but for prose turns: small and static
+// so the provider can prompt-cache it across verify calls.
+const askProseVerifyPrompt = `You check whether a prose answer actually addresses a factory-data question, by calling verify_answer. Always call the tool — never reply in prose.
+
+sampleRows, when non-empty, are the ACTUAL rows the answer was grounded in.
+
+MISMATCH (matches_intent: false) only when the answer is about a DIFFERENT topic than the question asked, or states a number that CONTRADICTS the sample rows.
+
+MATCH (matches_intent: true) otherwise — including an imperfect but on-topic answer, a definition/explanation for an explain question, a polite reply to a greeting, or an honest "the data doesn't show this". When sampleRows is empty, judge topicality only — never flag missing numbers.
+
+If mismatch, set problem to a short specific reason. Leave clarifying_question empty — the answer is regenerated automatically rather than asking the user.`
+
+// verifyAskProse judges whether a prose answer addresses question, grounded by the
+// same rows emitProse saw. Mirrors verifyAskAnswer exactly: 6s bound, routerModel(),
+// forced verify_answer; (zero, false) on ANY failure = no verdict, deliver as-is.
+func verifyAskProse(ctx context.Context, question, answer string, cols []string, sample [][]any) (VerifyResult, bool) {
+	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+
+	payload, _ := json.Marshal(map[string]any{
+		"question":   question,
+		"answer":     truncateRunes(answer, 1500),
+		"columns":    cols,
+		"sampleRows": sample,
+	})
+
+	sp := askProseVerifyPrompt
+	uc := string(payload)
+	msgs := []aiMessage{{Role: "system", Content: &sp}, {Role: "user", Content: &uc}}
+
+	tools := []map[string]any{toAITool(VerifyAnswerTool)}
+	resp, _, err := callAIModel(ctx, routerModel(), msgs, tools, forceFunc("verify_answer"))
+	if err != nil || len(resp.Choices) == 0 || len(resp.Choices[0].Message.ToolCalls) == 0 {
+		return VerifyResult{}, false
+	}
+	return parseVerifyResult(resp.Choices[0].Message.ToolCalls[0].Function.Arguments)
+}
 
 // verifyAskAnswer judges whether sqlText (+ option, which may be the empty table
 // signal "{}") actually answer question. Mirrors VerifyAnswer (router.go) exactly:
@@ -626,9 +676,18 @@ func AskData(c *fiber.Ctx) error {
 					}
 				}
 			}
-			answer, perr := emitProse(ctx, question, schema, prev, pcols, prows)
+			answer, perr := emitProse(ctx, question, schema, prev, pcols, prows, "")
 			if perr != nil {
 				return c.Status(502).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": "could not answer: " + perr.Error()}})
+			}
+			// B1 for prose: judge the answer; on MISMATCH regenerate once with the
+			// problem as fixup (no second judge round — bounded cost, same stance as
+			// the chart repair). No verdict or a failed regenerate delivers the
+			// original answer — never a 502.
+			if v, ok := verifyAskProse(ctx, question, answer, pcols, sampleRows(prows, 5)); ok && !v.MatchesIntent {
+				if repaired, rerr := emitProse(ctx, question, schema, prev, pcols, prows, "verifier: "+v.Problem); rerr == nil && repaired != "" {
+					answer = repaired
+				}
 			}
 			return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"answer": answer}})
 		}
