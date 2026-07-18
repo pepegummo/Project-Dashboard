@@ -15,8 +15,7 @@ package ai
 // Model output varies run-to-run, so assertions check MEMBERSHIP + arg presence, not exact
 // strings — same philosophy as eval_test.go / router_eval_test.go.
 //
-// Skips without GROQ_API_KEY. Run (needs a key; space is paced for the free-tier limit —
-// raise the model's token limit for a faster/steadier run):
+// Skips without AI_API_KEY (or legacy GROQ_API_KEY). Run:
 //   cd backend && go test ./internal/modules/ai/ -run ComplexFlows -v
 
 import (
@@ -37,16 +36,32 @@ import (
 func liveKeyOrSkip(t *testing.T) {
 	t.Helper()
 	_ = godotenv.Load("../../../../.env", "../../../.env")
-	key := os.Getenv("GROQ_API_KEY")
+	key := os.Getenv("AI_API_KEY")
 	if key == "" {
-		t.Skip("GROQ_API_KEY not set — skipping live complex-flow test")
+		key = os.Getenv("GROQ_API_KEY")
 	}
-	config.Env = &config.Config{AIApiKey: key}
+	if key == "" {
+		t.Skip("AI_API_KEY / GROQ_API_KEY not set — skipping live test")
+	}
+	// Mirror config.Load's AI fields so live tests hit the SAME provider/models as prod;
+	// empty values fall back to Groq defaults via envOr (controller.go / router.go).
+	config.Env = &config.Config{
+		AIApiKey:      key,
+		AIBaseURL:     os.Getenv("AI_BASE_URL"),
+		AIModel:       os.Getenv("AI_MODEL"),
+		AIRouterModel: os.Getenv("AI_ROUTER_MODEL"),
+	}
 }
 
-// pace dodges the free-tier 8k tok/min limit between model calls. Modest on purpose —
-// bump the model's limit and this becomes irrelevant.
-func pace() { time.Sleep(30 * time.Second) }
+// pace dodges rate limits between model calls. The 30s sleep is Groq free-tier
+// (8k tok/min) tuning; other providers get a token 2s.
+func pace() {
+	if strings.Contains(aiBaseURL(), "groq") {
+		time.Sleep(30 * time.Second)
+		return
+	}
+	time.Sleep(2 * time.Second)
+}
 
 type toolCallView struct {
 	id   string

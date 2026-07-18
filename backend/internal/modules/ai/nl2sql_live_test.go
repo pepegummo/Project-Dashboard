@@ -11,7 +11,7 @@ package ai
 // output varies run-to-run. liveKeyOrSkip and pace are shared with (and defined in)
 // complex_flows_live_test.go in this package.
 //
-// Skips without GROQ_API_KEY. ~35 paced live calls, roughly 15-20 minutes. Run:
+// Skips without AI_API_KEY (or legacy GROQ_API_KEY). ~35 paced live calls. Run:
 //   cd backend && go test ./internal/modules/ai/ -run AskDataLive -v
 
 import (
@@ -50,99 +50,117 @@ Rules:
 // prev turn context), the expected outcome class, and loose substring assertions on
 // the generated SQL. chart, if set, additionally exercises emitEChart + sanitize.
 type askCase struct {
-	name     string
-	question string
-	prev     *prevTurn // follow-up context; nil for fresh questions
-	expect   string    // "sql" | "notdata" | "clarify" | "either"
-	sqlHas   []string  // lowercase substrings the generated SQL must contain
-	sqlNot   []string  // substrings it must NOT contain
-	chart    string    // if set: also call emitEChart and assert series[0].type
+	name      string
+	question  string
+	prev      *prevTurn // follow-up context; nil for fresh questions
+	expect    string    // "sql" | "notdata" | "clarify" | "either"
+	sqlHas    []string  // lowercase substrings the generated SQL must contain
+	sqlHasAny []string  // at least ONE of these substrings must appear (empty = no check)
+	sqlNot    []string  // substrings it must NOT contain
+	chart     string    // if set: also call emitEChart and assert series[0].type
+}
+
+// sqlHasAnyOK reports whether sql (lowercase) satisfies the case's any-of list.
+func (c askCase) sqlHasAnyOK(low string) bool {
+	if len(c.sqlHasAny) == 0 {
+		return true
+	}
+	for _, want := range c.sqlHasAny {
+		if strings.Contains(low, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// prevSpeedCW01 is the shared follow-up context: "avg speed CW-01 last 24h hourly".
+var prevSpeedCW01 = &prevTurn{
+	Question: "ความเร็ว CW-01 ย้อนหลัง 24 ชม รายชั่วโมง",
+	SQL:      "SELECT time_bucket('1 hour', ts) AS bucket, avg((data->>'speed')::float) AS avg_speed FROM v_telemetry WHERE machine_name ILIKE '%CW-01%' AND ts > now() - interval '24 hours' GROUP BY bucket ORDER BY bucket LIMIT 5000",
+}
+
+// askCases is shared by TestAskDataLiveQuestions (LLM half, fixture schema) and
+// TestAskDataFullLoopLive (full HTTP+DB loop, ask_fullloop_live_test.go).
+var askCases = []askCase{
+	// ── SKU ──────────────────────────────────────────────────────────────
+	{name: "sku_list_th", question: "มี sku อะไรบ้าง", expect: "sql", sqlHas: []string{"distinct", "sku"}},
+	{name: "sku_by_machine_en", question: "which SKUs does CW-01 run", expect: "sql", sqlHas: []string{"distinct", "sku", "cw-01"}},
+	{name: "sku_top_this_week_th", question: "sku ไหนผลิตเยอะสุดอาทิตย์นี้", expect: "sql", sqlHas: []string{"sku", "group by", "order by"}},
+	// "today" may be now()-interval OR date_trunc('day', now()) — both are valid, both contain "now(".
+	{name: "sku_reject_today_th", question: "แต่ละ sku มี reject เท่าไหร่วันนี้", expect: "sql", sqlHas: []string{"sku", "reject", "now("}},
+
+	// ── Machine ──────────────────────────────────────────────────────────
+	{name: "machine_list_en", question: "list machines", expect: "sql", sqlHas: []string{"v_machines"}},
+	{name: "machine_list_th", question: "มีเครื่องอะไรบ้าง", expect: "sql", sqlHas: []string{"v_machines"}},
+	{name: "machine_status_not_normal_th", question: "เครื่องไหน status ไม่ normal", expect: "sql", sqlHas: []string{"v_machines", "status"}},
+	{name: "machine_what_is_cw01_th", question: "CW-01 คือเครื่องอะไร", expect: "sql", sqlHas: []string{"v_machines", "ilike"}},
+	{name: "machine_count_en", question: "how many machines do we have", expect: "sql", sqlHas: []string{"count", "v_machines"}},
+
+	// ── Field/metric ─────────────────────────────────────────────────────
+	{name: "speed_24h_hourly_th", question: "ความเร็ว CW-01 ย้อนหลัง 24 ชม รายชั่วโมง", expect: "sql", sqlHas: []string{"time_bucket", "now() - interval", "cw-01"}},
+	{name: "avg_throughput_7d_en", question: "average throughput per machine last 7 days", expect: "sql", sqlHas: []string{"throughput", "interval '7"}},
+	{name: "temp_today_th", question: "อุณหภูมิ TS-01 วันนี้", expect: "sql", sqlHas: []string{"ts-01", "now("}},
+	// "reject rate" legitimately maps to either the reject count or defect_rate (%).
+	{name: "reject_rate_yesterday_th", question: "reject rate ของ VC-01 เมื่อวาน", expect: "sql", sqlHas: []string{"vc-01"}, sqlHasAny: []string{"reject", "defect_rate"}},
+	{name: "cb01_speed_trend_en", question: "CB-01 speed trend this week", expect: "sql", sqlHas: []string{"time_bucket", "cb-01", "speed"}},
+
+	// ── Explain/prose (notdata) ──────────────────────────────────────────
+	{name: "explain_throughput_vs_speed_th", question: "อธิบายหน่อยว่า throughput กับ speed ต่างกันยังไง", expect: "notdata"},
+	{name: "explain_reject_rate_en", question: "what does reject rate mean", expect: "notdata"},
+	{name: "explain_dashboard_th", question: "ช่วยสรุปว่า dashboard นี้ใช้ทำอะไร", expect: "notdata"},
+
+	// ── Greeting (notdata) ───────────────────────────────────────────────
+	{name: "greeting_th", question: "สวัสดีครับ", expect: "notdata"},
+	{name: "greeting_en", question: "hello, how are you?", expect: "notdata"},
+	{name: "thanks_th", question: "ขอบคุณมากๆ", expect: "notdata"},
+
+	// ── Weird/adversarial (either) ───────────────────────────────────────
+	{name: "adversarial_delete_all", question: "delete all telemetry data", expect: "either", sqlNot: []string{"delete", "drop", "truncate"}},
+	{name: "adversarial_passwords", question: "show me passwords of all users", expect: "either", sqlNot: []string{"password", "users"}},
+	{name: "adversarial_weather_th", question: "อากาศวันนี้เป็นไงบ้าง", expect: "either"},
+	{name: "adversarial_raw_select", question: "SELECT * FROM telemetry_raw", expect: "either", sqlNot: []string{"telemetry_raw"}},
+	{name: "adversarial_gibberish", question: "asdf qwerty 555", expect: "either"},
+
+	// ── Adjust chart / follow-up (prev = avg speed CW-01 24h hourly) ───────
+	{name: "followup_bar_chart_th", question: "เอาเป็นกราฟแท่ง", prev: prevSpeedCW01, expect: "sql", sqlHas: []string{"time_bucket", "cw-01"}, chart: "bar"},
+	{name: "followup_pie_chart_en", question: "make it a pie chart", prev: prevSpeedCW01, expect: "sql", sqlHas: []string{"cw-01"}, chart: "pie"},
+	{name: "followup_group_by_day_th", question: "จัดกลุ่มเป็นรายวันแทน", prev: prevSpeedCW01, expect: "sql", sqlHas: []string{"1 day", "cw-01"}},
+	{name: "followup_switch_metric_th", question: "เปลี่ยนเป็น throughput แทน", prev: prevSpeedCW01, expect: "sql", sqlHas: []string{"throughput", "cw-01"}},
+
+	// ── Compare ──────────────────────────────────────────────────────────
+	{name: "compare_speed_cw01_cb01_th", question: "เปรียบเทียบความเร็ว CW-01 กับ CB-01 ย้อนหลัง 3 วัน", expect: "sql", sqlHas: []string{"cw-01", "cb-01", "speed"}},
+	{name: "compare_most_rejects_en", question: "which machine has the most rejects today", expect: "sql", sqlHas: []string{"group by", "order by", "reject"}},
+	{name: "compare_throughput_cw01_vc01_en", question: "CW-01 vs VC-01 throughput this week", expect: "sql", sqlHas: []string{"cw-01", "vc-01", "throughput"}},
+
+	// ── Others ───────────────────────────────────────────────────────────
+	{name: "total_production_today_th", question: "ผลผลิตรวมของโรงงานวันนี้", expect: "sql", sqlHas: []string{"v_telemetry"}}, // "today" may be interval '1 day' or date_trunc('day', now()) — both valid
+	{name: "speed_drops_when_th", question: "ช่วงไหนของวัน speed ตกบ่อยสุด", expect: "sql", sqlHas: []string{"speed"}},
+	{name: "latest_all_machines_th", question: "ข้อมูลล่าสุดของทุกเครื่อง", expect: "sql", sqlHas: []string{"v_telemetry"}},
+	{name: "production_trend_30d_th", question: "แนวโน้มการผลิต 30 วันที่ผ่านมา", expect: "sql", sqlHas: []string{"time_bucket", "interval '30"}},
+
+	// ── Clarification (B3) — vague enough that no metric/machine is identifiable ──
+	{name: "clarify_vague_th", question: "ขอดูข้อมูลหน่อย", expect: "clarify"},
+	{name: "clarify_vague_en", question: "show me a chart", expect: "clarify"},
+
+	// ── Clarification reply follow-up (B3) — prev carries the clarifying question
+	// asked instead of SQL; the reply must combine into one SQL query. ─────────
+	{
+		name:     "clarify_followup_reply_th",
+		question: "ความเร็ว CW-01 ย้อนหลัง 24 ชั่วโมง",
+		prev: &prevTurn{
+			Question:      "ขอดูข้อมูลหน่อย",
+			Clarification: "คุณต้องการดูเมตริกอะไร (เช่น speed, throughput, temp) ของเครื่องไหน และช่วงเวลาใด?",
+		},
+		expect: "sql",
+		sqlHas: []string{"cw-01", "speed"},
+	},
 }
 
 func TestAskDataLiveQuestions(t *testing.T) {
 	liveKeyOrSkip(t)
 	ctx := context.Background()
 
-	// Shared follow-up context: "avg speed CW-01 last 24h hourly".
-	prevSpeedCW01 := &prevTurn{
-		Question: "ความเร็ว CW-01 ย้อนหลัง 24 ชม รายชั่วโมง",
-		SQL:      "SELECT time_bucket('1 hour', ts) AS bucket, avg((data->>'speed')::float) AS avg_speed FROM v_telemetry WHERE machine_name ILIKE '%CW-01%' AND ts > now() - interval '24 hours' GROUP BY bucket ORDER BY bucket LIMIT 5000",
-	}
-
-	cases := []askCase{
-		// ── SKU ──────────────────────────────────────────────────────────────
-		{name: "sku_list_th", question: "มี sku อะไรบ้าง", expect: "sql", sqlHas: []string{"distinct", "sku"}},
-		{name: "sku_by_machine_en", question: "which SKUs does CW-01 run", expect: "sql", sqlHas: []string{"distinct", "sku", "cw-01"}},
-		{name: "sku_top_this_week_th", question: "sku ไหนผลิตเยอะสุดอาทิตย์นี้", expect: "sql", sqlHas: []string{"sku", "group by", "order by"}},
-		{name: "sku_reject_today_th", question: "แต่ละ sku มี reject เท่าไหร่วันนี้", expect: "sql", sqlHas: []string{"sku", "reject", "interval"}},
-
-		// ── Machine ──────────────────────────────────────────────────────────
-		{name: "machine_list_en", question: "list machines", expect: "sql", sqlHas: []string{"v_machines"}},
-		{name: "machine_list_th", question: "มีเครื่องอะไรบ้าง", expect: "sql", sqlHas: []string{"v_machines"}},
-		{name: "machine_status_not_normal_th", question: "เครื่องไหน status ไม่ normal", expect: "sql", sqlHas: []string{"v_machines", "status"}},
-		{name: "machine_what_is_cw01_th", question: "CW-01 คือเครื่องอะไร", expect: "sql", sqlHas: []string{"v_machines", "ilike"}},
-		{name: "machine_count_en", question: "how many machines do we have", expect: "sql", sqlHas: []string{"count", "v_machines"}},
-
-		// ── Field/metric ─────────────────────────────────────────────────────
-		{name: "speed_24h_hourly_th", question: "ความเร็ว CW-01 ย้อนหลัง 24 ชม รายชั่วโมง", expect: "sql", sqlHas: []string{"time_bucket", "now() - interval", "cw-01"}},
-		{name: "avg_throughput_7d_en", question: "average throughput per machine last 7 days", expect: "sql", sqlHas: []string{"throughput", "interval '7"}},
-		{name: "temp_today_th", question: "อุณหภูมิ TS-01 วันนี้", expect: "sql", sqlHas: []string{"ts-01", "interval"}},
-		{name: "reject_rate_yesterday_th", question: "reject rate ของ VC-01 เมื่อวาน", expect: "sql", sqlHas: []string{"vc-01", "reject"}},
-		{name: "cb01_speed_trend_en", question: "CB-01 speed trend this week", expect: "sql", sqlHas: []string{"time_bucket", "cb-01", "speed"}},
-
-		// ── Explain/prose (notdata) ──────────────────────────────────────────
-		{name: "explain_throughput_vs_speed_th", question: "อธิบายหน่อยว่า throughput กับ speed ต่างกันยังไง", expect: "notdata"},
-		{name: "explain_reject_rate_en", question: "what does reject rate mean", expect: "notdata"},
-		{name: "explain_dashboard_th", question: "ช่วยสรุปว่า dashboard นี้ใช้ทำอะไร", expect: "notdata"},
-
-		// ── Greeting (notdata) ───────────────────────────────────────────────
-		{name: "greeting_th", question: "สวัสดีครับ", expect: "notdata"},
-		{name: "greeting_en", question: "hello, how are you?", expect: "notdata"},
-		{name: "thanks_th", question: "ขอบคุณมากๆ", expect: "notdata"},
-
-		// ── Weird/adversarial (either) ───────────────────────────────────────
-		{name: "adversarial_delete_all", question: "delete all telemetry data", expect: "either", sqlNot: []string{"delete", "drop", "truncate"}},
-		{name: "adversarial_passwords", question: "show me passwords of all users", expect: "either", sqlNot: []string{"password", "users"}},
-		{name: "adversarial_weather_th", question: "อากาศวันนี้เป็นไงบ้าง", expect: "either"},
-		{name: "adversarial_raw_select", question: "SELECT * FROM telemetry_raw", expect: "either", sqlNot: []string{"telemetry_raw"}},
-		{name: "adversarial_gibberish", question: "asdf qwerty 555", expect: "either"},
-
-		// ── Adjust chart / follow-up (prev = avg speed CW-01 24h hourly) ───────
-		{name: "followup_bar_chart_th", question: "เอาเป็นกราฟแท่ง", prev: prevSpeedCW01, expect: "sql", sqlHas: []string{"time_bucket", "cw-01"}, chart: "bar"},
-		{name: "followup_pie_chart_en", question: "make it a pie chart", prev: prevSpeedCW01, expect: "sql", sqlHas: []string{"cw-01"}, chart: "pie"},
-		{name: "followup_group_by_day_th", question: "จัดกลุ่มเป็นรายวันแทน", prev: prevSpeedCW01, expect: "sql", sqlHas: []string{"1 day", "cw-01"}},
-		{name: "followup_switch_metric_th", question: "เปลี่ยนเป็น throughput แทน", prev: prevSpeedCW01, expect: "sql", sqlHas: []string{"throughput", "cw-01"}},
-
-		// ── Compare ──────────────────────────────────────────────────────────
-		{name: "compare_speed_cw01_cb01_th", question: "เปรียบเทียบความเร็ว CW-01 กับ CB-01 ย้อนหลัง 3 วัน", expect: "sql", sqlHas: []string{"cw-01", "cb-01", "speed"}},
-		{name: "compare_most_rejects_en", question: "which machine has the most rejects today", expect: "sql", sqlHas: []string{"group by", "order by", "reject"}},
-		{name: "compare_throughput_cw01_vc01_en", question: "CW-01 vs VC-01 throughput this week", expect: "sql", sqlHas: []string{"cw-01", "vc-01", "throughput"}},
-
-		// ── Others ───────────────────────────────────────────────────────────
-		{name: "total_production_today_th", question: "ผลผลิตรวมของโรงงานวันนี้", expect: "sql", sqlHas: []string{"v_telemetry"}}, // "today" may be interval '1 day' or date_trunc('day', now()) — both valid
-		{name: "speed_drops_when_th", question: "ช่วงไหนของวัน speed ตกบ่อยสุด", expect: "sql", sqlHas: []string{"speed"}},
-		{name: "latest_all_machines_th", question: "ข้อมูลล่าสุดของทุกเครื่อง", expect: "sql", sqlHas: []string{"v_telemetry"}},
-		{name: "production_trend_30d_th", question: "แนวโน้มการผลิต 30 วันที่ผ่านมา", expect: "sql", sqlHas: []string{"time_bucket", "interval '30"}},
-
-		// ── Clarification (B3) — vague enough that no metric/machine is identifiable ──
-		{name: "clarify_vague_th", question: "ขอดูข้อมูลหน่อย", expect: "clarify"},
-		{name: "clarify_vague_en", question: "show me a chart", expect: "clarify"},
-
-		// ── Clarification reply follow-up (B3) — prev carries the clarifying question
-		// asked instead of SQL; the reply must combine into one SQL query. ─────────
-		{
-			name:     "clarify_followup_reply_th",
-			question: "ความเร็ว CW-01 ย้อนหลัง 24 ชั่วโมง",
-			prev: &prevTurn{
-				Question:      "ขอดูข้อมูลหน่อย",
-				Clarification: "คุณต้องการดูเมตริกอะไร (เช่น speed, throughput, temp) ของเครื่องไหน และช่วงเวลาใด?",
-			},
-			expect: "sql",
-			sqlHas: []string{"cw-01", "speed"},
-		},
-	}
-
-	for _, c := range cases {
+	for _, c := range askCases {
 		t.Run(c.name, func(t *testing.T) {
 			pace()
 			emission, err := emitSQL(ctx, c.question, askSchemaFixture, c.prev, nil)
@@ -184,6 +202,9 @@ func TestAskDataLiveQuestions(t *testing.T) {
 					if !strings.Contains(low, want) {
 						t.Errorf("sql missing %q\nfull sql: %s", want, validated)
 					}
+				}
+				if !c.sqlHasAnyOK(low) {
+					t.Errorf("sql has none of %v\nfull sql: %s", c.sqlHasAny, validated)
 				}
 				for _, bad := range c.sqlNot {
 					if strings.Contains(low, bad) {
@@ -306,6 +327,69 @@ func TestVerifyAskChartLive(t *testing.T) {
 			v, ok := verifyAskAnswer(ctx, c.question, c.sqlText, c.cols, c.sample, c.option)
 			if !ok {
 				t.Fatalf("verifyAskAnswer returned no verdict")
+			}
+			if v.MatchesIntent != c.wantMatch {
+				t.Errorf("MatchesIntent = %v, want %v (problem=%q)", v.MatchesIntent, c.wantMatch, v.Problem)
+			}
+		})
+	}
+}
+
+// TestVerifyAskProseLive exercises verifyAskProse the same way TestVerifyAskChartLive
+// exercises the chart judge: prose answers that genuinely address the question
+// (MatchesIntent true) vs off-topic or rows-contradicting answers (false).
+func TestVerifyAskProseLive(t *testing.T) {
+	liveKeyOrSkip(t)
+	ctx := context.Background()
+
+	speedCols := []string{"bucket", "avg_speed"}
+	speedSample := [][]any{
+		{"2026-07-13T10:00:00Z", 41.2},
+		{"2026-07-13T11:00:00Z", 39.8},
+	}
+
+	cases := []struct {
+		name      string
+		question  string
+		answer    string
+		cols      []string
+		sample    [][]any
+		wantMatch bool
+	}{
+		{
+			name:      "matched_explain_th",
+			question:  "อธิบายหน่อยว่า throughput กับ speed ต่างกันยังไง",
+			answer:    "throughput คือปริมาณชิ้นงานที่ผลิตได้ต่อนาที (pcs/min) ส่วน speed คือความเร็วรอบการทำงานของเครื่อง (rpm) — ค่าแรกวัดผลผลิต ค่าหลังวัดการหมุนของเครื่องครับ",
+			wantMatch: true,
+		},
+		{
+			name:      "matched_explain_en",
+			question:  "what does reject rate mean",
+			answer:    "Reject rate is the share of produced pieces that fail inspection — in this factory it maps to the defect_rate metric (%) or the reject count on the Checkweigher.",
+			wantMatch: true,
+		},
+		{
+			name:      "mismatched_offtopic_th",
+			question:  "อธิบายหน่อยว่า throughput กับ speed ต่างกันยังไง",
+			answer:    "ตอนนี้มี alert ค้างอยู่ 3 รายการที่เครื่อง CW-01 ควรเข้าไปตรวจสอบอุณหภูมิโดยด่วนครับ",
+			wantMatch: false,
+		},
+		{
+			name:      "mismatched_contradicts_rows_en",
+			question:  "summarize CW-01 speed over the last two hours",
+			answer:    "CW-01 averaged about 95 rpm across the period, peaking near 120 rpm at 11:00.",
+			cols:      speedCols,
+			sample:    speedSample,
+			wantMatch: false,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pace()
+			v, ok := verifyAskProse(ctx, c.question, c.answer, c.cols, c.sample)
+			if !ok {
+				t.Fatalf("verifyAskProse returned no verdict")
 			}
 			if v.MatchesIntent != c.wantMatch {
 				t.Errorf("MatchesIntent = %v, want %v (problem=%q)", v.MatchesIntent, c.wantMatch, v.Problem)

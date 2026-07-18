@@ -12,25 +12,20 @@ package ai
 import (
 	"context"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"testing"
 	"time"
-
-	"iot-dashboard/internal/config"
-
-	"github.com/joho/godotenv"
 )
 
-// routerBakeModels: openai/gpt-oss-20b is ClassifyIntent's shipped default (routerModel,
-// per the 2026-07-10 run below); llama-3.1-8b-instant stays in the comparison for the
-// record — Groq's function-call validator rejected its forced tool_choice output for this
-// schema on every case in that run (0/32), a real finding worth re-checking if Groq ships
-// a fix, not a fluke of this harness (gpt-oss-20b passed on the identical code path).
+// routerBakeModels: KKU-era candidates (2026-07-17) — claude-haiku-4.5 is the current
+// AI_ROUTER_MODEL; gpt-5.4-mini is the candidate to isolate router/judge quota from the
+// shared Claude pool. Groq-era history (2026-07-10 run): openai/gpt-oss-20b was the
+// shipped default; llama-3.1-8b-instant scored 0/32 — Groq's function-call validator
+// rejected its forced tool_choice output on every case (a real finding, not harness flake).
 var routerBakeModels = []string{
-	"llama-3.1-8b-instant",
-	"openai/gpt-oss-20b",
+	"claude-haiku-4.5",
+	"gpt-5.4-mini",
 }
 
 type routerCase struct {
@@ -189,12 +184,7 @@ var newRouterCases = []routerCase{
 }
 
 func TestRouterBakeOff(t *testing.T) {
-	_ = godotenv.Load("../../../../.env", "../../../.env")
-	key := os.Getenv("GROQ_API_KEY")
-	if key == "" {
-		t.Skip("GROQ_API_KEY not set — skipping live router bake-off")
-	}
-	config.Env = &config.Config{AIApiKey: key}
+	liveKeyOrSkip(t)
 
 	cases := make([]routerCase, 0, len(legacyIntentCases)+len(newRouterCases))
 	cases = append(cases, legacyIntentCases...)
@@ -207,8 +197,8 @@ func TestRouterBakeOff(t *testing.T) {
 	scores := map[string]tally{}
 
 	for mi, model := range routerBakeModels {
-		if mi > 0 {
-			time.Sleep(60 * time.Second) // let the shared per-model TPM budget recover
+		if mi > 0 && strings.Contains(aiBaseURL(), "groq") {
+			time.Sleep(60 * time.Second) // let Groq's shared per-model TPM budget recover
 		}
 		fmt.Printf("\n========== ROUTER MODEL: %s ==========\n", model)
 		for _, tc := range cases {
@@ -217,7 +207,7 @@ func TestRouterBakeOff(t *testing.T) {
 				wantLabel = "not-ok (ambiguous, declining is correct)"
 			}
 			fmt.Printf("\n[%s] %q (want %s)\n", tc.label, tc.message, wantLabel)
-			time.Sleep(5 * time.Second) // dodge free-tier rate limits
+			pace()
 
 			result, ok, lat := classifyIntentWithModel(context.Background(), model, tc.message, tc.contextLine)
 
