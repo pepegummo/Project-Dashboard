@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted, type Ref } from 'vue';
+import { ref, computed, watch, watchEffect, onMounted, onUnmounted, type Ref } from 'vue';
 import VChart from 'vue-echarts';
 import type { EChartsOption } from 'echarts';
 import type { DashboardWidget } from '@/types';
@@ -12,6 +12,7 @@ const props = defineProps<{ widget: DashboardWidget }>();
 const machineId = computed(() => props.widget.machineId ?? '');
 const field     = computed(() => (props.widget.config?.field as string) ?? '');
 const color     = computed(() => (props.widget.config?.color as string) ?? '#3b82f6');
+const unit      = computed(() => (props.widget.config?.unit as string) ?? '');
 
 const widgetViewStateStore = useWidgetViewStateStore();
 
@@ -216,6 +217,57 @@ function onDataZoom(e: any) {
   zoomTimer = window.setTimeout(() => handleZoom(e), 100);
 }
 
+// Click anywhere in the grid → snap to the nearest data point and mention it on the AI
+// page (chip + one-line context, no auto-ask). avgSeries uses symbol: 'none', so the
+// ECharts series-level click event almost never lands on a point — we use the zrender
+// canvas click instead and resolve the nearest category index ourselves. Always snap to
+// avgSeries (seriesIndex 0) — refSeries (seriesIndex 1) is the markLine/markArea carrier
+// and has no real data. The y-axis/x-axis strips are now separate HTML overlay divs
+// (data-ai-el), handled by WidgetWrapper's delegation — this only needs the in-grid gate
+// so a click on the corner (outside both the grid and the overlays) doesn't snap wrongly.
+function onZrClick(e: any) {
+  // Off (every page but /ai): bail immediately so the click bubbles to WidgetWrapper's
+  // outer @click untouched — pristine, pre-element-pick behavior.
+  if (!widgetViewStateStore.elementPickMode) return;
+
+  const chart = chartRef.value?.chart;
+  if (!chart) return;
+  if (chartData.value.length === 0) return;
+
+  // Geometry against the static grid config — chart.containPixel proved unreliable.
+  const W = chart.getWidth();
+  const H = chart.getHeight();
+  const grid = { left: 42, right: 60, top: 16, bottom: shouldRotate.value ? 52 : 30 };
+  const inGrid = e.offsetX >= grid.left && e.offsetX <= W - grid.right && e.offsetY >= grid.top && e.offsetY <= H - grid.bottom;
+  if (!inGrid) return;
+
+  const [fi] = chart.convertFromPixel({ seriesIndex: 0 }, [e.offsetX, e.offsetY]);
+  if (fi == null || isNaN(fi)) return;
+  const idx = Math.min(Math.max(Math.round(fi), 0), chartData.value.length - 1);
+
+  const pt = chartData.value[idx];
+  if (pt == null) return;
+
+  widgetViewStateStore.setElementClick({
+    widgetId: props.widget.id,
+    title: props.widget.title ?? '',
+    element: 'point',
+    seriesName: field.value,
+    x: pt.ts,
+    xLabel: formatLabel(pt.ts),
+    value: pt.value,
+  });
+  // Stop the click from bubbling to WidgetWrapper's outer @click (widget-select toggle).
+  e.event?.stopPropagation?.();
+}
+
+// Bind directly on the zrender instance — the template `@zr:click` binding and
+// chart.containPixel proved unreliable; geometry against the static grid config is deterministic.
+watchEffect(() => {
+  const zr = chartRef.value?.chart?.getZr?.();
+  if (zr && !(zr as any).__aiClickBound) { (zr as any).__aiClickBound = true; zr.on('click', onZrClick); }
+});
+
 function resetZoom() {
   zoomStart.value   = 0;
   zoomEnd.value     = 100;
@@ -253,6 +305,16 @@ function formatLabel(ts: string): string {
 }
 
 const shouldRotate = computed(() => !liveMode.value && rangeDurationMs.value >= 7 * 24 * 60 * 60 * 1000);
+
+// x-axis overlay detail (element-pick mode): the datetime picker's own range when set,
+// else the visible chart data's first–last label. Was inline in the zr classifier; moved
+// out so the x-axis overlay div can read it directly.
+const xAxisDetail = computed(() => {
+  const dt = widgetViewStateStore.datetimeStates[props.widget.id];
+  if (dt?.startDateTime && dt?.endDateTime) return `${dt.startDateTime} – ${dt.endDateTime}`;
+  if (!chartData.value.length) return '';
+  return `${formatLabel(chartData.value[0].ts)} – ${formatLabel(chartData.value[chartData.value.length - 1].ts)}`;
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ECharts option
@@ -527,6 +589,24 @@ const option = computed<EChartsOption>(() => {
           class="w-full h-full"
           @datazoom="onDataZoom"
         />
+
+        <!-- Element-pick mode (/ai): transparent overlays over the axis strips so they get
+             the same hover outline + click delegation as HTML elements (see WidgetWrapper).
+             Geometry mirrors the static `grid` config above. -->
+        <template v-if="widgetViewStateStore.elementPickMode">
+          <div
+            class="absolute left-0 w-[42px]"
+            :style="{ top: '16px', bottom: (shouldRotate ? 52 : 30) + 'px' }"
+            data-ai-el="y-axis"
+            :data-ai-detail="unit"
+          />
+          <div
+            class="absolute left-[42px] right-[60px] bottom-0"
+            :style="{ height: (shouldRotate ? 52 : 30) + 'px' }"
+            data-ai-el="x-axis"
+            :data-ai-detail="xAxisDetail"
+          />
+        </template>
 
         <!-- Threshold legend -->
         <div

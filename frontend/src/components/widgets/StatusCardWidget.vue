@@ -46,6 +46,8 @@ const keyFields = computed(() => machine.value?.fields?.filter(f => f.isKey) ?? 
         </div>
         <div
           class="flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium"
+          data-ai-el="value"
+          data-ai-detail="status"
           :class="statusColors[machine.status as MachineStatus]"
         >
           <span :class="dotClass[machine.status as MachineStatus]" />
@@ -61,9 +63,9 @@ const keyFields = computed(() => machine.value?.fields?.filter(f => f.isKey) ?? 
           class="bg-surface-200 rounded-lg p-2 flex flex-col"
         >
           <p class="text-[10px] text-gray-500 uppercase tracking-wide">{{ kf.label }}</p>
-          <p class="text-lg font-bold text-white font-mono tabular-nums mt-auto">
+          <p class="text-lg font-bold text-white font-mono tabular-nums mt-auto" data-ai-el="value" :data-ai-detail="kf.label">
             {{ telemetryStore.getFieldValue(machineId, kf.key)?.toFixed(kf.precision ?? 1) ?? '—' }}
-            <span class="text-xs text-gray-500 font-normal">{{ kf.unit }}</span>
+            <span class="text-xs text-gray-500 font-normal" data-ai-el="unit">{{ kf.unit }}</span>
           </p>
         </div>
       </div>

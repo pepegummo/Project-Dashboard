@@ -73,9 +73,9 @@ const rows = computed(() => {
             <span class="text-gray-300" :class="row.isKey ? 'font-semibold text-white' : ''">{{ row.label }}</span>
             <span class="ml-1.5 text-gray-600 font-mono text-[10px]">{{ row.key }}</span>
           </td>
-          <td class="px-3 py-2 text-right font-mono tabular-nums text-white">
+          <td class="px-3 py-2 text-right font-mono tabular-nums text-white" data-ai-el="value" :data-ai-detail="row.label">
             {{ row.value }}
-            <span class="text-gray-500 ml-0.5">{{ row.unit }}</span>
+            <span class="text-gray-500 ml-0.5" data-ai-el="unit">{{ row.unit }}</span>
           </td>
         </tr>
         <tr v-if="!rows.length">

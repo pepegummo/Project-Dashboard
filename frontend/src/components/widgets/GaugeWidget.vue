@@ -7,11 +7,13 @@ import { useTelemetryStore } from '@/stores/telemetry.store';
 import { useAggregatedValue } from '@/composables/useTelemetry';
 import { wsService } from '@/services/ws.service';
 import { api } from '@/services/api.service';
+import { useWidgetViewStateStore } from '@/stores/widget-view-state.store';
 
 const props = defineProps<{ widget: DashboardWidget }>();
 
 const chartRef  = ref<InstanceType<typeof VChart>>();
 const store     = useTelemetryStore();
+const widgetViewStateStore = useWidgetViewStateStore();
 const machineId = computed(() => props.widget.machineId ?? '');
 const field     = computed(() => (props.widget.config?.field as string) ?? '');
 const minVal    = computed(() => (props.widget.config?.min as number) ?? 0);
@@ -69,6 +71,11 @@ const needleColor = computed(() => {
   return inRange.value ? '#10b981' : '#ef4444';
 });
 
+// The unit and threshold labels are separate HTML overlays (tagged data-ai-el) — the value
+// overlay below covers the rest of the canvas (dial + number) as "value", detail computed
+// here so the template overlay div can read it directly.
+const valueDetail = computed(() => `${currentValue.value}${unit.value ? ' ' + unit.value : ''}`);
+
 const option = computed<EChartsOption>(() => {
   const isLoading = aggLoading.value && !isLive;
   return {
@@ -104,7 +111,7 @@ const option = computed<EChartsOption>(() => {
         valueAnimation: true,
         fontSize: 18, fontWeight: 'bold',
         color: isLoading ? '#4b5563' : '#f3f4f6',
-        formatter: isLoading ? 'loading…' : `{value} ${unit.value}`,
+        formatter: isLoading ? 'loading…' : '{value}',
         offsetCenter: [0, '28%'],
       },
       data: [{ value: isLoading ? 0 : currentValue.value }],
@@ -121,11 +128,26 @@ const option = computed<EChartsOption>(() => {
     <template v-else>
       <VChart ref="chartRef" :option="option" :update-options="{ notMerge: true }" autoresize />
 
+      <!-- Element-pick mode (/ai): whole-canvas overlay for "value" — placed BEFORE the
+           unit/threshold overlays below so those stack on top and stay individually
+           clickable, while the rest of the dial/number falls through to this one. -->
+      <div
+        v-if="widgetViewStateStore.elementPickMode"
+        class="absolute inset-0"
+        data-ai-el="value"
+        :data-ai-detail="valueDetail"
+      />
+
+      <!-- Unit as HTML (not canvas) so it's individually clickable in AI element-pick mode -->
+      <div v-if="unit" class="absolute left-0 right-0 flex justify-center pointer-events-none" style="top: calc(60% + 28% * 0.5 + 14px)">
+        <span data-ai-el="unit" class="pointer-events-auto text-[11px] text-gray-400">{{ unit }}</span>
+      </div>
+
       <!-- Threshold / limit labels -->
       <div v-if="threshold !== null || upperLimit !== null" class="absolute bottom-8 left-0 right-0 flex justify-center gap-3 text-[9px]">
-        <span v-if="lowerLimit !== null" class="text-amber-400">↓ {{ lowerLimit }}</span>
-        <span v-if="threshold !== null" class="text-indigo-400">◎ {{ threshold }}</span>
-        <span v-if="upperLimit !== null" class="text-amber-400">↑ {{ upperLimit }}</span>
+        <span v-if="lowerLimit !== null" data-ai-el="threshold" :data-ai-detail="`lower ${lowerLimit}`" class="text-amber-400">↓ {{ lowerLimit }}</span>
+        <span v-if="threshold !== null" data-ai-el="threshold" :data-ai-detail="`target ${threshold}`" class="text-indigo-400">◎ {{ threshold }}</span>
+        <span v-if="upperLimit !== null" data-ai-el="threshold" :data-ai-detail="`upper ${upperLimit}`" class="text-amber-400">↑ {{ upperLimit }}</span>
       </div>
 
       <!-- Period badge -->

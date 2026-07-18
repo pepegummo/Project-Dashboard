@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, watch } from 'vue';
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { Sparkles, Send, Loader2, Bot, Save, Plus, Trash2, LayoutGrid, Undo2, Redo2 } from 'lucide-vue-next';
 import { useUndoHistory } from '@/composables/useUndoHistory';
@@ -30,6 +30,17 @@ const canvasCards = ref<CanvasCard[]>([]);
 const previewHighlightId = ref<string | undefined>(undefined);
 const selectionResetToken = ref(0);
 const mentionedWidgets = ref<Array<{ id: string; title: string }>>([]);
+// Widget element the user clicked per widget (chip suffix + one context line) — one per
+// widget, a new click on the same widget overwrites its entry (any element, including a
+// different one, replaces the last). No auto-ask.
+const mentionedElements = ref<Record<string, {
+  element: 'point' | 'title' | 'x-axis' | 'y-axis' | 'unit' | 'value' | 'legend' | 'threshold';
+  seriesName?: string;
+  x?: string | number;
+  xLabel?: string;
+  value?: string | number;
+  detail?: string;
+}>>({});
 const previewCardRef = ref<InstanceType<typeof PreviewCanvasCard> | null>(null);
 const aiSelectedIds = ref<string[]>([]);
 const aiSelectedPreviewIds = ref<string[]>([]);
@@ -44,6 +55,7 @@ function onMentionWidget({ widget, selected }: { widget: { id: string; title: st
     ? [...mentionedWidgets.value.filter(w => w.id !== widget.id), widget]
     : mentionedWidgets.value.filter(w => w.id !== widget.id);
   aiSelectedPreviewIds.value = aiSelectedPreviewIds.value.filter(x => x !== widget.id);
+  if (!selected) delete mentionedElements.value[widget.id];
 }
 
 function onSelectLiveWidget(widget: DashboardWidget) {
@@ -52,6 +64,7 @@ function onSelectLiveWidget(widget: DashboardWidget) {
   if (inMentioned || inAi) {
     mentionedWidgets.value = mentionedWidgets.value.filter(w => w.id !== widget.id);
     aiSelectedIds.value = aiSelectedIds.value.filter(x => x !== widget.id);
+    delete mentionedElements.value[widget.id];
   } else {
     mentionedWidgets.value = [...mentionedWidgets.value, { id: widget.id, title: widget.title ?? widget.widgetType }];
   }
@@ -84,6 +97,7 @@ function setAiHighlight(id: string, title: string, isPreview: boolean) {
 function removeMention(id: string) {
   mentionedWidgets.value = mentionedWidgets.value.filter(w => w.id !== id);
   aiSelectedIds.value = aiSelectedIds.value.filter(x => x !== id);
+  delete mentionedElements.value[id];
   if (id.startsWith('preview-')) {
     aiSelectedPreviewIds.value = aiSelectedPreviewIds.value.filter(x => x !== id);
     // ref inside v-for is an array in Vue 3
@@ -91,6 +105,17 @@ function removeMention(id: string) {
     card?.clearSelection(id);
   }
 }
+
+// Widget-element click (from widget-view-state, set by WidgetWrapper's delegated HTML
+// click and the chart widgets' zr:click region classifier) → add-mention (no toggle) +
+// remember the element so the chip and buildDashboardContext can show/send it. No auto-ask.
+watch(() => widgetViewStateStore.lastElementClick, (c) => {
+  if (!c) return;
+  setAiHighlight(c.widgetId, c.title || c.widgetId, c.widgetId.startsWith('preview-'));
+  mentionedElements.value[c.widgetId] = {
+    element: c.element, seriesName: c.seriesName, x: c.x, xLabel: c.xLabel, value: c.value, detail: c.detail,
+  };
+});
 
 const conversationId = ref<string | null>(null);
 
@@ -245,6 +270,9 @@ async function saveDashboardCard(card: any, layouts: Record<string, WidgetLayout
 }
 
 onMounted(async () => {
+  // Only the AI page enables element-click tracking (canvas region classification + HTML
+  // delegation) — every other page keeps pristine click behavior.
+  widgetViewStateStore.setElementPickMode(true);
   machineStore.fetchMachines();
   try {
     const draft = await api.getPreviewDraft();
@@ -267,6 +295,10 @@ onMounted(async () => {
       dashboardStore.currentDashboard = null; // clear navigation leftovers so context is empty on first message
     }
   } catch { dashboardStore.currentDashboard = null; /* no draft / offline — start empty */ }
+});
+
+onUnmounted(() => {
+  widgetViewStateStore.setElementPickMode(false);
 });
 
 // Persist the in-progress preview per user so it survives a refresh. Preview mutations
@@ -461,7 +493,17 @@ function removeFocusCard(id: string) {
 // widget, also inject the exact series it's rendering — the backend router decides
 // what to do with it (tool_choice "none" only for read intents; edits force
 // preview_update_widget regardless), so no question-text gate is needed here.
-function buildDashboardContext(focusedIds: string[] = []): string {
+function buildDashboardContext(
+  focusedIds: string[] = [],
+  elements: Record<string, {
+    element: 'point' | 'title' | 'x-axis' | 'y-axis' | 'unit' | 'value' | 'legend' | 'threshold';
+    seriesName?: string;
+    x?: string | number;
+    xLabel?: string;
+    value?: string | number;
+    detail?: string;
+  }> = {},
+): string {
   // When the user has clicked/mentioned specific widgets, scope the context to just
   // those. Otherwise a salient sibling (e.g. a "Trend" line-chart's current value)
   // pulls the model off the widget the user actually focused. No focus → send all.
@@ -489,6 +531,35 @@ function buildDashboardContext(focusedIds: string[] = []): string {
     if (!d?.startDateTime || !d?.endDateTime) return '';
     return `, window ${d.startDateTime} → ${d.endDateTime}`;
   };
+  // The widget element the user clicked (if any), for a focused widget — one extra line
+  // so the AI can answer "why is this point high" / "what's this axis" without guessing.
+  const elementLine = (id: string): string => {
+    if (!focusedIds.includes(id)) return '';
+    const el = elements[id];
+    if (!el) return '';
+    switch (el.element) {
+      case 'point': {
+        const series = el.seriesName ? ` (series ${el.seriesName})` : '';
+        return `\n  user clicked point: x=${el.x}, value=${el.value}${series}`;
+      }
+      case 'title':
+        return `\n  user clicked the widget title`;
+      case 'x-axis':
+        return `\n  user clicked the x-axis (${el.detail ?? ''})`;
+      case 'y-axis':
+        return `\n  user clicked the y-axis (${el.detail ?? ''})`;
+      case 'unit':
+        return `\n  user clicked the unit "${el.detail ?? ''}"`;
+      case 'value':
+        return `\n  user clicked the displayed value ${el.detail ?? ''}`;
+      case 'legend':
+        return `\n  user clicked the legend (series: ${el.detail ?? ''})`;
+      case 'threshold':
+        return `\n  user clicked the threshold label (${el.detail ?? ''})`;
+      default:
+        return '';
+    }
+  };
 
   const card = canvasCards.value.find(c => c.kind === 'preview' || c.kind === 'dashboard') as any;
   const widgets = card?.result?.widgets ?? [];
@@ -515,7 +586,7 @@ function buildDashboardContext(focusedIds: string[] = []): string {
       if (bucket) parts.push(`bucket ${bucket}`);
       if (w.sku) parts.push(`sku ${w.sku}`);
       if (w.status) parts.push(`status ${w.status}`);
-      return parts.join(', ') + windowLine(`preview-${i}`) + seriesLine(`preview-${i}`, w.type);
+      return parts.join(', ') + windowLine(`preview-${i}`) + seriesLine(`preview-${i}`, w.type) + elementLine(`preview-${i}`);
     }).filter(Boolean);
     const label = card.kind === 'dashboard' ? 'Active dashboard' : 'Current dashboard preview';
     return `${label} "${card.result.dashboardName}" on screen:\n${lines.join('\n')}`;
@@ -542,7 +613,7 @@ function buildDashboardContext(focusedIds: string[] = []): string {
       if (bucket) parts.push(`bucket ${bucket}`);
       if (w.sku) parts.push(`sku ${w.sku}`);
       if (w.status) parts.push(`status ${w.status}`);
-      return parts.join(', ') + windowLine(`preview-${i}`) + seriesLine(`preview-${i}`, w.type);
+      return parts.join(', ') + windowLine(`preview-${i}`) + seriesLine(`preview-${i}`, w.type) + elementLine(`preview-${i}`);
     }).filter(Boolean);
     return `Metric focus card on screen (call show_metric to highlight/refresh):\n${lines.join('\n')}`;
   }
@@ -574,7 +645,7 @@ function buildDashboardContext(focusedIds: string[] = []): string {
       if (bucket) parts.push(`bucket ${bucket}`);
       if (w.config?.sku) parts.push(`sku ${w.config.sku}`);
       if (w.config?.status) parts.push(`status ${w.config.status}`);
-      return parts.join(', ') + windowLine(w.id) + seriesLine(w.id, w.widgetType);
+      return parts.join(', ') + windowLine(w.id) + seriesLine(w.id, w.widgetType) + elementLine(w.id);
     }).filter(Boolean);
     return `Dashboard "${dashboardStore.currentDashboard?.name ?? ''}" is active on screen with widgets:\n${lines.join('\n')}`;
   }
@@ -588,11 +659,13 @@ async function sendMessage() {
   const rawText = input.value.trim();
   if ((!rawText && !mentionedWidgets.value.length) || processing.value) return;
   const mentionSnapshot = [...mentionedWidgets.value];
+  const elementsSnapshot = { ...mentionedElements.value };
   const mentionSuffix = mentionSnapshot.map(w => `@${w.title}`).join(' ');
   const text = mentionSuffix ? `${rawText} ${mentionSuffix}`.trim() : rawText;
   if (!text) return;
   input.value = '';
   mentionedWidgets.value = [];
+  mentionedElements.value = {};
   aiSelectedIds.value = [];
   aiSelectedPreviewIds.value = [];
   selectionResetToken.value++;   // clear the widget mention rings once the message is sent
@@ -604,7 +677,7 @@ async function sendMessage() {
       conversationId.value = conv.id;
     }
 
-    const { messages, intent } = await api.chat(conversationId.value!, text, buildDashboardContext(mentionSnapshot.map(w => w.id)));
+    const { messages, intent } = await api.chat(conversationId.value!, text, buildDashboardContext(mentionSnapshot.map(w => w.id), elementsSnapshot));
 
     for (const msg of messages) {
       if (msg.role === 'assistant' && msg.content?.trim()) {
@@ -928,6 +1001,7 @@ function clearChat() {
   input.value = '';
   toastVisible.value = false;
   mentionedWidgets.value = [];
+  mentionedElements.value = {};
   aiSelectedIds.value = [];
   aiSelectedPreviewIds.value = [];
   api.deletePreviewDraft().catch(() => {});
@@ -1066,7 +1140,7 @@ function handleKeydown(e: KeyboardEvent) {
       <div v-if="dashboardStore.widgets.length && !hasPreview" class="mt-2">
         <!-- Mini toolbar -->
         <div class="flex items-center justify-between mb-2">
-          <p class="text-xs text-gray-500">{{ dashboardStore.widgets.length }} widgets · drag to move, gear to configure</p>
+          <p class="text-xs text-gray-500">{{ dashboardStore.widgets.length }} widgets · drag to move, gear to configure · click any part of a widget (title, axis, point, value) to ask about it</p>
           <div class="flex items-center gap-2">
             <button class="btn-secondary text-xs py-1 px-2.5" @click="showToolbox = !showToolbox">
               <Plus class="w-3.5 h-3.5" />
@@ -1133,7 +1207,11 @@ function handleKeydown(e: KeyboardEvent) {
           @click="highlightWidgetById(w.id)"
         >
           <LayoutGrid class="w-3 h-3 shrink-0" />
-          <span class="max-w-[120px] truncate">{{ w.title }}</span>
+          <span class="max-w-[120px] truncate">
+            <template v-if="mentionedElements[w.id]?.element === 'point'">{{ w.title }} · {{ mentionedElements[w.id].xLabel ?? mentionedElements[w.id].x }} · {{ mentionedElements[w.id].value }}</template>
+            <template v-else-if="mentionedElements[w.id]">{{ w.title }} · {{ mentionedElements[w.id].element }}</template>
+            <template v-else>{{ w.title }}</template>
+          </span>
           <button class="opacity-60 hover:opacity-100 ml-0.5 leading-none" @click.stop="removeMention(w.id)">✕</button>
         </span>
       </div>

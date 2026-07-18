@@ -193,6 +193,33 @@ function fmtBucketLabel(iso: string) {
   return d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
+// Click a chart point → mention it on the AI page (chip + one-line context, no auto-ask).
+// The bar series' data is a plain number array on a category xAxis, so params.name is the
+// x-axis (bucket) label and params.value is the count directly (no [x,y] pair to unpack here).
+function onChartClick(params: any) {
+  if (!widgetViewStateStore.elementPickMode) return;
+  widgetViewStateStore.setElementClick({
+    widgetId: props.widget.id,
+    title: props.widget.title ?? "",
+    element: 'point',
+    seriesName: params.seriesName,
+    x: params.name,
+    value: params.value,
+  });
+  // Stop the click from bubbling to WidgetWrapper's outer @click (widget-select toggle).
+  params.event?.event?.stopPropagation?.();
+}
+
+// Element-pick mode (/ai): axis overlay details — the y-axis label ("Units per {bucket}")
+// and x-axis bucket range, moved out of the old zr classifier so the overlay divs in the
+// template can read them directly. The bars themselves keep their series `@click` above.
+const yAxisDetail = computed(() => `Units per ${selectedBucket.value}`);
+const xAxisDetail = computed(() =>
+  rows.value.length
+    ? `${fmtBucketLabel(rows.value[0].bucket)} – ${fmtBucketLabel(rows.value[rows.value.length - 1].bucket)}`
+    : "",
+);
+
 function fmtCount(n: number) {
   return n >= 1_000_000
     ? `${(n / 1_000_000).toFixed(1)}M`
@@ -548,7 +575,29 @@ const option = computed<EChartsOption>(() => {
           ref="vchart"
           :option="option"
           class="w-full h-full"
+          @click="onChartClick"
         />
+
+        <!-- Element-pick mode (/ai): transparent overlays over the axis strips so they get
+             the same hover outline + click delegation as HTML elements (see WidgetWrapper).
+             Geometry mirrors the static `grid` config above. Bars keep their series @click. -->
+        <template v-if="widgetViewStateStore.elementPickMode">
+          <div
+            class="absolute left-0 top-0 w-[50px] bottom-[28px]"
+            data-ai-el="y-axis"
+            :data-ai-detail="yAxisDetail"
+          />
+          <div
+            class="absolute left-0 right-0 top-0 h-[22px]"
+            data-ai-el="y-axis"
+            :data-ai-detail="yAxisDetail"
+          />
+          <div
+            class="absolute left-[50px] right-[20px] bottom-0 h-[28px]"
+            data-ai-el="x-axis"
+            :data-ai-detail="xAxisDetail"
+          />
+        </template>
       </div>
     </template>
   </div>

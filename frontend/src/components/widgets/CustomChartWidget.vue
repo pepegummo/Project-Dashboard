@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, watchEffect } from 'vue';
 import VChart from 'vue-echarts';
 import type { EChartsOption } from 'echarts';
 import type { DashboardWidget } from '@/types';
 import { useMultiFieldSeries } from '@/composables/useMultiFieldSeries';
+import { useWidgetViewStateStore } from '@/stores/widget-view-state.store';
 
 const props = defineProps<{ widget: DashboardWidget }>();
+
+const widgetViewStateStore = useWidgetViewStateStore();
 
 const machineId = computed(() => props.widget.machineId ?? '');
 const fields    = computed<string[]>(() => (props.widget.config?.fields as string[]) ?? []);
@@ -77,11 +80,101 @@ function formatLabel(ts: string): string {
   return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
+// Overlay details (element-pick mode) — were inline in the zr classifier; moved out so the
+// axis/legend overlay divs can read them directly. leftAxisDetail mirrors the left y-axis
+// unit shown by the `option` below; rightAxisDetail only applies in dual-scaling mode.
+const leftAxisDetail = computed(() =>
+  effectiveScaling.value === 'normalized'
+    ? 'normalized 0–100%'
+    : effectiveScaling.value === 'dual'
+      ? (dualUnits.value[0] ?? '')
+      : dualUnits.value.join(', '),
+);
+const rightAxisDetail = computed(() => dualUnits.value[1] ?? '');
+const xAxisDetail = computed(() =>
+  categories.value.length
+    ? `${formatLabel(categories.value[0])} – ${formatLabel(categories.value[categories.value.length - 1])}`
+    : '',
+);
+const legendDetail = computed(() => rawSeries.value.map(s => fieldLabel(s.field)).join(', '));
+
+// Click anywhere in the grid → snap to the nearest data point and mention it on the AI
+// page (chip + one-line context, no auto-ask). Series use symbol: 'none', so the ECharts
+// series-level click event almost never lands on a point — we use the zrender canvas click
+// instead and resolve the nearest category index + series ourselves. The axis/legend strips
+// are now separate HTML overlay divs (data-ai-el), handled by WidgetWrapper's delegation —
+// this only needs the in-grid gate.
+const chartRef = ref<InstanceType<typeof VChart> | null>(null);
+
+function onZrClick(e: any) {
+  // Off (every page but /ai): bail immediately so the click bubbles to WidgetWrapper's
+  // outer @click untouched — pristine, pre-element-pick behavior.
+  if (!widgetViewStateStore.elementPickMode) return;
+
+  const chart = chartRef.value?.chart;
+  if (!chart) return;
+  if (rawSeries.value.length === 0 || categories.value.length === 0) return;
+
+  // Geometry against the static grid config — chart.containPixel proved unreliable.
+  const W = chart.getWidth();
+  const H = chart.getHeight();
+  const grid = { left: 42, right: 16, top: 32, bottom: 28 };
+  const inGrid = e.offsetX >= grid.left && e.offsetX <= W - grid.right && e.offsetY >= grid.top && e.offsetY <= H - grid.bottom;
+  if (!inGrid) return;
+
+  const [fi] = chart.convertFromPixel({ seriesIndex: 0 }, [e.offsetX, e.offsetY]);
+  if (fi == null || isNaN(fi)) return;
+  const idx = Math.min(Math.max(Math.round(fi), 0), categories.value.length - 1);
+
+  // Pick the series nearest to the click vertically (dual-axis aware via convertToPixel
+  // per seriesIndex).
+  let bestI = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < rawSeries.value.length; i++) {
+    const renderedValue = effectiveScaling.value === 'normalized'
+      ? normalizeData(rawSeries.value[i].data)[idx]
+      : rawSeries.value[i].data[idx];
+    if (renderedValue == null) continue;
+    const px = chart.convertToPixel({ seriesIndex: i }, [idx, renderedValue]);
+    if (!px) continue;
+    const dist = Math.abs(px[1] - e.offsetY);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestI = i;
+    }
+  }
+
+  if (bestDist === Infinity) return; // all series null at this index
+
+  const s = rawSeries.value[bestI];
+  widgetViewStateStore.setElementClick({
+    widgetId: props.widget.id,
+    title: props.widget.title ?? '',
+    element: 'point',
+    seriesName: fieldLabel(s.field),
+    x: categories.value[idx],
+    xLabel: formatLabel(categories.value[idx]),
+    value: s.data[idx] as any,
+  });
+  // Stop the click from bubbling to WidgetWrapper's outer @click (widget-select toggle).
+  e.event?.stopPropagation?.();
+}
+
+// Bind directly on the zrender instance — the template `@zr:click` binding and
+// chart.containPixel proved unreliable; geometry against the static grid config is deterministic.
+watchEffect(() => {
+  const zr = chartRef.value?.chart?.getZr?.();
+  if (zr && !(zr as any).__aiClickBound) { (zr as any).__aiClickBound = true; zr.on('click', onZrClick); }
+});
+
 const option = computed<EChartsOption>(() => ({
   backgroundColor: 'transparent',
   grid: { left: 42, right: 16, top: 32, bottom: 28, containLabel: false },
   legend: {
     top: 2,
+    // Element-pick mode (/ai) reserves a legend click for "which series is this" —
+    // disable ECharts' native show/hide toggle there; every other page keeps it.
+    selectedMode: !widgetViewStateStore.elementPickMode,
     textStyle: { color: '#9ca3af', fontSize: 10 },
     icon: 'roundRect',
     itemWidth: 10,
@@ -166,11 +259,41 @@ const option = computed<EChartsOption>(() => ({
         </div>
 
         <VChart
+          ref="chartRef"
           :option="option"
           :update-options="{ replaceMerge: ['series'] }"
           autoresize
           class="w-full h-full"
         />
+
+        <!-- Element-pick mode (/ai): transparent overlays over the axis/legend strips so
+             they get the same hover outline + click delegation as HTML elements (see
+             WidgetWrapper). Geometry mirrors the static `grid`/`legend` config above. -->
+        <template v-if="widgetViewStateStore.elementPickMode">
+          <div
+            class="absolute left-0 w-[42px]"
+            style="top: 32px; bottom: 28px"
+            data-ai-el="y-axis"
+            :data-ai-detail="leftAxisDetail"
+          />
+          <div
+            v-if="effectiveScaling === 'dual'"
+            class="absolute right-0 w-[16px]"
+            style="top: 32px; bottom: 28px"
+            data-ai-el="y-axis"
+            :data-ai-detail="rightAxisDetail"
+          />
+          <div
+            class="absolute left-[42px] right-[16px] bottom-0 h-[28px]"
+            data-ai-el="x-axis"
+            :data-ai-detail="xAxisDetail"
+          />
+          <div
+            class="absolute left-0 right-0 top-0 h-[32px]"
+            data-ai-el="legend"
+            :data-ai-detail="legendDetail"
+          />
+        </template>
       </div>
     </template>
   </div>

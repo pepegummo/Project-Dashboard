@@ -123,13 +123,14 @@ const rangeStatus = computed(() => {
         <span
           v-else
           class="text-3xl font-bold font-mono tabular-nums"
+          data-ai-el="value"
           :class="{
             'text-emerald-400': rangeStatus === 'ok',
             'text-red-400':     rangeStatus === 'above' || rangeStatus === 'below',
             'text-white':       rangeStatus === 'none',
           }"
         >{{ formattedValue }}</span>
-        <span v-if="unit" class="text-sm text-gray-400 ml-1.5">{{ unit }}</span>
+        <span v-if="unit" class="text-sm text-gray-400 ml-1.5" data-ai-el="unit">{{ unit }}</span>
       </div>
 
       <!-- Trend (live only) -->
