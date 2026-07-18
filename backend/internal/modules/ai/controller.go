@@ -27,7 +27,12 @@ import (
 // Overridable via AI_MODEL / AI_BASE_URL env vars (config.Load); defaults below.
 func aiModel() string { return envOr(config.Env.AIModel, "openai/gpt-oss-120b") }
 func aiBaseURL() string {
-	return envOr(config.Env.AIBaseURL, "https://api.groq.com/openai/v1/chat/completions")
+	u := envOr(config.Env.AIBaseURL, "https://api.groq.com/openai/v1/chat/completions")
+	// Accept either the provider base (".../v1") or the full completions URL.
+	if !strings.HasSuffix(u, "/chat/completions") {
+		u = strings.TrimRight(u, "/") + "/chat/completions"
+	}
+	return u
 }
 
 // envOr falls back when the config field is empty (tests build config.Env by hand).
@@ -139,10 +144,24 @@ type aiResponse struct {
 		CompletionTokens int `json:"completion_tokens"`
 		TotalTokens      int `json:"total_tokens"`
 	} `json:"usage"`
-	Error *struct {
-		Message string `json:"message"`
-		Code    string `json:"code"`
-	} `json:"error"`
+	Error *aiError `json:"error"`
+}
+
+// aiError tolerates both OpenAI-style {"error":{"message":...,"code":...}} and
+// bare-string errors ({"error":"This model reached daily limit."} — KKU proxy).
+type aiError struct {
+	Message string `json:"message"`
+	Code    string `json:"code"`
+}
+
+func (e *aiError) UnmarshalJSON(b []byte) error {
+	var s string
+	if json.Unmarshal(b, &s) == nil {
+		e.Message = s
+		return nil
+	}
+	type plain aiError
+	return json.Unmarshal(b, (*plain)(e))
 }
 
 // ── Controller ────────────────────────────────────────────────────────────────
