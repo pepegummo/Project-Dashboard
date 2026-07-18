@@ -1,6 +1,6 @@
 # IotVision — AI Pages: How Ask-Data & Chat Assistant Work
 
-IotVision ships two independent AI surfaces, both backed by an OpenAI-compatible chat completions API. Defaults target Groq (`https://api.groq.com/openai/v1/chat/completions`): generation uses `openai/gpt-oss-120b`; intent routing and answer verification use the smaller/faster `openai/gpt-oss-20b`. Provider, models, and key are overridable via `AI_BASE_URL`, `AI_MODEL`, `AI_ROUTER_MODEL`, and `AI_API_KEY` (legacy `GROQ_API_KEY` still works as a fallback). The **Ask-Data** page turns a natural-language question into hardened, read-only SQL and an LLM-authored ECharts option. The **Chat Assistant** is a conversational agent that reads live telemetry and stages dashboard edits through structured tool calls, gated behind a preview-then-confirm workflow. This document explains both pipelines end to end for developers extending or debugging them.
+IotVision ships two independent AI surfaces, both backed by an OpenAI-compatible chat completions API. **Production runs on KKU GenAI** (`AI_BASE_URL=https://gen.ai.kku.ac.th/api/v1`): generation uses `claude-sonnet-5` (`AI_MODEL`); intent routing and answer verification use `gpt-5.4-mini` (`AI_ROUTER_MODEL` — deliberately a different model family so router/judge quota is isolated from the generation pool). Provider, models, and key are set via `AI_BASE_URL`, `AI_MODEL`, `AI_ROUTER_MODEL`, and `AI_API_KEY`; unset values fall back to Groq (`api.groq.com`, `openai/gpt-oss-120b` / `openai/gpt-oss-20b`, legacy `GROQ_API_KEY`). `aiBaseURL()` accepts either a provider base (`…/v1`) or a full completions URL — it auto-appends `/chat/completions` when missing. The **Ask-Data** page turns a natural-language question into hardened, read-only SQL and an LLM-authored ECharts option. The **Chat Assistant** is a conversational agent that reads live telemetry and stages dashboard edits through structured tool calls, gated behind a preview-then-confirm workflow. This document explains both pipelines end to end for developers extending or debugging them.
 
 ## Table of contents
 
@@ -12,6 +12,7 @@ IotVision ships two independent AI surfaces, both backed by an OpenAI-compatible
    - [2.4 Security hardening](#24-security-hardening)
    - [2.5 Boards](#25-boards)
    - [2.6 Example Q&A](#26-example-qa)
+   - [2.7 Layer map & call budget](#27-layer-map--call-budget)
 3. [Output checking](#3-output-checking)
 4. [Chat Assistant pipeline](#4-chat-assistant-pipeline)
    - [4.1 Frontend](#41-frontend)
@@ -23,7 +24,7 @@ IotVision ships two independent AI surfaces, both backed by an OpenAI-compatible
 
 ## 1. Overview — two surfaces
 
-**In short:** IotVision's AI capability is split into two surfaces that share the same Groq account and org-scoped database access but do not share code paths, conversation state, or UI.
+**In short:** IotVision's AI capability is split into two surfaces that share the same AI provider account and org-scoped database access but do not share code paths, conversation state, or UI.
 
 | Surface | Page | Backend | Purpose |
 |---|---|---|---|
@@ -44,8 +45,8 @@ flowchart TB
     ToolsExec["POST /ai/tools/execute<br/>tool_actions.go"]
   end
 
-  GroqGen["Groq API — generation<br/>openai/gpt-oss-120b"]
-  GroqSmall["Groq API — router/verifier<br/>openai/gpt-oss-20b"]
+  GroqGen["AI provider — generation<br/>claude-sonnet-5 (KKU)"]
+  GroqSmall["AI provider — router/verifier<br/>gpt-5.4-mini (KKU)"]
   TSDB["TimescaleDB views<br/>v_telemetry / v_machines / v_machine_fields"]
   Boards[("ai_boards<br/>ai_board_charts")]
   Convos[("ai_conversations<br/>ai_messages")]
@@ -72,7 +73,7 @@ flowchart TB
 
 ## 2. Ask-Data pipeline (the "Ask" page)
 
-**In short:** the Ask page takes a question, has Groq emit validated SQL, executes it read-only against three allowlisted views, and (for numeric results) has Groq author a chart option that the frontend renders — with self-correction and verification loops at every risky step.
+**In short:** the Ask page takes a question, has the model emit validated SQL, executes it read-only against three allowlisted views, and (for numeric results) has the model author a chart option that the frontend renders — with self-correction and verification loops at every risky step.
 
 ### 2.1 Frontend flow
 
@@ -114,9 +115,12 @@ The full loop at a glance — retries and repair drawn as return arrows:
 ```mermaid
 flowchart TD
   Q["🙋 Ask<br/>POST /ai/ask {question, prev?}"] --> Schema["buildSchemaContext<br/>views + machines + SQL rules"]
-  Schema --> Emit["emitSQL — gpt-oss-120b<br/>forced emit_sql"]
+  Schema --> Emit["emitSQL — claude-sonnet-5<br/>forced emit_sql"]
   Emit --> Parse{"parseSQLEmission"}
-  Parse -->|not a data question| Prose["emitProse<br/>grounded by prev.SQL rows"] --> AnsText(["💬 Answer (text)"])
+  Parse -->|not a data question| Prose["emitProse<br/>grounded by prev.SQL rows"]
+  Prose --> PVerify{"check score<br/>verifyAskProse judge — gpt-5.4-mini, 6s"}
+  PVerify -->|"ok / no verdict"| AnsText(["💬 Answer (text)"])
+  PVerify -->|"mismatch → regenerate (once)"| Prose
   Parse -->|needs clarification| Clar(["❓ Clarification → user replies → back to Ask"])
   Parse -->|SQL| Val["validateSQL<br/>single SELECT, deny rules"]
   Val --> Run["runScoped query<br/>read-only, 5s timeout, org GUC, 5000 rows"]
@@ -124,7 +128,7 @@ flowchart TD
   Run -->|Postgres error| Fix["sqlFixup<br/>error fed back"]
   Fix -->|"retry (max 3 attempts)"| Emit
   Run -->|rows| Numeric{"hasNumericColumn?"}
-  Numeric -->|"table path"| Verify{"check score<br/>verifyAskAnswer judge — gpt-oss-20b, 6s"}
+  Numeric -->|"table path"| Verify{"check score<br/>verifyAskAnswer judge — gpt-5.4-mini, 6s"}
   Numeric -->|yes| Chart["emitEChart → sanitizeEChartOption<br/>(×1 retry, dedupe series)"]
   Chart --> Verify
   Verify -->|matches intent| AnsChart(["📈 Answer (chart)"])
@@ -139,14 +143,14 @@ Entry point `AskData` (`nl2sql.go:577`), routed at `POST /ai/ask` in `routes.go`
 sequenceDiagram
   participant FE as AskDataPage.vue
   participant API as AskData (nl2sql.go:577)
-  participant Groq as Groq API
+  participant Groq as AI provider (KKU)
   participant DB as TimescaleDB
 
   FE->>API: POST /ai/ask {question, context?:{question, sql, clarification}}
   API->>API: buildSchemaContext(orgID) (nl2sql.go:154)
 
   loop SQL emission + execution, up to 3 attempts (sqlFixup self-correction)
-    API->>Groq: emitSQL (nl2sql.go:218) — forced emit_sql via forceFunc, gpt-oss-120b
+    API->>Groq: emitSQL (nl2sql.go:218) — forced emit_sql via forceFunc, claude-sonnet-5
     Groq-->>API: {answerable, sql, clarification}
     API->>API: parseSQLEmission (nl2sql.go:274) -> SQL / clarification / errNotDataQuestion
     alt SQL returned
@@ -160,6 +164,10 @@ sequenceDiagram
   alt errNotDataQuestion
     API->>Groq: emitProse (nl2sql.go:297) — no tools, grounded by re-running prev.SQL downsampled to 200 rows
     Groq-->>API: {answer}
+    API->>Groq: verifyAskProse — forced verify_answer judge, gpt-5.4-mini, 6s bound
+    opt matches_intent:false
+      API->>Groq: emitProse regenerated once with the verifier problem as fixup (no second judge round)
+    end
     API-->>FE: {answer}
   else clarification needed
     API-->>FE: {clarification}
@@ -173,10 +181,10 @@ sequenceDiagram
       API->>API: sanitizeEChartOption (nl2sql.go:438) — strip dataset/data, validate encode columns, dedupe identical series, invalid->"{}"
     end
     opt rows > 0
-      API->>Groq: verifyAskAnswer (nl2sql.go:384) — forced verify_answer judge, gpt-oss-20b, 6s bound
+      API->>Groq: verifyAskAnswer (nl2sql.go:384) — forced verify_answer judge, gpt-5.4-mini, 6s bound
       Note over API,Groq: runs for both chart and table turns (rows > 0)
       alt matches_intent:false
-        API->>API: one repair round — re-emit SQL with verifier problem as fixup, re-run; re-chart if the repaired result is chartable, else deliver repaired rows as table (verifyAndRepairAnswer, nl2sql.go:703)
+        API->>API: one repair round — re-emit SQL with verifier problem as fixup, re-run, re-chart if chartable, else deliver repaired rows as table (verifyAndRepairAnswer, nl2sql.go:703)
         Note over API: any repair failure degrades to table signal over the original rows, never a 502
       end
     end
@@ -187,14 +195,14 @@ sequenceDiagram
 Numbered walkthrough (same substance as the sequence diagram, for reference):
 
 1. **`buildSchemaContext(ctx, orgID)`** (`nl2sql.go:154`) — describes the three allowed views (`v_telemetry`, `v_machines`, `v_machine_fields`) plus the org's real machine names and metric keys, and the SQL rules the model must follow: use `time_bucket`, use `now()`-relative windows, use `ILIKE '%code%'` for machine-code matching, and access metrics via JSONB `data->>'key'`.
-2. **`emitSQL(ctx, question, schema, prev, fixup)`** (`nl2sql.go:218`) — one forced Groq tool call to `emit_sql` via `forceFunc("emit_sql")` on `openai/gpt-oss-120b`; the tool schema is `{answerable, sql, clarification}`. Follow-ups are handled by prompt injection: if `prev.SQL` is set, the prompt asks the model to adapt the previous SQL; if `prev.Clarification` is set, it combines the original question with the user's reply. `parseSQLEmission` (`nl2sql.go:274`) returns SQL XOR a clarification, or the sentinel error `errNotDataQuestion`.
-3. **Branch on the emission:** `errNotDataQuestion` routes to the prose path `emitProse` (`nl2sql.go:297`) — a no-tools completion grounded by re-running `prev.SQL` via `runScoped` downsampled to 200 rows, returning `{answer}`. A clarification response returns `{clarification}` directly. Otherwise the SQL path continues.
+2. **`emitSQL(ctx, question, schema, prev, fixup)`** (`nl2sql.go:218`) — one forced tool call to `emit_sql` via `forceFunc("emit_sql")` on the generation model (`claude-sonnet-5`); the tool schema is `{answerable, sql, clarification}`. Follow-ups are handled by prompt injection: if `prev.SQL` is set, the prompt asks the model to adapt the previous SQL; if `prev.Clarification` is set, it combines the original question with the user's reply. Two prompt rules keep the model from over-clarifying (added 2026-07-17 for claude-sonnet-5): an explain/definition question ("what does X mean", "อธิบาย", "ต่างกันยังไง") must set `answerable=false` (prose path) and never a clarification; and when a reasonable default exists (no time range → last 24h, fuzzy "drops/low" → below the window average) the model answers with the default instead of asking back — clarification is reserved for questions where no metric/machine/dimension is identifiable at all. `parseSQLEmission` (`nl2sql.go:274`) returns SQL XOR a clarification, or the sentinel error `errNotDataQuestion`.
+3. **Branch on the emission:** `errNotDataQuestion` routes to the prose path `emitProse` (`nl2sql.go:297`) — a no-tools completion grounded by re-running `prev.SQL` via `runScoped` downsampled to 200 rows. The answer then passes a prose judge, `verifyAskProse` — same contract as the chart judge (6s bound, `gpt-5.4-mini`, forced `verify_answer`): a MISMATCH verdict (off-topic answer, or a number contradicting the grounding rows) triggers exactly one regenerate with the verifier's problem as fixup, no second judge round; no verdict or a failed regenerate delivers the original answer — never a 502. Returns `{answer}`. A clarification response returns `{clarification}` directly. Otherwise the SQL path continues.
 4. **`validateSQL`** (`nl2sql.go:42`) — enforces a single `SELECT` statement, rejects forbidden write keywords (`sqlForbidden`), and rejects any access to base tables (`deniedTables`), scrubbing the allowed `v_` views first.
 5. **`runScoped(ctx, orgID, sql)`** (`nl2sql.go:71`) — opens a read-only transaction, sets `SET LOCAL statement_timeout='5s'`, sets `set_config('app.current_org', orgID, true)` as a Postgres GUC for org isolation, and caps results at 5000 rows. A retry loop runs up to 3 times: any validation failure or Postgres error is turned into a `sqlFixup` message fed back into `emitSQL` so the model can self-correct.
-6. **`hasNumericColumn(cols, rows)`** (`nl2sql.go:420`) — if there is no numeric column, or the result is empty, the response sets `option = "{}"` (the table signal) and skips the chart-authoring Groq call entirely.
+6. **`hasNumericColumn(cols, rows)`** (`nl2sql.go:420`) — if there is no numeric column, or the result is empty, the response sets `option = "{}"` (the table signal) and skips the chart-authoring model call entirely.
 7. **`emitEChart(question, cols, sample20, prevErr)`** (`nl2sql.go:337`) — a forced `emit_echart_option` call. The system prompt (`echartSystemPrompt`, `nl2sql.go:326`) requires `encode`-based column references (no embedded data arrays), exactly one series even when a category column is present, and a chart type of line, bar, pie, or scatter. One retry is attempted, passing the prior error back to the model.
 8. **`sanitizeEChartOption(option, cols)`** (`nl2sql.go:438`) — strips any `dataset`/`data` the model tried to embed, validates that `encode` references real columns, and dedupes series: series that share the same type and `encode` without per-series filters would render identical rows, so only the first is kept — the frontend's `withDataset` performs the actual per-machine split. An invalid option collapses to `"{}"`.
-9. **`verifyAndRepairAnswer`** (`nl2sql.go:703`) runs on chart AND table turns whenever at least one row was returned (empty results are skipped — nothing to judge beyond the SQL text) — `verifyAskAnswer` (`nl2sql.go:384`) runs a bounded 6-second forced `verify_answer` judge call on `openai/gpt-oss-20b`. On `matches_intent:false`, exactly one repair round runs: SQL is re-emitted with the verifier's `problem` text as the fixup and re-run. If the repaired result is chartable it is re-charted; otherwise the repaired rows are delivered as a table. Only a failed emission/validation/run, or an empty repaired result, falls back to the original rows (chart degraded to the table signal) — the endpoint never returns a 502 for a verification miss.
+9. **`verifyAndRepairAnswer`** (`nl2sql.go:703`) runs on chart AND table turns whenever at least one row was returned (empty results are skipped — nothing to judge beyond the SQL text) — `verifyAskAnswer` (`nl2sql.go:384`) runs a bounded 6-second forced `verify_answer` judge call on the router model (`gpt-5.4-mini`). A chart type the user explicitly requested (pie/bar/line/scatter, any language) is correct by definition — the judge only evaluates the data (metric, machine, time window), never a user-chosen style. On `matches_intent:false`, exactly one repair round runs: SQL is re-emitted with the verifier's `problem` text as the fixup and re-run. If the repaired result is chartable it is re-charted; otherwise the repaired rows are delivered as a table. Only a failed emission/validation/run, or an empty repaired result, falls back to the original rows (chart degraded to the table signal) — the endpoint never returns a 502 for a verification miss.
 10. **Response shape:** one of `{sql, columns, rows, echartOption}`, `{answer}`, or `{clarification}`.
 
 ### 2.3 Turn types & follow-up thread
@@ -243,22 +251,49 @@ Illustrative only — actual SQL and chart shape depend on the org's live schema
 - Follow-up *"why did it dip at 14:00?"* after a chart → prose turn grounded in the previous SQL's rows.
 - *"list machine names"* → no numeric column → table render.
 
+### 2.7 Layer map & call budget
+
+Conceptual layer ↔ code map for the Ask-Data pipeline (every structural check is deterministic Go; the model is called only where semantic judgment is required):
+
+| Layer | Function / file | Model / mechanism |
+|---|---|---|
+| 1.1 Intent (`answerable`) | `emitSQL` → `parseSQLEmission` (nl2sql.go) | claude-sonnet-5, `forceFunc("emit_sql")` |
+| 1.2 Slot grounding | `buildSchemaContext` (nl2sql.go) | Go (deterministic) — live query via `runScoped` |
+| 1.3 Clarification | `clarification` field in the same `emit_sql` call | claude-sonnet-5 |
+| 2.1 SQL generation | `emitSQL` (nl2sql.go) | claude-sonnet-5 |
+| 2.2 SQL validation + runtime guard | `validateSQL`, `runScoped` (nl2sql.go) | Go (deterministic) |
+| 3.1 Chart-type pick | `echartSystemPrompt` + `hasNumericColumn` gate | model picks type / Go decides whether to call at all |
+| 3.2 Chart spec generation | `emitEChart` (nl2sql.go) | claude-sonnet-5, `forceFunc("emit_echart_option")` |
+| 4.1 Spec sanitize | `sanitizeEChartOption` (nl2sql.go) | Go (deterministic) |
+| 4.2 Self-consistency judge | `verifyAskAnswer` → `verifyAndRepairAnswer` (nl2sql.go) | gpt-5.4-mini, `forceFunc("verify_answer")` |
+| 4.3 Error handling | retry loop in `AskData` (SQL ×3, chart ×1) | Go (deterministic) — no LLM classifier |
+| 5 Orchestration | `AskData` handler (nl2sql.go) | Go |
+
+Model-call budget per turn (all inside the handler's 45s context):
+
+| Turn type | Calls |
+|---|---|
+| prose (not a data question) | `emitSQL` 1 + `emitProse` 1 + judge 1 (+ `emitProse` 1 on mismatch) = **3–4** |
+| table (no numeric column) | `emitSQL` **1–3** (retry loop); no chart/judge — `hasNumericColumn` gates before `emitEChart` |
+| chart | SQL 1(–3) + chart 1(–2) + judge 1 (~1s) |
+| chart + judge-ordered repair (worst case) | above + SQL 1 + chart 1(–2) |
+
 ---
 
 ## 3. Output checking
 
-**In short:** both surfaces bound their self-correction and verification work to a fixed, small number of retries so latency and Groq cost stay predictable — neither pipeline will loop indefinitely trying to get a "perfect" answer, and both degrade gracefully instead of failing outright.
+**In short:** both surfaces bound their self-correction and verification work to a fixed, small number of retries so latency and provider token cost stay predictable — neither pipeline will loop indefinitely trying to get a "perfect" answer, and both degrade gracefully instead of failing outright.
 
 | Stage | Ask-Data | Chat Assistant |
 |---|---|---|
 | Retry-on-error loop | SQL self-correction loop, up to 3 attempts total (`validateSQL`/Postgres error → `sqlFixup` → re-emit via `emitSQL`) | Tool loop, max 5 iterations bounded by `roundCap` |
 | Secondary generation retry | Chart authoring (`emitEChart`) retries once, passing the prior error back to the model | — |
 | Deterministic checks | — | `runDeterministicChecks` (`verify.go`) |
-| LLM judge | `verify_answer` via `verifyAskAnswer`, `openai/gpt-oss-20b`, 6s bound — covers chart + table turns (empty results skipped) | `VerifyAnswer` judge |
-| Repair | Exactly one repair round (re-emit SQL with verifier's `problem` as fixup, re-run, re-chart) | One `runRepairRound` |
+| LLM judge | `verify_answer` via `verifyAskAnswer` (chart + table turns; empty results skipped; user-specified chart types never judged) and `verifyAskProse` (prose turns — topicality + rows-contradiction), both `gpt-5.4-mini`, 6s bound | `VerifyAnswer` judge |
+| Repair | Exactly one repair round (chart/table: re-emit SQL with verifier's `problem` as fixup, re-run, re-chart; prose: regenerate the answer once) | One `runRepairRound` |
 | Failure outcome | Degrades to table signal (`{}` echart option) — never a 502 | Outcome is deliver / ask back / repair |
 
-Design rationale: bounded checks keep worst-case latency and Groq token cost predictable regardless of how ambiguous or malformed a given question or tool round turns out to be.
+Design rationale: bounded checks keep worst-case latency and provider token cost predictable regardless of how ambiguous or malformed a given question or tool round turns out to be. The same principle decides *what* gets an LLM call at all: every structural check (schema validity, SQL safety, encode-column validation) is deterministic Go code; the LLM is reserved for genuine semantic judgment (intent, chart appropriateness, answer-vs-question consistency) — cutting cost, latency, and nondeterminism at every step that doesn't need a model.
 
 ---
 
@@ -293,14 +328,14 @@ sequenceDiagram
   participant FE as ChatBox.vue / AIAssistantPage.vue
   participant API as Chat (controller.go:345)
   participant Router as ClassifyIntent (router.go:93)
-  participant Groq as Groq API
+  participant Groq as AI provider (KKU)
   participant Tools as ToolKit / DashboardAction
 
   FE->>API: POST /ai/chat {conversationId, message, context}
-  API->>API: persist user message; buildAIMessages caps history to last 3 rows (controller.go:1112)
-  API->>Router: ClassifyIntent — forced classify_intent call, gpt-oss-20b
+  API->>API: persist user message — buildAIMessages caps history to last 3 rows (controller.go:1112)
+  API->>Router: ClassifyIntent — forced classify_intent call, gpt-5.4-mini
   Router-->>API: IntentResult {intent, machine, metric, fields, bucket, dateRange, targetWidget, status, sku, confidence}
-  Note over Router: confidence floor 0.5; classification failure -> ok=false
+  Note over Router: confidence floor 0.5 — classification failure -> ok=false
   API->>API: dispatchIntent(res, ok, focused, ...) -> (tool_choice, roundCap) (controller.go:1032)
 
   loop max 5 iterations, roundCap tool rounds, then tools dropped to force text
@@ -328,8 +363,8 @@ sequenceDiagram
 Numbered walkthrough:
 
 1. Persist the user message; history is capped to the last 3 user/assistant rows (`buildAIMessages`, `controller.go:1112`).
-2. The outgoing message list is `systemPromptUnified` (a large Groq-cached prompt) + capped history + an authoritative context block containing dashboard state and today's date.
-3. **Intent router** (`router.go`): `ClassifyIntent` (`router.go:93`) makes one forced `classify_intent` call on `openai/gpt-oss-20b`, returning strict JSON `IntentResult{intent, machine, metric, fields, bucket, dateRange, targetWidget, status, sku, confidence}`. Recognized intents: `chat`, `read_metric`, `read_agg`, `edit_widget`, `compare`, `create_dashboard`, `alerts`, `production`. A confidence floor of 0.5 applies; any classification failure falls back to `ok=false`. Design law: **the model classifies, Go decides.**
+2. The outgoing message list is `systemPromptUnified` (a large provider-cached prompt) + capped history + an authoritative context block containing dashboard state and today's date.
+3. **Intent router** (`router.go`): `ClassifyIntent` (`router.go:93`) makes one forced `classify_intent` call on the router model (`gpt-5.4-mini` — bake-off 29/32 on the 32-case intent suite, 2026-07-17), returning strict JSON `IntentResult{intent, machine, metric, fields, bucket, dateRange, targetWidget, status, sku, confidence}`. Recognized intents: `chat`, `read_metric`, `read_agg`, `edit_widget`, `compare`, `create_dashboard`, `alerts`, `production`. A confidence floor of 0.5 applies; any classification failure falls back to `ok=false`. Design law: **the model classifies, Go decides.**
 4. `dispatchIntent(res, ok, focused, inlineData, role, machineValid, chartExists)` (`controller.go:1032`) is a pure Go function that maps the classified intent to a `(tool_choice, roundCap)` pair — no LLM call is involved in this decision.
 
 | Intent | Forced tool_choice |
@@ -356,9 +391,9 @@ Numbered walkthrough:
 
 Tool implementations live in `tool_actions.go` (ToolKit methods) and `dashboard_action.go` (`DashboardAction`'s `Preview`/`PreviewAddWidget`/`PreviewUpdateWidget`/`Handle` methods).
 
-`buildAITools(role)` (`controller.go:806`) filters the tool list by role — viewers lose write/preview tools — and sends simple tools slim (name + description only) while the `preview_*` widget tools go over with their full schema, exploiting Groq prompt caching to keep token cost down.
+`buildAITools(role)` (`controller.go:806`) filters the tool list by role — viewers lose write/preview tools — and sends simple tools slim (name + description only) while the `preview_*` widget tools go over with their full schema, exploiting provider prompt caching to keep token cost down.
 
-`tool_choice` serialization in `callAIModel` (`controller.go:834`): an empty string means auto, `"required"`/`"none"` are sent as plain strings, and a value starting with `{` is sent as a forced-function object. Groq `tool_choice` errors are retried with auto; a function-parser failure is retried with no tools at all.
+`tool_choice` serialization in `callAIModel` (`controller.go:834`): an empty string means auto, `"required"`/`"none"` are sent as plain strings, and a value starting with `{` is sent as a forced-function object. Provider `tool_choice` errors are retried with auto; a function-parser failure is retried with no tools at all. The response parser (`aiError.UnmarshalJSON`, `controller.go`) tolerates both OpenAI-style `{"error":{"message":...}}` objects and bare-string errors (`{"error":"This model reached daily limit."}` — the KKU proxy's format).
 
 ---
 
@@ -383,4 +418,6 @@ Tool implementations live in `tool_actions.go` (ToolKit methods) and `dashboard_
 
 ---
 
-The generation model default lives at `controller.go`'s `aiModel()` (override via `AI_MODEL`); the router model at `router.go`'s `routerModel()` (override via `AI_ROUTER_MODEL`). The endpoint defaults to Groq via `aiBaseURL()` (override via `AI_BASE_URL`).
+The generation model lives at `controller.go`'s `aiModel()` (`AI_MODEL`, production `claude-sonnet-5`); the router/judge model at `router.go`'s `routerModel()` (`AI_ROUTER_MODEL`, production `gpt-5.4-mini`). The endpoint comes from `aiBaseURL()` (`AI_BASE_URL`, production KKU) — it accepts a provider base or a full URL and auto-appends `/chat/completions` when missing; unset values fall back to Groq defaults.
+
+**Testing:** the Ask-Data pipeline has three live suites in `backend/internal/modules/ai/` — `nl2sql_live_test.go` (`TestAskDataLiveQuestions`, ~39 questions through the LLM half against a schema fixture), `TestVerifyAskChartLive` (the judge in isolation), and `ask_fullloop_live_test.go` (`TestAskDataFullLoopLive`, the same cases POSTed through the real Fiber handler + live TimescaleDB — the full production path). All read the real `.env` AI settings via `liveKeyOrSkip`, so they exercise the exact provider/models production uses. Latest run results and quota guidance: [`llm2viz/test-results.md`](../llm2viz/test-results.md).

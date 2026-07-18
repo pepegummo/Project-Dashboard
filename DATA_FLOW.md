@@ -42,25 +42,28 @@
                    │ HTTP /api/*          │ ws://.../ws
 ┌──────────────────▼──────────────────────▼────────────────────────┐
 │                     Nginx Reverse Proxy (:5173)                   │
-│   /api/*  →  backend:4000   |   /ws  →  backend:4001             │
+│   /api/*  →  backend:4000   |   /ws  →  backend:4000 (upgrade)   │
 └──────────────────┬──────────────────────┬────────────────────────┘
                    │                      │
-   ┌───────────────▼──────────┐  ┌────────▼───────────────┐
-   │   Go Fiber REST API      │  │  Gorilla WebSocket Hub  │
-   │        :4000             │  │        :4001            │
-   │                          │  │                         │
-   │  Auth / Machines /       │  │  Telemetry broadcasts   │
-   │  Dashboards / Alerts /   │  │  Alert events           │
-   │  Telemetry / AI          │  │  Machine status changes │
-   └───────────┬──────────────┘  └────────┬───────────────┘
+   ┌───────────────▼──────────────────────▼───────────┐
+   │            Go Fiber :4000 — REST + WS             │
+   │                                                    │
+   │  Auth / Machines / Dashboards / Alerts /           │
+   │  Telemetry / AI            Fiber WS Hub (/ws)      │
+   │                             Telemetry broadcasts    │
+   │                             Alert events            │
+   │                             Machine status changes  │
+   └───────────┬────────────────────────────────────────┘
                │                          │
                │    ┌─────────────────────┘
                │    │
    ┌───────────▼────▼──────────────────────┐
    │           Go Business Logic           │
    │  ┌──────────────┐  ┌───────────────┐  │
-   │  │  Simulator   │  │  Alert Engine │  │
-   │  │  (60s tick)  │  │  (on ingest)  │  │
+   │  │ DB Broadcaster│  │  Alert Engine │  │
+   │  │  (30s poll +  │  │  (on ingest)  │  │
+   │  │ immediate on  │  │               │  │
+   │  │    ingest)    │  │               │  │
    │  └──────┬───────┘  └───────┬───────┘  │
    └─────────│──────────────────│──────────┘
              │                  │
@@ -119,27 +122,28 @@ Frontend Axios  ──  Authorization: Bearer <token>  ──►  Go Middleware 
 ### 2.2 Real-Time Telemetry Flow
 
 ```
-                        ┌─── Every 60 seconds ───┐
-                        │                        │
-                  Simulator (Go)          New telemetry ingested
-                  generates synthetic     via POST /api/telemetry/:id/ingest
-                  readings for all        (external device or load test)
-                  machines                │
-                        │                │
-                        └────────┬───────┘
-                                 │
-                    ┌────────────▼────────────────────┐
-                    │  INSERT INTO telemetry_raw       │
-                    │  (machine_id, timestamp, data)   │
-                    │                                  │
-                    │  Evaluate alert rules:           │
-                    │    field > threshold? → fire     │
-                    │    INSERT INTO alert_events      │
-                    └───────────┬─────────────────────┘
-                                │
-                    ┌───────────▼─────────────────────┐
+New telemetry ingested                    DB Broadcaster (every 30s)
+via POST /api/telemetry/:id/ingest        DISTINCT ON (machine_id)
+(external device or load test)            SELECT latest telemetry_raw
+        │                                 → fallback heartbeat for ALL
+        ▼                                   connected clients
+┌───────────────────────────────┐                   │
+│  INSERT INTO telemetry_raw     │                   │
+│  (machine_id, timestamp, data) │                   │
+│                                 │                   │
+│  Evaluate alert rules:         │                   │
+│    field > threshold? → fire   │                   │
+│    INSERT INTO alert_events    │                   │
+│                                 │                   │
+│  Broadcast immediately         │                   │
+│  (does not wait for the 30s)   │                   │
+└───────────────┬─────────────────┘                  │
+                │                                     │
+                └──────────────────┬──────────────────┘
+                                   ▼
+                    ┌─────────────────────────────────┐
                     │  WebSocket Hub broadcasts to     │
-                    │  ALL connected clients:          │
+                    │  ALL / subscribed clients:       │
                     │                                  │
                     │  { type: "telemetry",            │
                     │    payload: {                    │
@@ -165,6 +169,8 @@ Frontend Axios  ──  Authorization: Bearer <token>  ──►  Go Middleware 
               │    → AlarmPanel widget updates              │
               └─────────────────────────────────────────────┘
 ```
+
+There is no simulator — telemetry only enters the system via ingest. The 30s DB broadcaster is a fallback heartbeat, not a data generator.
 
 **Widget Data Sources (current):**
 
@@ -366,34 +372,37 @@ No login required — safe to display on factory floor screens.
 
 ### 2.6 AI Assistant Flow
 
+There are two independent AI surfaces — the Chat Assistant (`POST /ai/chat`) and Ask-Data (`POST /ai/ask`). Both proxy to an OpenAI-compatible provider (production: KKU GenAI, generation model `claude-sonnet-5`, router/verifier model `gpt-5.4-mini`). Full pipeline detail: [`docs/ai-pages.md`](docs/ai-pages.md).
+
 ```
-User                  Frontend               Backend              External LLM
+User                  Frontend               Backend (Go)          AI Provider (KKU)
  │                       │                      │                      │
  │── Type question ──────►│                      │                      │
  │   "What is the avg     │                      │                      │
  │    weight today?"      │                      │                      │
- │                       │── POST /ai/conversations/:id/messages        │
- │                       │   { role: "user", content: "..." } ─────────►│
+ │                       │── POST /api/ai/chat   │                      │
+ │                       │   { message: "..." } ─►│                      │
+ │                       │                      │── ClassifyIntent      │
+ │                       │                      │   (router model) ────►│
+ │                       │                      │◄── intent ─────────────│
  │                       │                      │                      │
- │                       │                      │── Send to LLM with   │
- │                       │                      │   tool definitions   │
- │                       │                      │   (getMachines,      │
- │                       │                      │    getTelemetry,     │
- │                       │                      │    getAlerts, ...)   │
- │                       │                      │◄── LLM response:     │
- │                       │                      │   tool_call:         │
- │                       │                      │   getTelemetry(      │
- │                       │                      │     machineId, field,│
- │                       │                      │     from, to)        │
+ │                       │                      │── dispatchIntent (Go) │
+ │                       │                      │   forces tool_choice  │
+ │                       │                      │   by function name    │
+ │                       │                      │   e.g. get_telemetry_ │
+ │                       │                      │   trend(machineId,    │
+ │                       │                      │   field, from, to)    │
  │                       │                      │                      │
- │                       │                      │── POST /api/ai/tools/execute
- │                       │                      │   {toolName, params} │
- │                       │                      │── Query PostgreSQL   │
- │                       │                      │◄── {avg: 498.3, ...} │
+ │                       │                      │── execute tool        │
+ │                       │                      │   (tool_actions.go)   │
+ │                       │                      │── Query PostgreSQL    │
+ │                       │                      │◄── {avg: 498.3, ...}  │
  │                       │                      │                      │
- │                       │                      │── Send tool result   │
- │                       │                      │   back to LLM ──────►│
- │                       │                      │◄── Final answer ─────│
+ │                       │                      │── generation model    │
+ │                       │                      │   composes answer ───►│
+ │                       │                      │◄── draft answer ───────│
+ │                       │                      │── verify-then-repair  │
+ │                       │                      │   (verify.go) ───────►│
  │                       │◄── {role:"assistant",│                      │
  │                       │    content: "The avg │                      │
  │                       │    weight today is   │                      │
@@ -568,13 +577,13 @@ The AI Assistant page (`/ai`) provides a natural language interface to query you
 ```
 
 #### How it Works
-The AI has access to **tools** that query your live database:
-- `getMachines` — lists machines and their current status
-- `getTelemetry` — retrieves time-series sensor data
-- `getAlerts` — fetches active alert events
-- `getAggregates` — retrieves statistical summaries (avg, min, max)
+The AI has access to **tools** that query your live database (snake_case, `schema.go` `AllTools()`):
+- `get_machines` — lists machines and their current status
+- `get_telemetry_series` / `get_telemetry_trend` — retrieves time-series sensor data
+- `get_active_alerts` — fetches active alert events
+- `get_production_count`, `get_skus`, `show_metric`, `list_dashboards`, plus `preview_*` dashboard-edit tools
 
-The AI decides which tools to call based on your question, fetches real data, and returns a natural language answer grounded in your actual factory metrics.
+An intent router (`gpt-5.4-mini`) forces the correct tool by function name, then the generation model (`claude-sonnet-5`) composes the answer, which is passed through a verify-then-repair pass before returning. See [`docs/ai-pages.md`](docs/ai-pages.md) for the full pipeline. The **Ask-Data** page (`/ai/ask`) is a separate surface for natural-language-to-SQL chart queries.
 
 ---
 

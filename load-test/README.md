@@ -153,7 +153,7 @@ k6 run load-test/ws/ws-test.js
 | `telemetry: data is fresh (<2 min)` | Frozen/stuck simulator |
 
 #### VU lifecycle
-1. Connect to `ws://localhost:4001` — no token (public)
+1. Connect to `ws://localhost:4000/ws` — auth via `?token=<jwt>`
 2. Record `subscribedAt` timestamp, send subscribe for all 4 machines
 3. On first telemetry message → record `time_to_first_msg_ms`
 4. On every telemetry message → measure broadcast latency + run 5 integrity checks

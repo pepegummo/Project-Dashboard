@@ -1,27 +1,32 @@
 # IotVision — Industrial IoT AI Dashboard Platform
 
-A production-style MVP for real-time industrial monitoring, built with Vue 3, Node.js, PostgreSQL/TimescaleDB, and WebSocket telemetry streaming.
+A production-style MVP for real-time industrial monitoring, built with Vue 3, Go (Fiber v2), PostgreSQL/TimescaleDB, and WebSocket telemetry streaming.
 
 ---
 
 ## 📐 Architecture
 
 ```
-iot-dashboard/
-├── backend/                    # Node.js + Express + Prisma
-│   ├── prisma/
-│   │   ├── schema.prisma       # Full DB schema (15 tables)
-│   │   └── seed.ts             # Demo data seeder
-│   └── src/
-│       ├── modules/
-│       │   ├── auth/           # JWT authentication
-│       │   ├── machines/       # Machine & field management
-│       │   ├── telemetry/      # Ingestion + series queries
-│       │   ├── dashboards/     # Dashboard CRUD + widget management
-│       │   └── alerts/         # Alert rules + event evaluation
-│       ├── websocket/          # ws.gateway.ts — real-time broadcast
-│       ├── telemetry/          # simulator.ts — 4 machine data generators
-│       └── ai-tools/           # Structured AI tool layer
+Project-Dashboard/
+├── backend/                    # Go (module iot-dashboard) + Fiber v2 + pgx/v5
+│   ├── cmd/
+│   │   ├── server/main.go      # Entry point — auto-runs migrations on start
+│   │   └── backfill/main.go    # Standalone tool: seeds ~2.3M historical telemetry rows
+│   └── internal/
+│       ├── config/             # env.go — loads .env via godotenv
+│       ├── database/           # pgxpool singleton
+│       ├── migrate/            # embedded SQL migrations, run on startup (no CLI)
+│       ├── broadcaster/        # polls DB every 30s → broadcasts telemetry over WS
+│       ├── websocket/          # ws_gateway.go — gofiber/websocket hub at GET /ws
+│       ├── middleware/         # JWT auth, error handler
+│       └── modules/
+│           ├── auth/           # login, JWT sign/verify, bcrypt
+│           ├── machines/       # CRUD + dynamic field schema
+│           ├── telemetry/      # ingest, latest, series, aggregate, daily-count
+│           ├── alerts/         # rule CRUD + EvaluateTelemetry
+│           ├── dashboards/     # dashboard + widget CRUD, layout PATCH
+│           ├── ai/             # /ai/chat and /ai/ask pipelines (see docs/ai-pages.md)
+│           └── led/            # LED kiosk token: generate/get/revoke
 │
 └── frontend/                   # Vue 3 + Vite + TypeScript
     └── src/
@@ -41,24 +46,22 @@ iot-dashboard/
 ## 🚀 Quick Start (Docker — recommended)
 
 ```bash
-cd iot-dashboard
-
 # Copy env file
 cp .env.example .env
+# fill in JWT_SECRET (≥32 chars) and AI_API_KEY
 
 # Start all services (db, redis, backend, frontend)
 docker compose up -d
 
-# Wait ~30 seconds for DB to initialize, then seed:
-docker compose exec backend npm run db:migrate:deploy
-docker compose exec backend npm run db:seed
+# Migrations + seed data run automatically on backend startup.
+# Optionally load ~2.3M rows of historical telemetry:
+docker compose exec backend ./backfill
 ```
 
 **Access:**
 - Frontend: http://localhost:5173
 - Backend API: http://localhost:4000
-- WebSocket: ws://localhost:4001
-- Prisma Studio: `docker compose exec backend npm run db:studio`
+- WebSocket: ws://localhost:4000/ws
 
 **Default login:** `admin@acme-foods.com` / `Admin@1234`
 
@@ -67,6 +70,7 @@ docker compose exec backend npm run db:seed
 ## 💻 Local Development (without Docker)
 
 ### Prerequisites
+- Go 1.x
 - Node.js 20+
 - PostgreSQL 16 + TimescaleDB extension
 - Redis (optional — not strictly required for dev)
@@ -75,19 +79,12 @@ docker compose exec backend npm run db:seed
 
 ```bash
 cd backend
-npm install
 
 # Copy and edit .env
 cp ../.env.example .env
 
-# Run migrations
-npm run db:migrate
-
-# Seed demo data
-npm run db:seed
-
-# Start dev server (hot-reload)
-npm run dev
+# Start dev server — migrations + seed data run automatically on startup
+go run ./cmd/server/
 ```
 
 ### Frontend
@@ -100,7 +97,7 @@ npm install
 npm run dev
 ```
 
-Frontend dev server: http://localhost:5173 (proxies /api to :4000)
+Frontend dev server: http://localhost:5173 (proxies /api and /ws to :4000)
 
 ---
 
@@ -137,7 +134,7 @@ SELECT add_compression_policy('telemetry_raw', INTERVAL '7 days', if_not_exists 
 
 ## 🔌 WebSocket Protocol
 
-Connect: `ws://localhost:4001?token=<jwt>`
+Connect: `ws://localhost:4000/ws?token=<jwt>`
 
 ```jsonc
 // Client → Server: subscribe to machine telemetry
@@ -152,35 +149,18 @@ Connect: `ws://localhost:4001?token=<jwt>`
 
 ---
 
-## 🤖 AI Tool Layer
+## 🤖 AI Assistant
 
-The `/api/ai/tools` endpoint exposes structured tool definitions for LLM integration:
+Two independent AI surfaces, both backed by an OpenAI-compatible chat completions API (`AI_BASE_URL`, `AI_API_KEY`; Groq/gpt-oss models are only the fallback defaults in code):
 
-| Tool | Description |
-|---|---|
-| `getMachines` | List all machines with status |
-| `getMachineFields` | Get field schema for a machine |
-| `getTelemetry` | Time-series data for a field |
-| `getLatestTelemetry` | Current snapshot |
-| `getDashboards` | List user dashboards |
-| `createWidget` | Add widget to a dashboard |
-| `updateWidget` | Update widget config |
-| `moveWidget` | Reposition widget on grid |
-| `createAlert` | Define alert rule |
-| `getActiveAlerts` | Current open alert events |
+| Surface | Route | Purpose |
+|---|---|---|
+| Chat Assistant | `POST /api/ai/chat` | Conversational agent — intent router → tool loop → verify-then-repair; reads live telemetry and stages dashboard edits via structured tool calls. |
+| Ask-Data | `POST /api/ai/ask` | Natural language → hardened read-only SQL → LLM-authored ECharts chart; results can be saved to boards. |
 
-### Connecting Claude/OpenAI
+Production runs on KKU GenAI: generation model `claude-sonnet-5` (`AI_MODEL`), router/verifier model `gpt-5.4-mini` (`AI_ROUTER_MODEL`).
 
-```typescript
-// Fetch tool definitions
-const tools = await fetch('/api/ai/tools').then(r => r.json());
-
-// Execute via API (for LLM tool-use callbacks)
-await fetch('/api/ai/tools/execute', {
-  method: 'POST',
-  body: JSON.stringify({ toolName: 'getMachines', params: { status: 'online' } })
-});
-```
+See [`docs/ai-pages.md`](docs/ai-pages.md) for the full end-to-end pipeline breakdown.
 
 ---
 
@@ -227,6 +207,15 @@ GET    /api/ai/conversations
 POST   /api/ai/conversations
 GET    /api/ai/conversations/:id/messages
 POST   /api/ai/conversations/:id/messages
+POST   /api/ai/chat
+POST   /api/ai/ask
+POST   /api/ai/run-sql
+GET    /api/ai/boards
+POST   /api/ai/boards
+GET    /api/ai/boards/:id
+DELETE /api/ai/boards/:id
+POST   /api/ai/boards/:id/charts
+DELETE /api/ai/boards/:id/charts/:chartId
 ```
 
 ---
@@ -295,11 +284,11 @@ JWT tokens expire after 24h (configurable via `JWT_EXPIRES_IN`).
 | Styling | TailwindCSS 3 |
 | Icons | lucide-vue-next |
 | HTTP client | Axios |
-| Backend runtime | Node.js 20 + TypeScript |
-| Web framework | Express 4 |
-| ORM | Prisma 5 |
+| Backend runtime | Go 1.x |
+| Web framework | Fiber v2 |
+| Database driver | pgx v5 (no ORM — raw SQL) |
 | Database | PostgreSQL 16 + TimescaleDB |
-| Real-time | ws (WebSocket) |
-| Auth | JWT (jsonwebtoken + bcryptjs) |
-| Validation | Zod |
+| Real-time | gofiber/websocket (WS on the same port as REST, `/ws`) |
+| Auth | JWT (golang-jwt) + bcrypt |
+| Cache / future use | Redis (provisioned, no Go client wired up yet) |
 | Container | Docker + Docker Compose |

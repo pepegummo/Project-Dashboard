@@ -82,7 +82,7 @@ backend/
 │       ├── telemetry/          latest · series · aggregate · daily-count · ingest
 │       ├── dashboards/         CRUD + widgets + layout
 │       ├── alerts/             Rules CRUD + events + ack/resolve
-│       ├── ai/                 Chat · tools · conversations (Groq llama-3.3-70b)
+│       ├── ai/                 Chat · Ask-Data · tools · conversations (KKU: claude-sonnet-5 gen, gpt-5.4-mini router)
 │       └── led/                GET/POST/DELETE /token (permanent kiosk JWT)
 ```
 
@@ -287,27 +287,29 @@ ai_messages ──────────────────────�
 
 ---
 
-## AI Module (Groq llama-3.3-70b)
+## AI Module (KKU-hosted, OpenAI-compatible)
+
+Two independent surfaces sharing the same provider account and org-scoped DB access — see [`docs/ai-pages.md`](docs/ai-pages.md) for the full pipeline breakdown.
 
 ```
-POST /api/ai/chat
+POST /api/ai/chat  (controller.go + router.go)
     │
-    ├── Load conversation history from DB
-    ├── Build request: system prompt + history + 13 tools
+    ├── ClassifyIntent — gpt-5.4-mini router model
+    ├── dispatchIntent (Go) → forces tool_choice by function name
+    │     (deterministic — prose is never trusted to gate intent)
     │
-    └── Agentic Loop (max 5 iterations)
+    └── Bounded tool loop (claude-sonnet-5 generation model)
             │
-            ├── Call Groq API
-            │     retry on 429: parse Retry-After header, max 3 attempts
+            ├── execute tool(s) via tool_actions.go / dashboard_action.go
+            ├── verify-then-repair pass (verify.go) before returning the answer
             │
-            ├── finish_reason == "tool_calls"?
-            │     YES → execute tools → save to DB → loop
-            │     NO  → extract text → save → return
-            │
-            └── Tools by category:
-                  Read:   getMachines · getLatestTelemetry · getTelemetryTrend
-                          getActiveAlerts · getDailyCount · getFactoryOverview
-                  Write:  createAlert · acknowledgeAlert · resolveAlert
-                          createCustomDashboard · addWidgetToDashboard · removeWidget
-                  Auth:   admin|editor for write tools (checked inside tool_actions.go)
+            └── Tools (snake_case, schema.go AllTools()):
+                  get_machines · show_metric · get_telemetry_trend
+                  get_active_alerts · get_telemetry_series · get_production_count
+                  get_skus · list_dashboards
+                  preview_dashboard · preview_add_widget
+                  preview_remove_widget · preview_update_widget
+                  (+ create_custom_dashboard, frontend-only via POST /ai/tools/execute)
 ```
+
+**Ask-Data path** (`POST /api/ai/ask`, `nl2sql.go`): natural language → model emits SQL via a forced tool call → validated and run read-only against org-scoped `v_*` views → numeric results get a second forced tool call authoring an ECharts option, sanitized and verified before reaching the browser. Also `POST /api/ai/run-sql` and board CRUD in `boards.go`.

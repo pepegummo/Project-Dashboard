@@ -28,7 +28,7 @@ The core objectives are:
 - **Configurable dashboards** — operators can build their own dashboards by dragging and dropping widget types (KPI cards, gauges, line charts, status cards, alarm panels) onto a grid.
 - **Alert management** — define threshold-based rules per machine field; get notified in real-time when a rule is violated.
 - **LED screen mode** — when the browser runs on a 640×320 display, automatically switch to a full-screen KPI carousel optimised for reading from a distance.
-- **AI assistant** — an integrated chat interface backed by an LLM tool-execution layer (frontend only; backend tables exist but routes are not yet exposed in Go).
+- **AI assistant** — two backend-implemented surfaces: a conversational Chat Assistant (`POST /api/ai/chat`) with a live tool-execution layer, and an Ask-Data page (`POST /api/ai/ask`) that turns natural language into charts. See [`docs/ai-pages.md`](docs/ai-pages.md) for the full pipeline.
 
 ---
 
@@ -57,7 +57,7 @@ The core objectives are:
 | **Go** | `1.26` | Compiled, statically typed, low memory overhead — well-suited for long-running IoT telemetry services. |
 | **Fiber v2** | `v2.52` | Fast HTTP framework built on fasthttp. Provides middleware (cors, helmet, compress, limiter, logger) out of the box with minimal boilerplate. |
 | **pgx/v5** | `v5.9` | High-performance PostgreSQL driver. **No ORM** — all queries are raw SQL. The connection pool (`pgxpool`) is a package-level singleton in `internal/database`. |
-| **gorilla/websocket** | `v1.5` | Low-level WebSocket server on a separate `:4001` port. Chosen over Fiber's built-in WS to keep the WS server fully independent from the HTTP lifecycle. |
+| **gofiber/websocket** | `v2` | WebSocket hub mounted on Fiber itself at `GET /ws` — same `:4000` port as REST, no separate server/lifecycle to manage. |
 | **golang-jwt/jwt v5** | `v5.3` | JWT signing and verification with HMAC-SHA256. |
 | **golang.org/x/crypto** | `v0.52` | bcrypt for password hashing. |
 | **godotenv** | `v1.5` | Loads `.env` on startup (ignored if not present — Docker uses real env vars). |
@@ -93,20 +93,21 @@ Each field is described by a `MachineField` record which carries:
 
 ### 2.2 Real-Time Telemetry Pipeline
 
-The data flow for live sensor readings:
+There is no simulator. Telemetry enters the system only via ingest; the DB broadcaster is a fallback heartbeat. The data flow for live sensor readings:
 
 ```
-[Simulator (Go)]
-       │ (1 tick / 60 seconds)
+[POST /api/telemetry/:id/ingest]
+       │  external device or load test writes a reading
        ▼
-[simulator.run() → fieldState.nextValue()]
-       │  1. generates pulse-wave + noise value per field
-       │  2. broadcasts via WebSocket immediately
-       │  3. evaluates alert rules
-       ▼
-[WsGateway.BroadcastTelemetry()]
-       │  sends JSON to all subscribed WebSocket clients
-       ▼
+[Ingest handler]
+       │  1. INSERT INTO telemetry_raw
+       │  2. alertEval.EvaluateAndBroadcast() — evaluates alert rules
+       │  3. broadcaster.BroadcastOne() — broadcasts immediately, no wait
+       ▼                                              ▲
+[WsGateway.BroadcastTelemetry()]          [Broadcaster: polls DB every 30s]
+       │  sends JSON to all subscribed         DISTINCT ON (machine_id) —
+       │  WebSocket clients                    fallback heartbeat for ALL
+       ▼                                       connected clients
 [Frontend: wsService.onTelemetry('*', handler)]
        │  parsed in useWebSocket composable
        ▼
@@ -119,11 +120,11 @@ The data flow for live sensor readings:
 [User sees the updated number on screen]
 ```
 
-> **Note:** The simulator ticks every **60 seconds** (not 1 second). The `telemetry_raw` table stores these ticks. Historical chart data is loaded from the DB via REST, not synthesised from WebSocket traffic.
+> **Note:** There is no simulator generating synthetic data. Live updates come from ingest (immediate broadcast) plus a 30-second DB-polling broadcaster as a fallback heartbeat. The `telemetry_raw` table stores every ingested reading. Historical chart data is loaded from the DB via REST, not synthesised from WebSocket traffic.
 
 ### 2.3 Alert Rule Evaluation
 
-Alert rules are stored per-machine in the `alerts` table. Each rule defines a `field`, `condition` (gt/lt/eq/between/outside), and `threshold`. `AlertService.EvaluateTelemetry()` runs on every simulator tick:
+Alert rules are stored per-machine in the `alerts` table. Each rule defines a `field`, `condition` (gt/lt/eq/between/outside), and `threshold`. `AlertService.EvaluateTelemetry()` runs on every telemetry ingest (`EvaluateAndBroadcast`, called from the ingest handler):
 
 - It loads all active rules for the machine from the DB.
 - Evaluates each rule's condition against the current field value.
@@ -223,17 +224,17 @@ When a new dashboard is created (`POST /api/dashboards`), the backend automatica
 │                 │                                                         │
 │  ┌──────────────▼──────────────┐  ┌──────────────────────────────────┐  │
 │  │   ApiService (axios)         │  │  WebSocketService                │  │
-│  │   REST: :4000/api/*          │  │  WS:  :4001                      │  │
+│  │   REST: :4000/api/*          │  │  WS:  :4000/ws                   │  │
 │  └──────────────┬──────────────┘  └──────────────┬───────────────────┘  │
 └─────────────────┼─────────────────────────────────┼─────────────────────┘
                   │ HTTP                             │ WebSocket
 ┌─────────────────▼─────────────────────────────────▼───────────────────┐
-│                     BACKEND  (Go / Fiber + gorilla/websocket)          │
+│                     BACKEND  (Go / Fiber v2 + gofiber/websocket)       │
 │                                                                        │
 │  ┌────────────────────────────────────────────────────────────────┐   │
-│  │  Fiber REST API  (:4000)                                       │   │
+│  │  Fiber REST + WS  (:4000)                                      │   │
 │  │  /health  /api/auth  /api/machines  /api/telemetry             │   │
-│  │  /api/dashboards  /api/alerts                                  │   │
+│  │  /api/dashboards  /api/alerts  /api/ai  /ws                    │   │
 │  └──────────────────────────┬─────────────────────────────────────┘   │
 │                              │                                         │
 │  ┌───────────────────────────▼─────────────────────────────────────┐  │
@@ -241,7 +242,7 @@ When a new dashboard is created (`POST /api/dashboards`), the backend automatica
 │  └───────────────────────────┬─────────────────────────────────────┘  │
 │                              │                                         │
 │  ┌───────────────────────────▼─────────────────────────────────────┐  │
-│  │  WsGateway  (:4001, gorilla/websocket)                          │  │
+│  │  WsGateway  (:4000/ws, gofiber/websocket)                       │  │
 │  │  - Manages connected clients (map[*client]struct{})             │  │
 │  │  - Handles subscribe/unsubscribe per machineId                  │  │
 │  │  - Broadcasts telemetry/alert/machine_status messages           │  │
@@ -249,10 +250,10 @@ When a new dashboard is created (`POST /api/dashboards`), the backend automatica
 │  └───────────────────────────┬─────────────────────────────────────┘  │
 │                              │                                         │
 │  ┌───────────────────────────▼─────────────────────────────────────┐  │
-│  │  Simulator (in-process goroutine)                               │  │
-│  │  - Generates pulse-wave + noise data per machine (1 tick/60s)   │  │
-│  │  - Broadcasts via WsGateway                                     │  │
-│  │  - Evaluates alert rules → broadcasts triggered alerts          │  │
+│  │  Broadcaster (in-process goroutine) — no simulator               │  │
+│  │  - Polls DB every 30s: DISTINCT ON (machine_id) latest reading  │  │
+│  │  - Broadcasts via WsGateway (fallback heartbeat)                │  │
+│  │  - Ingest also broadcasts + evaluates alert rules immediately   │  │
 │  └───────────────────────────┬─────────────────────────────────────┘  │
 └─────────────────────────────┼──────────────────────────────────────────┘
                               │ pgx/v5 (raw SQL)
@@ -333,8 +334,8 @@ Project-Dashboard-CPF/
 │
 ├── frontend/
 │   ├── package.json
-│   ├── vite.config.ts              # Dev server: proxies /api → :4000, /ws → :4001 (WebSocket)
-│   ├── nginx.conf                  # Prod: /api/* → backend:4000, /ws → backend:4001
+│   ├── vite.config.ts              # Dev server: proxies /api and /ws → :4000 (same port)
+│   ├── nginx.conf                  # Prod: /api/* → backend:4000, /ws → backend:4000 (upgrade)
 │   └── src/
 │       ├── main.ts                 # App bootstrap: Vue, Pinia, ECharts registration
 │       ├── App.vue                 # Root: router-view + AppLayout selector
@@ -348,7 +349,7 @@ Project-Dashboard-CPF/
 │       │   ├── DashboardEditorPage.vue     # Main grid editor with widget toolbox
 │       │   ├── MachineManagementPage.vue
 │       │   ├── AlertsPage.vue
-│       │   ├── AIAssistantPage.vue         # LLM chat UI (backend routes not yet in Go)
+│       │   ├── AIAssistantPage.vue         # Chat UI for POST /api/ai/chat (see docs/ai-pages.md)
 │       │   └── LedViewPage.vue             # Public kiosk — no auth, no layout shell
 │       │
 │       ├── components/
@@ -394,7 +395,7 @@ Project-Dashboard-CPF/
 ├── backend/
 │   ├── go.mod / go.sum
 │   └── cmd/
-│   │   ├── server/main.go          # Entry point: config → DB (with retry) → migrate → WS → simulator → Fiber
+│   │   ├── server/main.go          # Entry point: config → DB (with retry) → migrate → WS → broadcaster → Fiber
 │   │   └── backfill/main.go        # Standalone utility to backfill historical telemetry
 │   └── internal/
 │       ├── config/env.go           # Reads env vars; DATABASE_URL is required (panics if missing)
@@ -409,8 +410,8 @@ Project-Dashboard-CPF/
 │       │   ├── telemetry/          # latest (public), series, aggregate, daily-count, ingest
 │       │   ├── dashboards/         # Dashboard + widget CRUD; Create auto-copies default widgets
 │       │   └── alerts/             # Alert rules CRUD, event acknowledge/resolve, EvaluateTelemetry
-│       ├── simulator/simulator.go  # Pulse-wave generator per machine type; ticks every 60s
-│       └── websocket/ws_gateway.go # gorilla/websocket hub: client map, subscription filter, ping/pong
+│       ├── broadcaster/            # Polls DB every 30s → BroadcastTelemetry (fallback heartbeat; no simulator)
+│       └── websocket/ws_gateway.go # gofiber/websocket hub (:4000/ws): client map, subscription filter, ping/pong
 │
 └── loadtest/                       # Vegeta-based load test tool (separate Go module)
     ├── main.go                     # Attack runner + SSE dashboard server
@@ -479,7 +480,7 @@ The primary work surface. Renders `GridStackCanvas` (drag-and-drop widget grid) 
 
 #### `MachineManagementPage.vue` — `/machines`
 
-Admin view for the physical machine fleet. Calls `useWebSocket()` on mount so status dot colours update in real-time as the simulator broadcasts `machine_status` events.
+Admin view for the physical machine fleet. Calls `useWebSocket()` on mount so status dot colours update in real-time as the backend broadcasts `machine_status` events.
 
 **Summary row:** 4 stat cards (Total / Online / Maintenance / Offline) computed from `machineStore`.
 
@@ -514,19 +515,19 @@ Three-panel view of the alert subsystem.
 
 #### `AIAssistantPage.vue` — `/ai-assistant`
 
-Chat UI for an LLM-powered factory assistant. Layout is a two-column split: conversation list on the left, chat area on the right.
+Chat UI for the Chat Assistant surface, backed by a fully implemented Go module. Layout is a two-column split: conversation list on the left, chat area on the right.
 
 **Conversation management:** New Conversation button creates a DB record via `POST /api/ai/conversations`. Clicking an existing conversation loads its messages.
 
 **Message flow:**
 1. User types → optimistic push to `messages[]` (UI updates instantly).
 2. `api.addMessage()` persists the user turn.
-3. `simulateAiResponse()` is called — this is a **client-side placeholder** that pattern-matches keywords in the user message and calls `api.executeAiTool()` to fetch live data (machines, telemetry, alerts), then constructs a canned reply.
-4. In production this function would be replaced by an actual Claude/LLM API call with the tool definitions from `api.getAiTools()`.
+3. The message is sent to `POST /api/ai/chat`, which runs the server-side pipeline: intent router (`gpt-5.4-mini`) → forced tool_choice → bounded tool loop against the live database → verify-then-repair before returning the assistant's reply.
+4. The assistant's reply (and any dashboard preview it staged) is appended to `messages[]`.
 
 **Tool inspector:** Collapsible panel lists available tools returned by `GET /api/ai/tools`. Useful for debugging what actions the AI layer can take.
 
-> **Status:** Backend routes `/api/ai/*` return 404 — the Go module is not yet implemented (see §5.4). The frontend page is fully functional as a UI shell and a client-side demo.
+> **Status:** `/api/ai/*` is fully implemented — see [`docs/ai-pages.md`](docs/ai-pages.md) and §5.4 (updated below) for the pipeline detail. A separate Ask-Data page (`AskDataPage.vue`, `POST /api/ai/ask`) covers natural-language-to-chart queries.
 
 ---
 
@@ -556,8 +557,8 @@ Wires the entire application in order:
 1. `config.Load()` — reads env vars
 2. `database.Connect(ctx)` — connects with retry loop; exits on failure
 3. `migrate.RunAll(ctx, pool)` — schema + seed (non-fatal warning on error)
-4. `ws.NewGateway().Start(wsPort)` — starts WebSocket server
-5. `simulator.NewSimulator(gateway, 60_000).Start()` — starts data generation
+4. `websocket.NewGateway()` — creates the WS hub, mounted on Fiber at `GET /ws`
+5. `broadcaster.New(gateway, pool, 30*time.Second).Start()` — starts the DB-polling fallback heartbeat (no simulator)
 6. Fiber app with middleware stack → route registration → `app.Listen(":4000")`
 
 #### `backend/internal/database/db.go`
@@ -613,8 +614,6 @@ Validate at the Go `AddWidget` / `UpdateWidget` endpoints by checking known keys
 
 ---
 
-### 5.4 AI Assistant Backend Routes Not Implemented in Go
+### 5.4 AI Assistant — Implemented, Not a Stub
 
-**Current state:** The frontend `AIAssistantPage.vue` calls `/api/ai/conversations` and `/api/ai/tools`, but these routes do not exist in the Go backend. The DB tables (`ai_conversations`, `ai_messages`) are created by the schema migration, but no Go module handles them. Calls to these endpoints currently return 404.
-
-**Recommendation:** Implement `internal/modules/ai/` with conversation CRUD and a tool-execution layer that wraps the existing service methods (machines, telemetry, alerts) as structured tools for an LLM API.
+**Current state:** `internal/modules/ai/` is fully implemented — conversation CRUD, tool listing/execution, and two production pipelines: the Chat Assistant (`POST /api/ai/chat`, `controller.go` + `router.go` — intent router → forced tool_choice → bounded tool loop → verify-then-repair) and Ask-Data (`POST /api/ai/ask`, `nl2sql.go` — natural language → hardened SQL → LLM-authored ECharts chart, plus saved boards in `boards.go`). Production runs on KKU GenAI (`claude-sonnet-5` generation, `gpt-5.4-mini` router/verifier); Groq/gpt-oss are only the fallback defaults in code. See [`docs/ai-pages.md`](docs/ai-pages.md) for the full end-to-end breakdown.
