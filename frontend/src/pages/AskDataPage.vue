@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, reactive } from 'vue';
+import { ref, computed, onMounted, reactive, nextTick } from 'vue';
 import { api } from '@/services/api.service';
 import type { AskDataResult, AskBoardSummary, AskBoard, AskBoardChart } from '@/types';
-import { Sparkles, Loader2, Save, Trash2, RefreshCw, User } from 'lucide-vue-next';
+import { Sparkles, Loader2, Save, Trash2, RefreshCw, User, Plus, Pencil } from 'lucide-vue-next';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 
@@ -115,6 +115,18 @@ async function ask() {
   }
 }
 
+// newChat clears the whole ask thread — result, notes, the follow-up context, and any
+// open board view — so the screen returns to a blank "ask" state. Saved boards stay.
+function newChat() {
+  question.value = '';
+  askError.value = '';
+  result.value = null;
+  notes.value = [];
+  askedQuestion.value = '';
+  prev.value = null;
+  activeBoard.value = null;
+}
+
 // ── Boards ───────────────────────────────────────────────────────────────────
 const boards = ref<AskBoardSummary[]>([]);
 const activeBoard = ref<AskBoard | null>(null);
@@ -185,6 +197,34 @@ async function saveToBoard() {
   }
 }
 
+// ── Board rename (inline, in the board header) ──────────────────────────────
+const renamingBoard = ref(false);
+const renameText = ref('');
+const renameInput = ref<HTMLInputElement | null>(null);
+
+function startRename() {
+  if (!activeBoard.value) return;
+  renameText.value = activeBoard.value.name;
+  renamingBoard.value = true;
+  void nextTick(() => renameInput.value?.focus());
+}
+
+// Enter and blur both land here; Esc flips renamingBoard off first, so the
+// following blur is a no-op via the guard.
+async function saveRename() {
+  if (!renamingBoard.value || !activeBoard.value) return;
+  renamingBoard.value = false;
+  const name = renameText.value.trim();
+  if (!name || name === activeBoard.value.name) return;
+  try {
+    await api.renameBoard(activeBoard.value.id, name);
+    activeBoard.value.name = name;
+    await loadBoards(); // refresh the chips
+  } catch (e) {
+    askError.value = (e as Error).message;
+  }
+}
+
 async function deleteChart(ch: AskBoardChart) {
   if (!activeBoard.value) return;
   await api.deleteBoardChart(activeBoard.value.id, ch.id);
@@ -202,23 +242,7 @@ onMounted(loadBoards);
 
 <template>
   <div class="flex h-full min-h-screen">
-    <!-- Boards rail -->
-    <aside class="w-72 flex-shrink-0 border-r border-white/5 bg-surface-100 p-4 space-y-1.5">
-      <div class="px-3 py-2 text-[11px] font-bold uppercase tracking-widest text-gray-500">Boards</div>
-      <button
-        v-for="b in boards" :key="b.id"
-        class="group flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-[15px] transition-colors"
-        :class="activeBoard?.id === b.id ? 'bg-surface-200 text-white' : 'text-gray-400 hover:bg-surface-200/50'"
-        @click="openBoard(b.id)"
-      >
-        <span class="flex-1 truncate">{{ b.name }}</span>
-        <span class="text-xs text-gray-500">{{ b.chartCount }}</span>
-        <Trash2 class="h-4 w-4 opacity-0 group-hover:opacity-100 hover:text-red-400" @click.stop="removeBoard(b.id)" />
-      </button>
-      <p v-if="boards.length === 0" class="px-3 py-2 text-sm text-gray-600">No boards yet. Ask a question and save the chart.</p>
-    </aside>
-
-    <!-- Main -->
+    <!-- Main — boards live as chips above the ask bar, no second sidebar -->
     <div class="flex-1 overflow-y-auto p-8 lg:p-10">
       <!-- Ask bar -->
       <div class="mx-auto max-w-7xl">
@@ -227,6 +251,30 @@ onMounted(loadBoards);
           <h1 class="text-2xl font-bold lg:text-3xl">Ask your data</h1>
         </div>
         <p class="mt-2 text-base text-gray-500">Ask in plain language — a chart is generated to answer you.</p>
+
+        <!-- Boards as chips: [+ New] [board ³] [board ⁵] — replaces the old second sidebar -->
+        <div class="mt-5 flex flex-wrap items-center gap-2">
+          <button
+            class="flex items-center gap-1.5 rounded-full border border-primary-500/40 px-4 py-2 text-sm font-medium text-primary-300 transition-colors hover:bg-primary-500/10 disabled:opacity-50"
+            :disabled="asking"
+            title="Clear the screen and start a fresh question"
+            @click="newChat"
+          >
+            <Plus class="h-4 w-4" /> New
+          </button>
+          <button
+            v-for="b in boards" :key="b.id"
+            class="group flex items-center gap-2 rounded-full border px-4 py-2 text-sm transition-colors"
+            :class="activeBoard?.id === b.id
+              ? 'border-primary-500/60 bg-surface-200 text-white'
+              : 'border-white/10 text-gray-400 hover:bg-surface-200/60 hover:text-gray-200'"
+            @click="openBoard(b.id)"
+          >
+            <span class="max-w-[10rem] truncate">{{ b.name }}</span>
+            <span class="rounded-full bg-surface-300 px-1.5 text-xs text-gray-400">{{ b.chartCount }}</span>
+            <Trash2 class="h-3.5 w-3.5 opacity-0 transition-opacity group-hover:opacity-100 hover:text-red-400" @click.stop="removeBoard(b.id)" />
+          </button>
+        </div>
 
         <div class="mt-6 flex gap-3">
           <textarea
@@ -318,7 +366,23 @@ onMounted(loadBoards);
 
       <!-- Active board -->
       <div v-if="activeBoard" class="mx-auto mt-14 max-w-7xl">
-        <h2 class="mb-6 text-xl font-bold text-white">{{ activeBoard.name }}</h2>
+        <div class="mb-6 flex items-center gap-2">
+          <input
+            v-if="renamingBoard"
+            ref="renameInput"
+            v-model="renameText"
+            class="rounded-lg border border-primary-500/60 bg-surface-200 px-3 py-1.5 text-xl font-bold text-white outline-none"
+            @keydown.enter.prevent="saveRename"
+            @keydown.esc="renamingBoard = false"
+            @blur="saveRename"
+          />
+          <template v-else>
+            <h2 class="text-xl font-bold text-white">{{ activeBoard.name }}</h2>
+            <button class="text-gray-500 transition-colors hover:text-gray-200" title="Rename board" @click="startRename">
+              <Pencil class="h-4 w-4" />
+            </button>
+          </template>
+        </div>
         <div v-if="activeBoard.charts.length === 0" class="text-base text-gray-500">This board is empty.</div>
         <div class="grid grid-cols-1 gap-8">
           <div v-for="ch in activeBoard.charts" :key="ch.id" class="rounded-2xl border border-white/10 bg-surface-100 p-6">

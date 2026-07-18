@@ -103,6 +103,30 @@ func GetBoard(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"id": id, "name": name, "charts": charts}})
 }
 
+// PATCH /ai/boards/:id {name}
+func RenameBoard(c *fiber.Ctx) error {
+	org, ok := orgOf(c)
+	if !ok {
+		return c.Status(401).JSON(fiber.Map{"success": false})
+	}
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := c.BodyParser(&body); err != nil || body.Name == "" {
+		return c.Status(400).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": "name is required"}})
+	}
+	ct, err := database.Pool.Exec(context.Background(),
+		`UPDATE ai_boards SET name = $1, updated_at = NOW() WHERE id = $2 AND organization_id = $3`,
+		body.Name, c.Params("id"), org)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": err.Error()}})
+	}
+	if ct.RowsAffected() == 0 {
+		return c.Status(404).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": "board not found"}})
+	}
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"id": c.Params("id"), "name": body.Name}})
+}
+
 // DELETE /ai/boards/:id
 func DeleteBoard(c *fiber.Ctx) error {
 	org, ok := orgOf(c)

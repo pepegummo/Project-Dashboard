@@ -339,6 +339,11 @@ class ApiService {
     return data.data;
   }
 
+  async renameBoard(id: string, name: string) {
+    const { data } = await this.client.patch<ApiResponse<{ id: string; name: string }>>(`/ai/boards/${id}`, { name });
+    return data.data;
+  }
+
   async deleteBoard(id: string) {
     await this.client.delete(`/ai/boards/${id}`);
   }

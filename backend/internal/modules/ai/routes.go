@@ -31,6 +31,7 @@ func RegisterRoutes(router fiber.Router) {
 	router.Get("/boards", ListBoards)
 	router.Post("/boards", CreateBoard)
 	router.Get("/boards/:id", GetBoard)
+	router.Patch("/boards/:id", RenameBoard)
 	router.Delete("/boards/:id", DeleteBoard)
 	router.Post("/boards/:id/charts", AddBoardChart)
 	router.Delete("/boards/:id/charts/:chartId", DeleteBoardChart)
