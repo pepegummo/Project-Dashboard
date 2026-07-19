@@ -392,7 +392,9 @@ Numbered walkthrough:
 
 Tool implementations live in `tool_actions.go` (ToolKit methods) and `dashboard_action.go` (`DashboardAction`'s `Preview`/`PreviewAddWidget`/`PreviewUpdateWidget`/`Handle` methods).
 
-`buildAITools(role)` (`controller.go:806`) filters the tool list by role — viewers lose write/preview tools — and sends simple tools slim (name + description only) while the `preview_*` widget tools go over with their full schema, exploiting provider prompt caching to keep token cost down.
+`buildAIToolsWith(role, slimAll)` (`controller.go`; `buildAITools(role)` is the full-schema wrapper) filters the tool list by role — viewers lose write/preview tools. Simple tools always go over slim (name + description only). The three `preview_*` widget tools keep their full schemas **only on edit-intent turns and router fallback**; when the router classifies the turn as a read (`chat`/`read_metric`/`read_agg`/`production`/`alerts`, see `readOnlyIntents`) they are sent slim too (~850 tokens saved per call) while remaining callable in case of a misclassification. Exactly two byte-stable tool-array variants exist, so both stay provider-cacheable prefixes.
+
+Token budget (2026-07-20): every call carries `max_completion_tokens` (`AI_MAX_TOKENS`, default 2048 — hidden reasoning counts against it, so don't set below ~1024). Tool results for `get_telemetry_series` / `get_production_count` are capped at 100 stride-sampled rows plus a `summary` (min/max/avg/total computed over the full data before sampling), since those results are re-sent on every remaining loop iteration.
 
 `tool_choice` serialization in `callAIModel` (`controller.go:834`): an empty string means auto, `"required"`/`"none"` are sent as plain strings, and a value starting with `{` is sent as a forced-function object. Provider `tool_choice` errors are retried with auto; a function-parser failure is retried with no tools at all. The response parser (`aiError.UnmarshalJSON`, `controller.go`) tolerates both OpenAI-style `{"error":{"message":...}}` objects and bare-string errors (`{"error":"This model reached daily limit."}` — the KKU proxy's format).
 

@@ -109,3 +109,26 @@ Call budget ของ prose turn: 2 → **3–4 calls**
 | Full-loop prose regression (explain×3, greeting×2, thanks) | **6/6** — ไม่มี false-positive repair |
 
 Deploy แล้ว (rebuild backend 07-18, `/health` ok) — `docs/ai-pages.md` อัปเดต diagram/ตารางแล้ว
+
+## 9. รอบลด token/request (2026-07-20)
+
+Ship 4 commits (`46bf568..29d9c28`) ลดต้นทุน token ต่อ request ทั้งสองหน้า — baseline จาก
+`chat-fullloop-results.md`: /ai เคสมี tool ~14.2k, greeting ~7.2k
+
+- **`AI_MAX_TOKENS`** (default 2048) → ส่ง `max_completion_tokens` ทุก call (เดิมไม่จำกัดเลย —
+  hidden reasoning กินโควตาเงียบ ๆ); อย่าตั้งต่ำกว่า ~1024 เดี๋ยว tool-call JSON โดนตัด
+- **Cap 100 แถว + `summary`** (min/max/avg/total คำนวณจากข้อมูลเต็มก่อน sample) บนผล
+  `get_telemetry_series` / `get_production_count` ที่ป้อนกลับโมเดล — REST/frontend ไม่กระทบ
+- **Read-intent turns ส่ง tool slim ทั้งชุด** (`buildAIToolsWith(role, true)`) — schema เต็มของ
+  `preview_*` (~850 tok) ส่งเฉพาะ edit intent / router fallback; มีแค่ 2 variant คงที่ ยัง cache prefix ได้
+- **`systemPromptUnified`** 9,556 → 8,097 chars (กติกาครบเดิม — ตัดลึกกว่านี้รอ eval เขียวก่อน)
+- /ask: `buildSchemaContext` ตัด label/unit ที่ซ้ำกับ key ออกจาก metric-key list
+
+คาดการณ์: read request /ai ~14.2k → ~9.5–11k (**ลด ~25–30%**)
+**ยังค้าง:** วัด before/after จริงด้วย `TestChatFullLoopLive` — 07-20 รันไม่ได้เพราะ pool
+claude-sonnet-5 หมดวันไปก่อน
+
+⚠ **กับดักที่เจอ:** `go test ./internal/modules/ai/` รัน live suite ทันทีที่ env มี key — `-short`
+**ไม่ได้กัน** และ `TestChatFullLoopLive` เขียนทับ `chat-fullloop-results.md` แม้รัน fail
+(กู้ด้วย `git restore` ได้) — รัน offline อย่างเดียวใช้:
+`go test ./internal/modules/ai/ -count=1 -skip 'Live|BakeOff|DateEdit|ComplexFlows'`
