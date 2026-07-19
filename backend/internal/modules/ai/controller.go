@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"iot-dashboard/internal/config"
@@ -120,10 +121,10 @@ func dateLineForRequest() string {
 // ── Groq / OpenAI-compatible API types ───────────────────────────────────────
 
 type aiMessage struct {
-	Role       string         `json:"role"`
-	Content    *string        `json:"content"` // pointer so null stays null (tool-call turns)
+	Role       string       `json:"role"`
+	Content    *string      `json:"content"` // pointer so null stays null (tool-call turns)
 	ToolCalls  []aiToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string         `json:"tool_call_id,omitempty"`
+	ToolCallID string       `json:"tool_call_id,omitempty"`
 }
 
 type aiToolCall struct {
@@ -138,7 +139,7 @@ type aiToolCall struct {
 type aiResponse struct {
 	Choices []struct {
 		Message      aiMessage `json:"message"`
-		FinishReason string      `json:"finish_reason"`
+		FinishReason string    `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *struct {
 		PromptTokens     int `json:"prompt_tokens"`
@@ -608,7 +609,7 @@ type verifyRequest struct {
 	userMessage string
 	contextText string
 	orgID       string
-	msgs        []aiMessage    // full conversation so far, for the repair round
+	msgs        []aiMessage      // full conversation so far, for the repair round
 	tools       []map[string]any // role-filtered tool set, for the repair round
 	intentRes   IntentResult
 	routerOK    bool
@@ -852,6 +853,13 @@ func buildAITools(role string) []map[string]any {
 
 // callAI sends messages to Groq with the default model. Pass nil tools for a
 // plain (no-function-call) request. toolChoice: "" = auto, "required" = force a tool call.
+// tokenMeter accumulates total_tokens across every callAIModel invocation. Package-global
+// (not per-request) — reset+read it around a known workload (e.g. a live test) to total its cost.
+var tokenMeter int64
+
+func resetTokenMeter()      { atomic.StoreInt64(&tokenMeter, 0) }
+func loadTokenMeter() int64 { return atomic.LoadInt64(&tokenMeter) }
+
 func callAI(messages []aiMessage, tools []map[string]any, toolChoice string) (*aiResponse, error) {
 	resp, _, err := callAIModel(context.Background(), aiModel(), messages, tools, toolChoice)
 	return resp, err
@@ -923,6 +931,11 @@ func callAIModel(ctx context.Context, model string, messages []aiMessage, tools 
 		var result aiResponse
 		if err := json.Unmarshal(respBytes, &result); err != nil {
 			return nil, 0, fmt.Errorf("failed to parse AI response: %w", err)
+		}
+		// ponytail: single choke point for every model call (router/main/verify/repair) —
+		// accumulate token usage here so tests/ops can read a run total. Read via loadTokenMeter.
+		if result.Usage != nil {
+			atomic.AddInt64(&tokenMeter, int64(result.Usage.TotalTokens))
 		}
 		if result.Error != nil {
 			// Groq's function-call parser failed (malformed generation, e.g. gpt-oss
