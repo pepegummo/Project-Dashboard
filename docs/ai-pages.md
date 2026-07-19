@@ -18,6 +18,7 @@ IotVision ships two independent AI surfaces, both backed by an OpenAI-compatible
    - [4.1 Frontend](#41-frontend)
    - [4.2 Backend](#42-backend)
    - [4.3 Tools](#43-tools)
+   - [4.4 Widget element-click](#44-widget-element-click)
 5. [API reference](#5-api-reference)
 
 ---
@@ -394,6 +395,35 @@ Tool implementations live in `tool_actions.go` (ToolKit methods) and `dashboard_
 `buildAITools(role)` (`controller.go:806`) filters the tool list by role — viewers lose write/preview tools — and sends simple tools slim (name + description only) while the `preview_*` widget tools go over with their full schema, exploiting provider prompt caching to keep token cost down.
 
 `tool_choice` serialization in `callAIModel` (`controller.go:834`): an empty string means auto, `"required"`/`"none"` are sent as plain strings, and a value starting with `{` is sent as a forced-function object. Provider `tool_choice` errors are retried with auto; a function-parser failure is retried with no tools at all. The response parser (`aiError.UnmarshalJSON`, `controller.go`) tolerates both OpenAI-style `{"error":{"message":...}}` objects and bare-string errors (`{"error":"This model reached daily limit."}` — the KKU proxy's format).
+
+### 4.4 Widget element-click
+
+**In short:** shipped 2026-07-18/19, **`/ai` only** — clicking an element inside a widget (an axis, a data point, the value, etc.) attaches it as a one-line context hint to the *next* chat message via a mention chip. This is separate from the `@Widget` mention token described in §4.1 (which mentions a whole widget by typing `@`): element-click mentions a specific *part* of a widget, and there is no auto-ask — the user still types and sends the question.
+
+- A click adds a mention chip next to the input, e.g. `Weight Trend · y-axis`, or for a data point `Weight Trend · 14:00 · 42`.
+- The same click injects a one-line hint into the `dashboardContext` sent with the chat request, e.g. `user clicked the y-axis (kg)` or `user clicked point: x=14:00, value=42 (series Weight)`.
+- **One element per widget** — clicking a new element on the same widget overwrites the previous selection; only the latest click per widget is kept.
+- Chips clear on: send, clicking a chip's ✕, deselecting the widget, or New chat.
+
+**Elements per widget:**
+
+| Widget | Clickable elements |
+|---|---|
+| LineChart | title, point (click anywhere in the plot snaps to the nearest point), y-axis (left strip), x-axis (bottom strip) |
+| CustomChart | title, point (snaps to nearest point on the nearest series), y-axis left, y-axis right (dual-axis mode only), x-axis, legend (top strip, lists all series) |
+| DailyCount | title, point (bar click), y-axis (left + top strips), x-axis |
+| Gauge | title, value (the dial), unit (text under the number), threshold (lower/target/upper labels) |
+| KPI | title, value, unit |
+| StatusCard | title, value (status pill + per-field tiles), unit |
+| Table | title, per-row value, unit |
+| AlarmPanel | title only |
+
+**Architecture:** everything is gated by an `elementPickMode` flag in `widget-view-state.store.ts`, set `true` only while `AIAssistantPage.vue` is mounted (`onMounted`/`onUnmounted`) — the editor, dashboard list, and LED pages are untouched. Two mechanisms feed the same store:
+
+1. **HTML elements** are tagged with `data-ai-el` (+ optional `data-ai-detail`) attributes; a single click-delegation handler in `WidgetWrapper.vue` catches any click inside `[data-ai-el]` and calls `setElementClick` on the store, and shared CSS gives a violet hover cue on any tagged element. Canvas regions (axis strips, the legend strip, the gauge dial) are transparent, absolutely-positioned overlay `<div>`s carrying the same attributes, so they get the same delegation and hover cue for free.
+2. **In-plot data-point clicks** use a zrender `click` listener bound directly on each chart instance (`chart.getZr().on('click', ...)`), using the chart's static grid config to work out pure-geometry grid bounds and snap to the nearest category index / series — no ECharts event, so it works even over empty plot area.
+
+`AIAssistantPage.vue` watches the store's `lastElementClick`, adds the mention through the existing highlight/mention path, and `buildDashboardContext` appends the corresponding element line for each focused widget. `CustomChartWidget`'s legend toggle (`selectedMode`) is disabled while pick mode is on, so clicking the legend always registers as an element click rather than toggling a series.
 
 ---
 

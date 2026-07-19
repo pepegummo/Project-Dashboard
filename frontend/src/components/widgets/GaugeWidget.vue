@@ -133,7 +133,7 @@ const option = computed<EChartsOption>(() => {
            clickable, while the rest of the dial/number falls through to this one. -->
       <div
         v-if="widgetViewStateStore.elementPickMode"
-        class="absolute inset-0"
+        class="absolute ai-region aspect-square rounded-full h-[85%] max-w-[92%] left-1/2 top-[60%] -translate-x-1/2 -translate-y-1/2"
         data-ai-el="value"
         :data-ai-detail="valueDetail"
       />

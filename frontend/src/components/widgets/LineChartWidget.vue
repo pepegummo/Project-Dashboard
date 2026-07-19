@@ -595,13 +595,13 @@ const option = computed<EChartsOption>(() => {
              Geometry mirrors the static `grid` config above. -->
         <template v-if="widgetViewStateStore.elementPickMode">
           <div
-            class="absolute left-0 w-[42px]"
+            class="absolute left-0 w-[42px] ai-region"
             :style="{ top: '16px', bottom: (shouldRotate ? 52 : 30) + 'px' }"
             data-ai-el="y-axis"
             :data-ai-detail="unit"
           />
           <div
-            class="absolute left-[42px] right-[60px] bottom-0"
+            class="absolute left-[42px] right-[60px] bottom-0 ai-region"
             :style="{ height: (shouldRotate ? 52 : 30) + 'px' }"
             data-ai-el="x-axis"
             :data-ai-detail="xAxisDetail"

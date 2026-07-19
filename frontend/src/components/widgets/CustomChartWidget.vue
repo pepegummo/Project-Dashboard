@@ -271,25 +271,25 @@ const option = computed<EChartsOption>(() => ({
              WidgetWrapper). Geometry mirrors the static `grid`/`legend` config above. -->
         <template v-if="widgetViewStateStore.elementPickMode">
           <div
-            class="absolute left-0 w-[42px]"
+            class="absolute left-0 w-[42px] ai-region"
             style="top: 32px; bottom: 28px"
             data-ai-el="y-axis"
             :data-ai-detail="leftAxisDetail"
           />
           <div
             v-if="effectiveScaling === 'dual'"
-            class="absolute right-0 w-[16px]"
+            class="absolute right-0 w-[16px] ai-region"
             style="top: 32px; bottom: 28px"
             data-ai-el="y-axis"
             :data-ai-detail="rightAxisDetail"
           />
           <div
-            class="absolute left-[42px] right-[16px] bottom-0 h-[28px]"
+            class="absolute left-[42px] right-[16px] bottom-0 h-[28px] ai-region"
             data-ai-el="x-axis"
             :data-ai-detail="xAxisDetail"
           />
           <div
-            class="absolute left-0 right-0 top-0 h-[32px]"
+            class="absolute left-0 right-0 top-0 h-[32px] ai-region"
             data-ai-el="legend"
             :data-ai-detail="legendDetail"
           />

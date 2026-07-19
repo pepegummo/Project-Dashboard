@@ -583,17 +583,17 @@ const option = computed<EChartsOption>(() => {
              Geometry mirrors the static `grid` config above. Bars keep their series @click. -->
         <template v-if="widgetViewStateStore.elementPickMode">
           <div
-            class="absolute left-0 top-0 w-[50px] bottom-[28px]"
+            class="absolute left-0 top-0 w-[50px] bottom-[28px] ai-region"
             data-ai-el="y-axis"
             :data-ai-detail="yAxisDetail"
           />
           <div
-            class="absolute left-0 right-0 top-0 h-[22px]"
+            class="absolute left-0 right-0 top-0 h-[22px] ai-region"
             data-ai-el="y-axis"
             :data-ai-detail="yAxisDetail"
           />
           <div
-            class="absolute left-[50px] right-[20px] bottom-0 h-[28px]"
+            class="absolute left-[50px] right-[20px] bottom-0 h-[28px] ai-region"
             data-ai-el="x-axis"
             :data-ai-detail="xAxisDetail"
           />

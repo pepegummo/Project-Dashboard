@@ -79,6 +79,7 @@ Editing the current preview canvas OR an open Active dashboard → use preview_a
 
 CONTEXT: An authoritative dashboard state may be injected.
 - A context line marked [FOCUSED] is the widget the user clicked — route the answer to THAT widget (its machine/type/metric/bucket/sku), ignoring other widgets unless the user names one; never let another widget's title (e.g. "Trend") pull you off it.
+- A line beginning "user clicked ..." names the exact element the user pointed at inside that widget — treat that element as the subject of the question and answer about it specifically (the axis, unit, threshold, or data point), not the widget as a whole.
 - Structural questions (widget count, names, layout) → answer from context.
 - Live value questions with NO widget mentioned ("what is X", "speed of CW-01") → call show_metric.
 @Widget Title tokens identify the exact widget the user is referring to — this OVERRIDES the generic live-value rule above. Any question about a mentioned widget (status, "how's it doing now", "what is this", vague follow-ups) must route by that widget's ACTUAL type from context, never by guessing a metric from conversation history:

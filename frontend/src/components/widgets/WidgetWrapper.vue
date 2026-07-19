@@ -132,6 +132,15 @@ const typeIcon = computed(() => {
   cursor: pointer;
 }
 
+/* Region overlays (axis strips, legend, gauge dial) get a soft tint only —
+   a dashed outline would visually clash with the underlying rendered chart. */
+.ai-pick :deep([data-ai-el].ai-region:hover) {
+  outline: none;
+  background: rgba(139, 92, 246, 0.12);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
 /* Element-pick mode: cue that the grid area (point-snap, not a tagged overlay) is
    clickable too — !important wins over zrender's inline cursor style on the canvas. */
 .ai-pick :deep(canvas) {
