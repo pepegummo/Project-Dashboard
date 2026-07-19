@@ -487,7 +487,12 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	var finalText string
 	var toolLog []toolExecution
 
+	// Read turns don't need the verbose preview_* schemas — send everything slim.
+	// The error-retry fallbacks and the repair round keep the full `tools` set.
 	callTools := tools
+	if routerOK && readOnlyIntents[intentRes.Intent] {
+		callTools = buildAIToolsWith(role, true)
+	}
 	for i := 0; i < 5; i++ {
 		tc := ""
 		if i == 0 {
@@ -800,6 +805,12 @@ var slimToolDescriptions = map[string]string{
 	"get_telemetry_trend": "Get avg/min/max of one metric. Args: machine_id (name), metric (field key), time_range (5m|15m|30m|1h|6h|24h|7d|15d|30d).",
 	"get_skus":            "List the SKU values available for a machine. Args: machine_id (name).",
 	"preview_dashboard":   "Preview a template dashboard. Args: machine (name), template (machine_overview|machine_production|machine_maintenance).",
+	// The three complexSchemaTools below normally keep full schemas; these slim forms
+	// are only sent on read-intent turns (see readOnlyIntents) where they must stay
+	// callable but their ~850-token schemas are almost certainly dead weight.
+	"preview_add_widget":    "Add a widget to the open preview/Active dashboard (staged, no DB write). Args: machine (name), widget {type (daily-count|kpi-card|line-chart|gauge|status-card|table|alarm-panel|chart), title, metric, bucket, sku, status (all|good|reject), fields[], chartType (line|bar|area), points, scaling (shared|dual|normalized), min, max, unit}.",
+	"preview_remove_widget": "Remove a widget from the open preview/Active dashboard (staged, no DB write). Args: widget_title (exact displayed title from the dashboard context, not the widget type).",
+	"preview_update_widget": "Edit a widget on the open preview/Active dashboard (staged, no DB write). Args: widget_title (current title, verbatim) plus ONLY the fields to change: new_title, machine, type, metric, unit, min, max, start_date/end_date (YYYY-MM-DD), bucket (<n><m|h|d>), sku, status (all|good|reject), fields[], chartType (line|bar|area), points, scaling (shared|dual|normalized).",
 }
 
 func toAIToolSlim(t map[string]any) map[string]any {
@@ -845,14 +856,21 @@ var previewTools = map[string]bool{
 // buildAITools returns the tool list filtered by role. Viewers get read-only
 // tools; admin/editor also get the preview_* staging tools.
 // Simple tools use slim (description-only) form; complex tools keep full schemas.
-func buildAITools(role string) []map[string]any {
+func buildAITools(role string) []map[string]any { return buildAIToolsWith(role, false) }
+
+// buildAIToolsWith(role, slimAll): slimAll re-encodes even the complexSchemaTools
+// in slim form. Used on read-intent turns, where the preview_* schemas cost ~850
+// tokens per call but must stay callable in case the router misclassified —
+// dispatch validates the args either way. Exactly two byte-stable variants exist
+// (full and all-slim), so both stay provider-cacheable prefixes.
+func buildAIToolsWith(role string, slimAll bool) []map[string]any {
 	out := make([]map[string]any, 0, len(AllTools()))
 	for _, t := range AllTools() {
 		name := t["name"].(string)
 		if !canWrite(role) && (isWriteTool(name) || previewTools[name]) {
 			continue
 		}
-		if complexSchemaTools[name] {
+		if complexSchemaTools[name] && !slimAll {
 			out = append(out, toAITool(t))
 		} else {
 			out = append(out, toAIToolSlim(t))
@@ -1084,6 +1102,14 @@ func hasMachineSlot(res IntentResult, focused bool, machineValid bool) bool {
 // !ok (router failed/declined/ambiguous) is the fallback path: plain tool_choice
 // "" (auto) with the same roundCap formula as every other path — indistinguishable
 // from having no router at all (pre-router behavior).
+// readOnlyIntents are router intents where the turn reads data (or just chats) —
+// the preview_* tool schemas are sent slim on these turns (see buildAIToolsWith).
+// Edit intents (edit_widget/compare/create_dashboard) and router fallback keep
+// the full schemas.
+var readOnlyIntents = map[string]bool{
+	"chat": true, "read_metric": true, "read_agg": true, "production": true, "alerts": true,
+}
+
 func dispatchIntent(res IntentResult, ok bool, focused bool, inlineData bool, role string, machineValid bool, chartExists bool) (toolChoice string, roundCap int) {
 	roundCap = 1
 	if focused {

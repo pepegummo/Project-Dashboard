@@ -30,6 +30,32 @@ func TestBuildAIToolsPreviewGating(t *testing.T) {
 	}
 }
 
+// TestBuildAIToolsWithSlimAll verifies the read-intent variant keeps every tool
+// callable but strips the complexSchemaTools' full input schemas (the ~850-token
+// preview_* payloads) down to the slim description-only encoding.
+func TestBuildAIToolsWithSlimAll(t *testing.T) {
+	full := buildAIToolsWith("admin", false)
+	slim := buildAIToolsWith("admin", true)
+	if len(full) != len(slim) {
+		t.Fatalf("tool counts differ: full=%d slim=%d — slimAll must never drop a tool", len(full), len(slim))
+	}
+	for _, tool := range slim {
+		fn, _ := tool["function"].(map[string]any)
+		name, _ := fn["name"].(string)
+		params, _ := fn["parameters"].(map[string]any)
+		if params == nil {
+			t.Errorf("%s: slim tool has no parameters object", name)
+			continue
+		}
+		if _, hasProps := params["properties"]; hasProps {
+			t.Errorf("%s: slimAll variant still carries a full schema (properties present)", name)
+		}
+		if complexSchemaTools[name] && fn["description"] != slimToolDescriptions[name] {
+			t.Errorf("%s: slimAll variant missing its slim description with arg hints", name)
+		}
+	}
+}
+
 // TestChatIntentResponseMarshalsIntentField verifies the Chat() response payload
 // (Task 4) marshals the router's IntentResult under the exact key "intent" that the
 // frontend now consumes instead of its own regex parsers, and that a router fallback
