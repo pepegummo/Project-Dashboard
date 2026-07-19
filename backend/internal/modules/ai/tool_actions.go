@@ -361,6 +361,42 @@ func compactSeriesResult(result map[string]interface{}) map[string]any {
 			columns = append(columns, "value")
 		}
 	}
+
+	// Summary is computed over the FULL row set, before the 100-row cap below, so
+	// the model can still quote the true min/max/avg even when most rows are dropped.
+	var sum, lo, hi float64
+	var usable int
+	for _, p := range rows {
+		var primary float64
+		switch {
+		case p.Avg != nil:
+			primary = *p.Avg
+		case p.Value != nil:
+			primary = *p.Value
+		default:
+			continue
+		}
+		rowLo, rowHi := primary, primary
+		if p.Min != nil {
+			rowLo = *p.Min
+		}
+		if p.Max != nil {
+			rowHi = *p.Max
+		}
+		if usable == 0 {
+			lo, hi = rowLo, rowHi
+		} else {
+			if rowLo < lo {
+				lo = rowLo
+			}
+			if rowHi > hi {
+				hi = rowHi
+			}
+		}
+		sum += primary
+		usable++
+	}
+
 	data := make([][]any, 0, len(rows))
 	for _, p := range rows {
 		ts := p.Bucket
@@ -382,22 +418,83 @@ func compactSeriesResult(result map[string]interface{}) map[string]any {
 		}
 		data = append(data, row)
 	}
-	return map[string]any{
+
+	// Cap the rows fed back to the model at 100 via stride-sampling — get_telemetry_series
+	// can return up to 500 points, and that cost is paid again on every later turn that
+	// re-sends this tool result in conversation history. The last row is always kept
+	// (the model quotes the latest value); the "summary" above covers what sampling hides.
+	if len(data) > 100 {
+		stride := (len(data) + 99) / 100
+		sampled := make([][]any, 0, 101)
+		lastIdx := len(data) - 1
+		for i := 0; i < len(data); i += stride {
+			sampled = append(sampled, data[i])
+		}
+		if lastIdx%stride != 0 {
+			sampled = append(sampled, data[lastIdx])
+		}
+		data = sampled
+	}
+
+	out := map[string]any{
 		"field":   result["field"],
 		"from":    shortTime(result["from"]),
 		"to":      shortTime(result["to"]),
 		"columns": columns,
 		"data":    data,
 	}
+	if usable > 0 {
+		out["summary"] = map[string]any{
+			"points": len(rows),
+			"min":    round2(lo),
+			"max":    round2(hi),
+			"avg":    round2(sum / float64(usable)),
+		}
+	}
+	return out
 }
 
 func compactBucketResult(result map[string]interface{}) map[string]any {
 	rows, _ := result["data"].([]telemetry.BucketCount)
+
+	// Summary is computed over the FULL row set, before the 100-row cap below, so
+	// the model can still quote the true total/min/max even when most rows are dropped.
+	var total, lo, hi float64
+	for i, r := range rows {
+		if i == 0 {
+			lo, hi = r.Count, r.Count
+		} else {
+			if r.Count < lo {
+				lo = r.Count
+			}
+			if r.Count > hi {
+				hi = r.Count
+			}
+		}
+		total += r.Count
+	}
+
 	data := make([][2]any, 0, len(rows))
 	for _, r := range rows {
 		data = append(data, [2]any{r.Bucket.In(bkkZone).Format("2006-01-02T15:04"), r.Count})
 	}
-	return map[string]any{
+
+	// Cap the rows fed back to the model at 100 via stride-sampling — see
+	// compactSeriesResult above for the token-footprint rationale.
+	if len(data) > 100 {
+		stride := (len(data) + 99) / 100
+		sampled := make([][2]any, 0, 101)
+		lastIdx := len(data) - 1
+		for i := 0; i < len(data); i += stride {
+			sampled = append(sampled, data[i])
+		}
+		if lastIdx%stride != 0 {
+			sampled = append(sampled, data[lastIdx])
+		}
+		data = sampled
+	}
+
+	out := map[string]any{
 		"sku":     result["sku"],
 		"status":  result["status"],
 		"bucket":  result["bucket"],
@@ -406,6 +503,15 @@ func compactBucketResult(result map[string]interface{}) map[string]any {
 		"columns": []string{"time", "count"},
 		"data":    data,
 	}
+	if len(rows) > 0 {
+		out["summary"] = map[string]any{
+			"points": len(rows),
+			"total":  round2(total),
+			"min":    round2(lo),
+			"max":    round2(hi),
+		}
+	}
+	return out
 }
 
 // ── Category B: manage existing dashboards ───────────────────────────────────
@@ -451,5 +557,3 @@ func resolveDashboardID(ctx context.Context, orgID, name string) (string, bool) 
 	}
 	return id, true
 }
-
-

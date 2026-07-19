@@ -174,7 +174,18 @@ v_machine_fields(machine_id uuid, machine_name text, key text, label text, unit 
 	if _, rows, err := runScoped(ctx, orgID, "SELECT DISTINCT key, label, COALESCE(unit,'') FROM v_machine_fields ORDER BY key LIMIT 200"); err == nil && len(rows) > 0 {
 		keys := make([]string, 0, len(rows))
 		for _, r := range rows {
-			keys = append(keys, fmt.Sprintf("%v (%v %v)", r[0], r[1], r[2]))
+			k, l, u := fmt.Sprint(r[0]), fmt.Sprint(r[1]), fmt.Sprint(r[2])
+			sameLabel := strings.EqualFold(l, k)
+			switch {
+			case sameLabel && u == "":
+				keys = append(keys, k)
+			case u == "":
+				keys = append(keys, fmt.Sprintf("%s (%s)", k, l))
+			case sameLabel:
+				keys = append(keys, fmt.Sprintf("%s (%s)", k, u))
+			default:
+				keys = append(keys, fmt.Sprintf("%s (%s %s)", k, l, u))
+			}
 		}
 		b.WriteString("Metric keys (data->>'key'): " + strings.Join(keys, ", ") + "\n")
 	}

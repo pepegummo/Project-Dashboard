@@ -9,20 +9,21 @@ import (
 )
 
 type Config struct {
-	NodeEnv    string
-	Port       int
-	DatabaseURL string
-	RedisURL   string
-	JwtSecret  string
-	JwtExpiresIn string
-	CorsOrigin string
+	NodeEnv         string
+	Port            int
+	DatabaseURL     string
+	RedisURL        string
+	JwtSecret       string
+	JwtExpiresIn    string
+	CorsOrigin      string
 	AnthropicApiKey string
 	GeminiApiKey    string
 	GeminiModel     string
-	AIApiKey      string
-	AIBaseURL     string
-	AIModel       string
-	AIRouterModel string
+	AIApiKey        string
+	AIBaseURL       string
+	AIModel         string
+	AIRouterModel   string
+	AIMaxTokens     string
 }
 
 var Env *Config
@@ -32,20 +33,21 @@ func Load() {
 	_ = godotenv.Load()
 
 	Env = &Config{
-		NodeEnv:          getEnv("NODE_ENV", "development"),
-		Port:             getEnvInt("PORT", 4000),
-		DatabaseURL:      requireEnv("DATABASE_URL"),
-		RedisURL:         getEnv("REDIS_URL", "redis://localhost:6379"),
-		JwtSecret:        getEnv("JWT_SECRET", "dev-secret-change-in-production-min-32-chars!!"),
-		JwtExpiresIn:     getEnv("JWT_EXPIRES_IN", "24h"),
-		CorsOrigin:       getEnv("CORS_ORIGIN", "http://localhost:5173"),
-		AnthropicApiKey:  getEnv("ANTHROPIC_API_KEY", ""),
-		GeminiApiKey:     getEnv("GEMINI_API_KEY", ""),
-		GeminiModel:      getEnv("GEMINI_MODEL", "gemini-1.5-flash-latest"),
-		AIApiKey:         getEnv("AI_API_KEY", getEnv("GROQ_API_KEY", "")),
-		AIBaseURL:        getEnv("AI_BASE_URL", ""),
-		AIModel:          getEnv("AI_MODEL", ""),
-		AIRouterModel:    getEnv("AI_ROUTER_MODEL", ""),
+		NodeEnv:         getEnv("NODE_ENV", "development"),
+		Port:            getEnvInt("PORT", 4000),
+		DatabaseURL:     requireEnv("DATABASE_URL"),
+		RedisURL:        getEnv("REDIS_URL", "redis://localhost:6379"),
+		JwtSecret:       getEnv("JWT_SECRET", "dev-secret-change-in-production-min-32-chars!!"),
+		JwtExpiresIn:    getEnv("JWT_EXPIRES_IN", "24h"),
+		CorsOrigin:      getEnv("CORS_ORIGIN", "http://localhost:5173"),
+		AnthropicApiKey: getEnv("ANTHROPIC_API_KEY", ""),
+		GeminiApiKey:    getEnv("GEMINI_API_KEY", ""),
+		GeminiModel:     getEnv("GEMINI_MODEL", "gemini-1.5-flash-latest"),
+		AIApiKey:        getEnv("AI_API_KEY", getEnv("GROQ_API_KEY", "")),
+		AIBaseURL:       getEnv("AI_BASE_URL", ""),
+		AIModel:         getEnv("AI_MODEL", ""),
+		AIRouterModel:   getEnv("AI_ROUTER_MODEL", ""),
+		AIMaxTokens:     getEnv("AI_MAX_TOKENS", ""),
 	}
 }
 

@@ -36,6 +36,15 @@ func aiBaseURL() string {
 	return u
 }
 
+// aiMaxTokens caps completion length via AI_MAX_TOKENS (config.Load). Hidden reasoning
+// counts against this cap — don't set below ~1024 or tool-call JSON may truncate.
+func aiMaxTokens() int {
+	if n, err := strconv.Atoi(config.Env.AIMaxTokens); err == nil && n > 0 {
+		return n
+	}
+	return 2048
+}
+
 // envOr falls back when the config field is empty (tests build config.Env by hand).
 func envOr(v, def string) string {
 	if v != "" {
@@ -46,13 +55,14 @@ func envOr(v, def string) string {
 
 // systemPromptUnified is the single, byte-stable system prompt sent on all requests
 // with the full role-filtered tool set. Merged from:
-// - systemPromptBase (no-preview path: pure reads, dashboard creation, edits, greetings)
-// - systemPromptContextExt (dashboard/preview context rules)
-// - systemPromptContextAnswer's distinct rule (ON-SCREEN DATA section below) — made
-//   conditional on the "on-screen data" context line instead of being a prompt swap
-// - dateEditRule static text (relative date resolution + EDIT rules — dynamic date appended separately)
-// - bucketEditRule (bar interval change EDIT rules)
-// - fieldsEditRule (metric-overlay change EDIT rules)
+//   - systemPromptBase (no-preview path: pure reads, dashboard creation, edits, greetings)
+//   - systemPromptContextExt (dashboard/preview context rules)
+//   - systemPromptContextAnswer's distinct rule (ON-SCREEN DATA section below) — made
+//     conditional on the "on-screen data" context line instead of being a prompt swap
+//   - dateEditRule static text (relative date resolution + EDIT rules — dynamic date appended separately)
+//   - bucketEditRule (bar interval change EDIT rules)
+//   - fieldsEditRule (metric-overlay change EDIT rules)
+//
 // Groq caches the static prefix; tools are ordered static-first for cache re-use.
 const systemPromptUnified = `You are IotVision AI, assistant for an industrial IoT platform. Language: match the user's latest message exactly — Thai or English, never mix. Plain text only — no markdown, no asterisks (**) or bold.
 
@@ -872,9 +882,10 @@ func callAI(messages []aiMessage, tools []map[string]any, toolChoice string) (*a
 // failed attempts) so the bake-off can time model speed, not rate-limit backoff.
 func callAIModel(ctx context.Context, model string, messages []aiMessage, tools []map[string]any, toolChoice string) (*aiResponse, time.Duration, error) {
 	reqBody := map[string]any{
-		"model":            model,
-		"messages":         messages,
-		"reasoning_format": "hidden",
+		"model":                 model,
+		"messages":              messages,
+		"reasoning_format":      "hidden",
+		"max_completion_tokens": aiMaxTokens(),
 	}
 	if len(tools) > 0 {
 		reqBody["tools"] = tools
@@ -1005,7 +1016,7 @@ func canWrite(role string) bool {
 // contextSummary parameter. The dashboard context string is built by the frontend
 // (AIAssistantPage.vue buildDashboardContext) as lines shaped like:
 //
-//	- [FOCUSED] line-chart "Trend" — machine CW-01, metric weight, bucket 1h
+//   - [FOCUSED] line-chart "Trend" — machine CW-01, metric weight, bucket 1h
 //
 // focusedContextSummary reformats that into "focused widget: <title> (<type>,
 // machine <machine>, metric/bucket <x>)" — the shape router_eval_test.go's
