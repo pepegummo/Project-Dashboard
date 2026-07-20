@@ -132,3 +132,19 @@ claude-sonnet-5 หมดวันไปก่อน
 **ไม่ได้กัน** และ `TestChatFullLoopLive` เขียนทับ `chat-fullloop-results.md` แม้รัน fail
 (กู้ด้วย `git restore` ได้) — รัน offline อย่างเดียวใช้:
 `go test ./internal/modules/ai/ -count=1 -skip 'Live|BakeOff|DateEdit|ComplexFlows'`
+
+## 10. Error handling: daily-limit → 429 (2026-07-20)
+
+ตอนพยายามรัน `TestChatFullLoopLive` (โควตา sonnet-5 หมด) เจอเทส crash ด้วย
+`bad response JSON (status 500): invalid character 'A'` — **ไม่ใช่บั๊ก production**:
+- Production ต่อ `middleware.ErrorHandler` (main.go) → `*AppError{502}` ออกมาเป็น 502 JSON ปกติ
+- แต่ `chat_fullloop_live_test.go` สร้าง `fiber.New()` เปล่า → default handler render `*AppError`
+  เป็น text `[AI_ERROR] ...` (status 500) → เทส `json.Decode` ชน `[` แล้ว `A` → error 'A'
+- **แก้:** ให้ test app ใช้ `ErrorHandler` ตัวเดียวกับ prod (commit `075ccf9`)
+
+พร้อมกันเพิ่ม mapping ให้ชัด (commit `b38a4ed`): `callAIModel` ตรวจ error ที่มี "daily limit" →
+คืน typed `quotaError` → ทั้ง /ai (Chat) และ /ask (`askAIError` helper) map เป็น
+**429 `QUOTA_EXCEEDED`** (msg "AI daily quota reached. Please try again later.") แยกจาก
+per-minute `RATE_LIMIT` (429 + retryAfter) และ generic `AI_ERROR` (502) — frontend
+แยกได้ว่า "โควตาหมดรายวัน กลับมาใหม่" vs "rate limit ชั่วคราว retry" vs "provider พังจริง"
+offline test: `TestAskAIErrorMapsQuota` (429/502) ผ่าน

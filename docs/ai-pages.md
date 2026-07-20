@@ -292,7 +292,7 @@ Model-call budget per turn (all inside the handler's 45s context):
 | Deterministic checks | — | `runDeterministicChecks` (`verify.go`) |
 | LLM judge | `verify_answer` via `verifyAskAnswer` (chart + table turns; empty results skipped; user-specified chart types never judged) and `verifyAskProse` (prose turns — topicality + rows-contradiction), both `gpt-5.4-mini`, 6s bound | `VerifyAnswer` judge |
 | Repair | Exactly one repair round (chart/table: re-emit SQL with verifier's `problem` as fixup, re-run, re-chart; prose: regenerate the answer once) | One `runRepairRound` |
-| Failure outcome | Degrades to table signal (`{}` echart option) — never a 502 | Outcome is deliver / ask back / repair |
+| Failure outcome | Degrades to table signal (`{}` echart option) — never a 502; a provider daily-quota error is the exception → 429 `QUOTA_EXCEEDED` | Outcome is deliver / ask back / repair; provider daily-quota error → 429 `QUOTA_EXCEEDED` (else 502 `AI_ERROR`) |
 
 Design rationale: bounded checks keep worst-case latency and provider token cost predictable regardless of how ambiguous or malformed a given question or tool round turns out to be. The same principle decides *what* gets an LLM call at all: every structural check (schema validity, SQL safety, encode-column validation) is deterministic Go code; the LLM is reserved for genuine semantic judgment (intent, chart appropriateness, answer-vs-question consistency) — cutting cost, latency, and nondeterminism at every step that doesn't need a model.
 
@@ -397,6 +397,8 @@ Tool implementations live in `tool_actions.go` (ToolKit methods) and `dashboard_
 Token budget (2026-07-20): every call carries `max_completion_tokens` (`AI_MAX_TOKENS`, default 2048 — hidden reasoning counts against it, so don't set below ~1024). Tool results for `get_telemetry_series` / `get_production_count` are capped at 100 stride-sampled rows plus a `summary` (min/max/avg/total computed over the full data before sampling), since those results are re-sent on every remaining loop iteration.
 
 `tool_choice` serialization in `callAIModel` (`controller.go:834`): an empty string means auto, `"required"`/`"none"` are sent as plain strings, and a value starting with `{` is sent as a forced-function object. Provider `tool_choice` errors are retried with auto; a function-parser failure is retried with no tools at all. The response parser (`aiError.UnmarshalJSON`, `controller.go`) tolerates both OpenAI-style `{"error":{"message":...}}` objects and bare-string errors (`{"error":"This model reached daily limit."}` — the KKU proxy's format).
+
+**Provider error mapping** (`callAIModel`): a per-minute rate-limit blip (provider HTTP 429) is retried internally for short waits, else surfaced as `rateLimitError` → **429 `RATE_LIMIT`** with a `retryAfter` seconds hint. A per-day quota exhaustion — the KKU `"...daily limit"` message — is detected and returned as a typed `quotaError` → **429 `QUOTA_EXCEEDED`** with message "AI daily quota reached. Please try again later." Both surfaces map it: `/ai` Chat via an `errors.As` branch in its loop, `/ask` AskData via the shared `askAIError` helper (used at its `emitSQL`/`emitProse` sites). The distinct code lets the frontend tell "come back later" (quota) apart from "retry shortly" (rate limit) and from a generic **502 `AI_ERROR`** (real provider failure). This is the mapping only — the daily quota is pooled per model family (see `llm2viz/test-results.md` §3).
 
 ### 4.4 Widget element-click
 
