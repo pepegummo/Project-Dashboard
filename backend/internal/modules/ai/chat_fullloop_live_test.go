@@ -126,7 +126,12 @@ func TestChatFullLoopLive(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM ai_conversations WHERE id=$1`, conv.ID)
 	})
 
-	app := fiber.New()
+	// Wire the SAME global error handler production uses (main.go). Without it, a
+	// handler that returns *AppError (e.g. a 502 on a provider outage) falls through
+	// to Fiber's default handler — status 500 + the plaintext "[AI_ERROR] ..." body —
+	// so a plain quota outage decoded as a confusing JSON-parse crash instead of the
+	// real 502 the frontend actually receives.
+	app := fiber.New(fiber.Config{ErrorHandler: middleware.ErrorHandler})
 	app.Use(func(c *fiber.Ctx) error {
 		c.Locals("user", &middleware.JwtClaims{Sub: userSub, OrgId: orgID, Role: role})
 		return c.Next()
