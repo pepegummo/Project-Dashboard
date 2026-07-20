@@ -508,6 +508,10 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 				return &middleware.AppError{StatusCode: 429, Code: "RATE_LIMIT",
 					Message: rl.Error(), Details: fiber.Map{"retryAfter": rl.seconds}}
 			}
+			var qe *quotaError
+			if errors.As(err, &qe) {
+				return middleware.NewAppError(429, "QUOTA_EXCEEDED", qe.Error())
+			}
 			return middleware.NewAppError(502, "AI_ERROR", fmt.Sprintf("AI API error: %v", err))
 		}
 		if len(resp.Choices) == 0 {
@@ -963,6 +967,12 @@ func callAIModel(ctx context.Context, model string, messages []aiMessage, tools 
 				strings.Contains(result.Error.Message, "Tool call validation failed")) && len(tools) > 0 {
 				return callAIModel(ctx, model, messages, nil, "")
 			}
+			// Provider daily token quota exhausted (KKU: HTTP 401 "This model reached
+			// daily limit."). Distinct from a per-minute 429 blip — surface as a typed
+			// error so handlers return 429 QUOTA_EXCEEDED, not a generic 502.
+			if strings.Contains(strings.ToLower(result.Error.Message), "daily limit") {
+				return nil, 0, &quotaError{}
+			}
 			return nil, 0, fmt.Errorf("AI API: %s", result.Error.Message)
 		}
 		return &result, attemptLat, nil
@@ -978,6 +988,14 @@ type rateLimitError struct{ seconds float64 }
 func (e *rateLimitError) Error() string {
 	return fmt.Sprintf("Rate limit reached. Please try again in %.0fs.", e.seconds)
 }
+
+// quotaError signals the provider's per-day token quota is exhausted (a daily
+// limit won't clear for hours, unlike rateLimitError's per-minute blip), so
+// handlers surface it as 429 QUOTA_EXCEEDED with a "try later" message rather
+// than a retry-in-seconds hint. Both /ai (Chat) and /ask (AskData) map it.
+type quotaError struct{}
+
+func (e *quotaError) Error() string { return "AI daily quota reached. Please try again later." }
 
 var retryHintRe = regexp.MustCompile(`try again in ([0-9.]+)s`)
 

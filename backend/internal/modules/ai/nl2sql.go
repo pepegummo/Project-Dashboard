@@ -634,6 +634,20 @@ func serializeRows(cols []string, rows [][]any) string {
 
 // ── HTTP handlers ────────────────────────────────────────────────────────────
 
+// askAIError maps an AI-generation failure to a Fiber response: a provider daily
+// quota (quotaError) surfaces as 429 QUOTA_EXCEEDED so the client can tell "come
+// back later" apart from a generic failure; anything else stays a 502 with the
+// caller's prefix. Shared by AskData's SQL/prose generation sites.
+func askAIError(c *fiber.Ctx, prefix string, err error) error {
+	var qe *quotaError
+	if errors.As(err, &qe) {
+		return c.Status(429).JSON(fiber.Map{"success": false,
+			"error": fiber.Map{"code": "QUOTA_EXCEEDED", "message": qe.Error()}})
+	}
+	return c.Status(502).JSON(fiber.Map{"success": false,
+		"error": fiber.Map{"message": prefix + err.Error()}})
+}
+
 // AskData: question → SQL → rows → ECharts option. POST /ai/ask
 func AskData(c *fiber.Ctx) error {
 	user := middleware.GetUser(c)
@@ -689,7 +703,7 @@ func AskData(c *fiber.Ctx) error {
 			}
 			answer, perr := emitProse(ctx, question, schema, prev, pcols, prows, "")
 			if perr != nil {
-				return c.Status(502).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": "could not answer: " + perr.Error()}})
+				return askAIError(c, "could not answer: ", perr)
 			}
 			// B1 for prose: judge the answer; on MISMATCH regenerate once with the
 			// problem as fixup (no second judge round — bounded cost, same stance as
@@ -703,7 +717,7 @@ func AskData(c *fiber.Ctx) error {
 			return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"answer": answer}})
 		}
 		if err != nil {
-			return c.Status(502).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": "could not generate a query: " + err.Error()}})
+			return askAIError(c, "could not generate a query: ", err)
 		}
 		if emission.Clarification != "" {
 			// B3: the question is about factory data but under-specified — ask back

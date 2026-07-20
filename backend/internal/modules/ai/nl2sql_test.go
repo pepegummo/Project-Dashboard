@@ -3,8 +3,52 @@ package ai
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http/httptest"
 	"testing"
+
+	"github.com/gofiber/fiber/v2"
 )
+
+// TestAskAIErrorMapsQuota verifies the shared /ask error mapper turns a provider
+// quotaError into 429 QUOTA_EXCEEDED and leaves any other error a 502 — the same
+// distinction Chat makes via errors.As on the 429 path.
+func TestAskAIErrorMapsQuota(t *testing.T) {
+	app := fiber.New()
+	app.Get("/quota", func(c *fiber.Ctx) error { return askAIError(c, "x: ", &quotaError{}) })
+	app.Get("/other", func(c *fiber.Ctx) error { return askAIError(c, "boom: ", fmt.Errorf("nope")) })
+
+	q, err := app.Test(httptest.NewRequest("GET", "/quota", nil))
+	if err != nil {
+		t.Fatalf("test quota route: %v", err)
+	}
+	if q.StatusCode != 429 {
+		t.Errorf("quota status = %d, want 429", q.StatusCode)
+	}
+	body, _ := io.ReadAll(q.Body)
+	if !containsJSONCode(body, "QUOTA_EXCEEDED") {
+		t.Errorf("quota body = %s, want code QUOTA_EXCEEDED", body)
+	}
+
+	o, err := app.Test(httptest.NewRequest("GET", "/other", nil))
+	if err != nil {
+		t.Fatalf("test other route: %v", err)
+	}
+	if o.StatusCode != 502 {
+		t.Errorf("generic status = %d, want 502", o.StatusCode)
+	}
+}
+
+func containsJSONCode(body []byte, code string) bool {
+	var parsed struct {
+		Error struct{ Code string } `json:"error"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return false
+	}
+	return parsed.Error.Code == code
+}
 
 func TestParseSQLEmission(t *testing.T) {
 	cases := []struct {
