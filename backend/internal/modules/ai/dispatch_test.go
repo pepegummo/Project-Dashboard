@@ -45,9 +45,10 @@ func TestDispatchIntentChat(t *testing.T) {
 }
 
 func TestDispatchIntentFocusedInlineReadIsNone(t *testing.T) {
-	// intent in {chat, read_metric, read_agg} AND focused AND inlineData -> "none"
-	// (the Task-1 answer-from-context path, now router-decided).
-	for _, intent := range []string{"chat", "read_metric", "read_agg"} {
+	// Any read/chat intent (readOnlyIntents) AND focused AND inlineData -> "none"
+	// (the answer-from-context path, now router-decided). production/alerts included:
+	// a focused daily-count/alarm-panel injects its on-screen data, so no tool round.
+	for _, intent := range []string{"chat", "read_metric", "read_agg", "production", "alerts"} {
 		t.Run(intent, func(t *testing.T) {
 			res := IntentResult{Intent: intent, Machine: "CW-01", Confidence: 0.9}
 			toolChoice, roundCap := dispatchIntent(res, true, true, true, "viewer", true, false)

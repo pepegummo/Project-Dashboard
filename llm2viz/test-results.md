@@ -125,8 +125,8 @@ Ship 4 commits (`46bf568..29d9c28`) ลดต้นทุน token ต่อ req
 - /ask: `buildSchemaContext` ตัด label/unit ที่ซ้ำกับ key ออกจาก metric-key list
 
 คาดการณ์: read request /ai ~14.2k → ~9.5–11k (**ลด ~25–30%**)
-**ยังค้าง:** วัด before/after จริงด้วย `TestChatFullLoopLive` — 07-20 รันไม่ได้เพราะ pool
-claude-sonnet-5 หมดวันไปก่อน
+**วัดแล้ว 07-21** (ดูหมวด 11): total 64,188 → **57,141 (~11%)** — ต่ำกว่าที่คาด ~25–30% เพราะ
+production/edit บางเคสยังต้องส่ง schema เต็ม แต่ทิศทางลดลงชัดเจน
 
 ⚠ **กับดักที่เจอ:** `go test ./internal/modules/ai/` รัน live suite ทันทีที่ env มี key — `-short`
 **ไม่ได้กัน** และ `TestChatFullLoopLive` เขียนทับ `chat-fullloop-results.md` แม้รัน fail
@@ -148,3 +148,94 @@ claude-sonnet-5 หมดวันไปก่อน
 per-minute `RATE_LIMIT` (429 + retryAfter) และ generic `AI_ERROR` (502) — frontend
 แยกได้ว่า "โควตาหมดรายวัน กลับมาใหม่" vs "rate limit ชั่วคราว retry" vs "provider พังจริง"
 offline test: `TestAskAIErrorMapsQuota` (429/502) ผ่าน
+
+## 11. วัด token หลัง optimization + validate rubric/deterministic (2026-07-21)
+
+รัน 2 live suite (โควตา KKU พอสำหรับวันนี้ ~110k) หลังแก้ 2 จุด: (A) เพิ่ม deterministic check
+`preview_add_widget` ใน `verify.go`, (C) กระชับ rubric ของ `confidence` ใน `routerSystemPrompt` เป็น
+3 ระดับ (0.85+ / 0.5–0.85 / <0.5)
+
+- **Router bake-off** (`TestRouterBakeOff`, 32 เคส, ~254s): `gpt-5.4-mini` **29/32 (คงเดิม — rubric C
+  ไม่ทำให้แย่ลง)**, `claude-haiku-4.5` 28/32 (สะอาดกว่ารอบ 07-17 ที่โควตาปน). Confidence คาลิเบรตดี:
+  เคสชัด 0.93–0.99, เคสกำกวม `relative-date-edit` ลงมา 0.78 ตามคาด. 3 เคสที่ mini ยังตก:
+  `focused-count-now` (production→read_metric), `focused-alarm-panel` (alerts→chat), และ 1 เคส
+  focused-context อื่น — ทั้งหมดเป็นเคสที่ต้องเดา intent จากบริบทวิดเจ็ตล้วน ไม่มีคีย์เวิร์ด
+  (**2 เคสนี้ถูกกู้ที่ชั้น dispatch แล้ว 2026-07-22 — ดู §12**: focused daily-count/alarm-panel
+  ที่มี on-screen data ตอบจาก context ไม่ว่า router จะจัด intent ถูกหรือไม่ → miss เป็น cosmetic)
+- **Chat full-loop** (`TestChatFullLoopLive`, 5 เคส, 73.4s): **5/5 PASS**, total **57,141 tokens**
+  (จาก 64,188 = ลด ~11% ยืนยัน optimization หมวด 9). ต่อเคส: read_metric 11,409 · alerts 11,196 ·
+  production 15,009 · preview_add 13,648 · greeting 5,879 (เขียนลง `chat-fullloop-results.md`)
+- **preview_add_gauge_th ผ่าน** — ยืนยัน check A ไม่ false-fail บนพรีวิวจริง (เมตริก temperature มีจริง
+  บน CW-01 → ผ่าน deterministic check)
+- หมายเหตุ: 2 เคส (read_metric, preview_add) log `verdict=repair-error` ที่ชั้น verify แต่ยัง PASS —
+  judge เจอ error ชั่วคราวแล้ว fail-safe เป็น "ส่งคำตอบเดิม" ตามออกแบบ (ไม่ 502)
+- ~~**ยังค้าง:** re-measure /ask full-loop (39 เคส ~200k)~~ **วัดแล้ว 2026-07-22 — ดู §13**
+  (39/39, 183,542 tok, ต่ำกว่าประมาณ ~200k)
+
+### 11.1 เพิ่ม per-case token metering ให้ Router + /ask (2026-07-21)
+
+เดิมมีแต่ chat ที่วัด token ต่อเคส → เพิ่ม helper กลาง `writeSuiteTokenReport`
+(`token_report_test.go`) แล้ว wire เข้า:
+- **Router** (`router_eval_test.go`): reset/load `tokenMeter` รอบ `classifyIntentWithModel`,
+  เขียน `llm2viz/router-eval-results.md`. เพิ่ม env `ROUTER_EVAL_MODELS` (คั่นจุลภาค) กรองโมเดล
+  เพื่อประหยัดโควตา (รัน mini อย่างเดียว)
+- **/ask full-loop** (`ask_fullloop_live_test.go`): reset/load รอบ `app.Test`, เขียน
+  `llm2viz/ask-fullloop-results.md` (columns: case, expect, tokens, time)
+
+รันจริง (gpt-5.4-mini only): **32 เคส = 31,270 tokens (~1.0–1.1k/เคส คงที่** เพราะพรอมป์ต์
+Router ขนาดคงที่ **)** @126s. หมายเหตุ: รอบนี้เจอ 2 เคส decline 0-token (transient blip
+ใกล้เพดานโควตา ไม่ใช่ miss จริง) — คะแนน canonical ยังยึด 29/32 จากรอบสะอาดก่อนหน้า
+- **/ask per-case:** ~~โค้ด metering พร้อมแล้ว แต่รันจริง ~200k = เต็มโควตา → เลื่อนวันใหม่~~
+  **รันแล้ว 2026-07-22 → ดู §13** (39/39, 183,542 tok เขียนลง `ask-fullloop-results.md`)
+- รายงาน `docs/iotvision-report/index.html` เพิ่มแคตตาล็อกเคสละเอียด §3.2 (ต่อ)–(ต่อ 4):
+  /ai chat 5 + router 32, /ask 39 + judge 8 (ตาราง token /ask เติมตัวเลขจริงแล้ว 2026-07-22 → §13)
+
+## 12. ขยาย answer-from-context ให้ครอบ production + alerts (2026-07-22)
+
+เดิม path "ตอบจาก context ไม่เรียก tool" (`dispatchIntent` → `tool_choice:"none"`) มีแค่
+`{chat, read_metric, read_agg}` — `production`/`alerts` ตกไปเรียก tool เสมอ แม้ผู้ใช้จ้อง
+widget ที่มีข้อมูลอยู่บนจอแล้ว (เปลือง ~1 tool round ≈ ~4.4k) และเป็นต้นเหตุ router miss 2 เคสใน §11
+
+**แก้ 2 ฝั่ง:**
+- **Backend** (`controller.go` dispatchIntent): เงื่อนไข answer-from-context เปลี่ยนจาก OR list
+  → ใช้ `readOnlyIntents` (มีอยู่แล้ว = `{chat, read_metric, read_agg, production, alerts}`) ตรง 5
+  intent พอดี ไม่เพิ่ม set ใหม่. ยังคุมด้วย `focused && inlineData` → fire เฉพาะตอน frontend
+  ส่งข้อมูลจริงมา. Test `TestDispatchIntentFocusedInlineReadIsNone` ขยาย loop ครอบ 5 intent
+- **Frontend** (`AIAssistantPage.vue`): เพิ่ม `alarmLine()` — inject active alerts ของ focused
+  alarm-panel เป็น `on-screen data` โดย logic ตรงกับ `AlarmPanelWidget.displayAlerts` เป๊ะ
+  (severity+machine filter, cap `maxItems`, ว่าง → `"none (All Clear)"`). เดิม alarm-panel
+  ไม่เข้า `seriesLine` (ไม่มี metric) → ส่งแค่บรรทัด config ไม่มีข้อมูล → `inlineData=false`
+
+**ผล:** focused daily-count → `production` และ focused alarm-panel → `alerts` ตอบจาก context ได้
+โดยไม่เรียก tool. Router miss 2 เคส (`focused-count-now`, `focused-alarm-panel`) กลายเป็น cosmetic —
+แม้ router จัด `chat` ผิด แต่ `chat` อยู่ใน `readOnlyIntents` อยู่แล้ว → กู้คำตอบถูกที่ชั้น dispatch
+
+| ตรวจ offline | ผล |
+|---|---|
+| `go vet ./internal/modules/ai/` | clean |
+| ai suite (`-skip 'Live\|BakeOff\|DateEdit\|ComplexFlows'`) | ผ่าน |
+| `npm run typecheck` (frontend) | ผ่าน |
+
+**Live verify — ไม่ทำ (ตัดสินใจ 2026-07-22):** ผู้ใช้ระบุ **alarm ไม่ใช่โฟกัสของ project นี้** → ไม่เพิ่ม
+เคส focused-alarm-panel ใน chat test และไม่ลงแรง verify path นี้ต่อ. โค้ด §12 ship แล้ว ผ่าน offline
+ครบ ถือว่าพอ. RAG (vector DB/embeddings) พิจารณาแล้ว = เกินจำเป็นสำหรับสเกลนี้ (corpus เล็ก +
+focused widget รู้แบบ deterministic จากมาร์ค `[FOCUSED]`) — เก็บไว้ตอน machine/docs โตเป็นพันจริง
+
+## 13. วัด /ask full-loop per-case token + rerun router (2026-07-22)
+
+โควตาวันใหม่ → รันเทสที่ค้างจาก §11.1 บน stack prod (generate `claude-sonnet-5`, judge `gpt-5.4-mini`)
+
+- **/ask full-loop** (`TestAskDataFullLoopLive`, 39 เคส, 500s): **39/39 PASS · 183,542 tokens**
+  (ต่ำกว่าประมาณ ~200k). per-case **~4.7k เฉลี่ย** — min 2,737 (`clarify_vague_en`, แค่ถามกลับ
+  ไม่รัน SQL) · max 8,353 (`speed_drops_when_th`). เขียนลง `ask-fullloop-results.md`
+  - กลุ่ม: clarify/adversarial ~2.7–4.8k (ถูกสุด — decline/clarify ไม่เดินวงเต็ม), sql ~3.3–8.4k,
+    notdata/prose ~4.5–6.1k
+  - **/ask ถูกกว่า /ai chat ต่อเคสมาก** (~4.7k vs ~11.4k, §11): /ask ใช้ prompt เฉพาะทาง
+    (`emitSQL`/`emitEChart`) ไม่ re-ship `systemPromptUnified` + 12 tool schemas ทุกรอบเหมือน chat loop
+- **Router bake-off** (`TestRouterBakeOff`, mini only, 130.5s): **27/32** หน้าไฟล์ — แต่ 2 เคส
+  (`read-speed`, `english-read`) เป็น **0-token decline** (blip 0.00s ใกล้เพดาน OpenAI pool หลังรัน
+  ควบ) ไม่ใช่ miss จริง → **canonical ยึด ~29/32 เดิม**. เคสชายขอบสลับตัวกันไปมาระหว่างรัน:
+  รอบนี้ `focused-alarm-panel` **ผ่าน** (ได้ alerts), `list-skus` พลาดแทน (ได้ production)
+- Pool: /ask ≈ 183k Claude + judge บน OpenAI; router 31k OpenAI — รันควบวันเดียวได้เพราะ pool แยกกัน
+- **ครบแล้ว:** ทั้ง 3 result doc (`chat-`/`router-`/`ask-fullloop-results.md`) มีตัวเลข per-case จริง —
+  ไม่เหลือคอลัมน์ "รอวัด"

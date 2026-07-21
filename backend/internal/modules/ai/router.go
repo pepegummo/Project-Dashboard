@@ -85,7 +85,10 @@ SLOTS — fill a slot only when the message explicitly states it. Never invent o
 - targetWidget: widget title, only if the user names or @-mentions one.
 - status, sku: only if explicitly named.
 
-confidence: 0..1, how sure you are of the INTENT (not the slots). Use below 0.5 when the message is genuinely ambiguous.`
+confidence: 0..1, how sure you are of the INTENT (not the slots). Calibrate honestly — below 0.5 the system stops trusting you and lets the model pick tools freely, so don't inflate:
+- 0.85+ : one intent clearly fits, named by explicit keywords; no other intent is plausible.
+- 0.5-0.85 : one intent is most likely but the wording is loose or the keyword is only implied.
+- below 0.5 : two or more intents plausibly fit, or the core action is missing/garbled — genuinely ambiguous.`
 
 // ClassifyIntent makes one forced-tool-call request to routerModel and parses the
 // result. ctx is bounded to ~6s beyond whatever the caller already set, and there are

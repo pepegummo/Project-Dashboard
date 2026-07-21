@@ -8,6 +8,7 @@ import { useDashboardStore } from '@/stores/dashboard.store';
 import { useMachineStore } from '@/stores/machine.store';
 import { useTelemetryStore } from '@/stores/telemetry.store';
 import { useWidgetViewStateStore } from '@/stores/widget-view-state.store';
+import { useAlertStore } from '@/stores/alert.store';
 import GridStackCanvas from '@/components/dashboard/GridStackCanvas.vue';
 import WidgetToolbox from '@/components/dashboard/WidgetToolbox.vue';
 import WidgetConfigModal from '@/components/dashboard/WidgetConfigModal.vue';
@@ -26,6 +27,7 @@ const dashboardStore = useDashboardStore();
 const machineStore = useMachineStore();
 const telemetryStore = useTelemetryStore();
 const widgetViewStateStore = useWidgetViewStateStore();
+const alertStore = useAlertStore();
 const canvasCards = ref<CanvasCard[]>([]);
 const previewHighlightId = ref<string | undefined>(undefined);
 const selectionResetToken = ref(0);
@@ -523,6 +525,20 @@ function buildDashboardContext(
     const sampled = s.data.filter((_, i) => i % step === 0 || i === s.data.length - 1);
     return `\n  on-screen data — columns ${JSON.stringify(s.columns)}, data ${JSON.stringify(sampled)}`;
   };
+  // For a focused alarm-panel, append the exact active alerts it renders (same
+  // filter as AlarmPanelWidget.displayAlerts: severity + machine, capped at maxItems)
+  // so the AI answers "any alerts?" from context with no get_active_alerts call.
+  const alarmLine = (id: string, type: string, machineUuid?: string, severities?: string[], maxItems?: number): string => {
+    if (!focusedIds.includes(id)) return '';
+    if (type !== 'alarm-panel') return '';
+    const sev = severities ?? ['info', 'warning', 'critical'];
+    const events = alertStore.activeEvents
+      .filter(e => sev.includes(e.alert?.severity ?? ''))
+      .filter(e => !machineUuid || e.alert?.machine?.id === machineUuid)
+      .slice(0, maxItems ?? 10)
+      .map(e => ({ alert: e.alert?.name, machine: e.alert?.machine?.name, field: e.alert?.field, value: e.value, severity: e.alert?.severity }));
+    return `\n  on-screen data — active alerts: ${events.length ? JSON.stringify(events) : 'none (All Clear)'}`;
+  };
   // Shown time window of a focused chart, so "what range is shown?" answers from
   // context with no tool. Cheap (two timestamps); focused widgets only.
   const windowLine = (id: string): string => {
@@ -586,7 +602,8 @@ function buildDashboardContext(
       if (bucket) parts.push(`bucket ${bucket}`);
       if (w.sku) parts.push(`sku ${w.sku}`);
       if (w.status) parts.push(`status ${w.status}`);
-      return parts.join(', ') + windowLine(`preview-${i}`) + seriesLine(`preview-${i}`, w.type) + elementLine(`preview-${i}`);
+      return parts.join(', ') + windowLine(`preview-${i}`) + seriesLine(`preview-${i}`, w.type)
+        + alarmLine(`preview-${i}`, w.type, w.machineUuid, w.severities, w.maxItems) + elementLine(`preview-${i}`);
     }).filter(Boolean);
     const label = card.kind === 'dashboard' ? 'Active dashboard' : 'Current dashboard preview';
     return `${label} "${card.result.dashboardName}" on screen:\n${lines.join('\n')}`;
@@ -645,7 +662,8 @@ function buildDashboardContext(
       if (bucket) parts.push(`bucket ${bucket}`);
       if (w.config?.sku) parts.push(`sku ${w.config.sku}`);
       if (w.config?.status) parts.push(`status ${w.config.status}`);
-      return parts.join(', ') + windowLine(w.id) + seriesLine(w.id, w.widgetType) + elementLine(w.id);
+      return parts.join(', ') + windowLine(w.id) + seriesLine(w.id, w.widgetType)
+        + alarmLine(w.id, w.widgetType, uuid, w.config?.severities, w.config?.maxItems) + elementLine(w.id);
     }).filter(Boolean);
     return `Dashboard "${dashboardStore.currentDashboard?.name ?? ''}" is active on screen with widgets:\n${lines.join('\n')}`;
   }

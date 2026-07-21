@@ -1127,9 +1127,12 @@ func dispatchIntent(res IntentResult, ok bool, focused bool, inlineData bool, ro
 		return "", roundCap
 	}
 
-	// Task-1 answer-from-context path, now router-decided: a read the injected
-	// context already answers gets no tool call this turn.
-	if focused && inlineData && (res.Intent == "chat" || res.Intent == "read_metric" || res.Intent == "read_agg") {
+	// Answer-from-context path, now router-decided: a read/chat the injected context
+	// already answers gets no tool call this turn. Same read/chat intent set we slim
+	// tools for (readOnlyIntents) — production reads a focused daily-count's on-screen
+	// series, alerts reads a focused alarm-panel's injected active-alert list. Guarded
+	// by inlineData, so it only fires when the frontend actually shipped the data.
+	if focused && inlineData && readOnlyIntents[res.Intent] {
 		return "none", roundCap
 	}
 

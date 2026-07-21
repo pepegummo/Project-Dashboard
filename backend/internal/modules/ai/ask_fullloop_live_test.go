@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -85,6 +86,10 @@ func TestAskDataFullLoopLive(t *testing.T) {
 	})
 	app.Post("/ai/ask", AskData)
 
+	askStart := time.Now()
+	var askRows [][]string // case | expect | result | tokens | time
+	var askTok int64
+
 	for _, c := range askCases {
 		t.Run(c.name, func(t *testing.T) {
 			pace()
@@ -106,7 +111,22 @@ func TestAskDataFullLoopLive(t *testing.T) {
 
 			// 60s > the handler's own 45s ctx, so a timeout surfaces as the handler's
 			// error response, not a cut connection.
+			resetTokenMeter()
+			caseStart := time.Now()
 			resp, err := app.Test(req, 60000)
+			caseTok := loadTokenMeter()
+			// Record per-case cost + result before any assertion FailNow's the subtest.
+			// The defer fills the result cell — Goexit still runs defers, so a t.Fatalf
+			// below is still recorded as FAIL (mirrors chat_fullloop's outcome pattern).
+			rowIdx := len(askRows)
+			askRows = append(askRows, []string{c.name, c.expect, "PASS",
+				fmt.Sprintf("%d", caseTok), fmt.Sprintf("%.1fs", time.Since(caseStart).Seconds())})
+			askTok += caseTok
+			defer func() {
+				if t.Failed() {
+					askRows[rowIdx][2] = "FAIL"
+				}
+			}()
 			if err != nil {
 				t.Fatalf("app.Test: %v", err)
 			}
@@ -200,4 +220,7 @@ func TestAskDataFullLoopLive(t *testing.T) {
 			}
 		})
 	}
+
+	writeSuiteTokenReport(t, "../../../../llm2viz/ask-fullloop-results.md", "/ai/ask full-loop live results",
+		[]string{"case", "expect", "result", "tokens", "time"}, askRows, askTok, time.Since(askStart))
 }

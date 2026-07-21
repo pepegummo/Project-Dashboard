@@ -12,11 +12,36 @@ package ai
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 )
+
+// routerEvalModels returns routerBakeModels, optionally narrowed by the ROUTER_EVAL_MODELS env
+// var (comma-separated model names) so a metered re-run can target one model — e.g.
+// ROUTER_EVAL_MODELS=gpt-5.4-mini — to save the shared daily token pool. Empty/unset = all.
+func routerEvalModels() []string {
+	want := strings.TrimSpace(os.Getenv("ROUTER_EVAL_MODELS"))
+	if want == "" {
+		return routerBakeModels
+	}
+	set := map[string]bool{}
+	for _, m := range strings.Split(want, ",") {
+		set[strings.TrimSpace(m)] = true
+	}
+	var out []string
+	for _, m := range routerBakeModels {
+		if set[m] {
+			out = append(out, m)
+		}
+	}
+	if len(out) == 0 {
+		return routerBakeModels
+	}
+	return out
+}
 
 // routerBakeModels: KKU-era candidates (2026-07-17) — claude-haiku-4.5 is the current
 // AI_ROUTER_MODEL; gpt-5.4-mini is the candidate to isolate router/judge quota from the
@@ -196,7 +221,12 @@ func TestRouterBakeOff(t *testing.T) {
 	}
 	scores := map[string]tally{}
 
-	for mi, model := range routerBakeModels {
+	models := routerEvalModels()
+	start := time.Now()
+	var reportRows [][]string // model | label | message | want | got | pass | tokens | latency
+	var reportTok int64
+
+	for mi, model := range models {
 		if mi > 0 && strings.Contains(aiBaseURL(), "groq") {
 			time.Sleep(60 * time.Second) // let Groq's shared per-model TPM budget recover
 		}
@@ -209,7 +239,30 @@ func TestRouterBakeOff(t *testing.T) {
 			fmt.Printf("\n[%s] %q (want %s)\n", tc.label, tc.message, wantLabel)
 			pace()
 
+			resetTokenMeter()
 			result, ok, lat := classifyIntentWithModel(context.Background(), model, tc.message, tc.contextLine)
+			caseTok := loadTokenMeter()
+			reportTok += caseTok
+
+			gotLabel := result.Intent
+			passLabel := "FAIL"
+			if (tc.wantNotOk && !ok) || (ok && func() bool {
+				for _, w := range tc.wantIntents {
+					if result.Intent == w {
+						return true
+					}
+				}
+				return false
+			}()) {
+				passLabel = "PASS"
+			}
+			if !ok {
+				gotLabel = "(declined)"
+			}
+			reportRows = append(reportRows, []string{
+				model, tc.label, tc.message, wantLabel, gotLabel, passLabel,
+				fmt.Sprintf("%d", caseTok), fmt.Sprintf("%.2fs", lat.Seconds()),
+			})
 
 			tt := scores[model]
 			tt.total++
@@ -249,7 +302,7 @@ func TestRouterBakeOff(t *testing.T) {
 	}
 
 	fmt.Printf("\n========== ROUTER SCOREBOARD ==========\n")
-	for _, model := range routerBakeModels {
+	for _, model := range models {
 		tt := scores[model]
 		n := len(tt.lats)
 		medLat := 0.0
@@ -263,4 +316,8 @@ func TestRouterBakeOff(t *testing.T) {
 		}
 		fmt.Printf("%-24s %d/%d   median latency %.2fs (n=%d)\n", model, tt.score, tt.total, medLat, n)
 	}
+
+	writeSuiteTokenReport(t, "../../../../llm2viz/router-eval-results.md", "Router eval (classify_intent) live results",
+		[]string{"model", "label", "message", "want", "got", "pass", "tokens", "latency"},
+		reportRows, reportTok, time.Since(start))
 }

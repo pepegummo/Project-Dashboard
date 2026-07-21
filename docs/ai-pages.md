@@ -289,7 +289,7 @@ Model-call budget per turn (all inside the handler's 45s context):
 |---|---|---|
 | Retry-on-error loop | SQL self-correction loop, up to 3 attempts total (`validateSQL`/Postgres error → `sqlFixup` → re-emit via `emitSQL`) | Tool loop, max 5 iterations bounded by `roundCap` |
 | Secondary generation retry | Chart authoring (`emitEChart`) retries once, passing the prior error back to the model | — |
-| Deterministic checks | — | `runDeterministicChecks` (`verify.go`) |
+| Deterministic checks | — | `runDeterministicChecks` (`verify.go`) — for `preview_add_widget` and `preview_update_widget`, the new metric/fields must exist on the target machine (`checkFieldsExist` against `machine_fields`); for `preview_dashboard`, every planned widget must carry a metric. Any check it can't resolve (no machine on hand, empty lookup) is skipped, never failed. |
 | LLM judge | `verify_answer` via `verifyAskAnswer` (chart + table turns; empty results skipped; user-specified chart types never judged) and `verifyAskProse` (prose turns — topicality + rows-contradiction), both `gpt-5.4-mini`, 6s bound | `VerifyAnswer` judge |
 | Repair | Exactly one repair round (chart/table: re-emit SQL with verifier's `problem` as fixup, re-run, re-chart; prose: regenerate the answer once) | One `runRepairRound` |
 | Failure outcome | Degrades to table signal (`{}` echart option) — never a 502; a provider daily-quota error is the exception → 429 `QUOTA_EXCEEDED` | Outcome is deliver / ask back / repair; provider daily-quota error → 429 `QUOTA_EXCEEDED` (else 502 `AI_ERROR`) |
@@ -312,7 +312,7 @@ Design rationale: bounded checks keep worst-case latency and provider token cost
 - [FOCUSED] line-chart "Trend" — machine CW-01, metric weight, bucket 1h
 ```
 
-and injects the focused widget's full series data for analytical questions. `@Widget` mention tokens let the user route an edit request to a specific widget explicitly.
+and injects a focused widget's on-screen data so a read is answerable with no tool call: `seriesLine` appends a line-chart/daily-count's full series, and `alarmLine` appends a focused alarm-panel's active-alert list (same severity/machine filter as `AlarmPanelWidget.displayAlerts`, `"none (All Clear)"` when empty). Both emit the literal `on-screen data` marker the backend keys `inlineData` off. `@Widget` mention tokens let the user route an edit request to a specific widget explicitly.
 
 `api.chat(conversationId, text, context)` calls `POST /ai/chat`, which returns `{messages, intent}`. Three card components render the results:
 
@@ -365,7 +365,7 @@ Numbered walkthrough:
 
 1. Persist the user message; history is capped to the last 3 user/assistant rows (`buildAIMessages`, `controller.go:1112`).
 2. The outgoing message list is `systemPromptUnified` (a large provider-cached prompt) + capped history + an authoritative context block containing dashboard state and today's date.
-3. **Intent router** (`router.go`): `ClassifyIntent` (`router.go:93`) makes one forced `classify_intent` call on the router model (`gpt-5.4-mini` — bake-off 29/32 on the 32-case intent suite, 2026-07-17), returning strict JSON `IntentResult{intent, machine, metric, fields, bucket, dateRange, targetWidget, status, sku, confidence}`. Recognized intents: `chat`, `read_metric`, `read_agg`, `edit_widget`, `compare`, `create_dashboard`, `alerts`, `production`. A confidence floor of 0.5 applies; any classification failure falls back to `ok=false`. Design law: **the model classifies, Go decides.**
+3. **Intent router** (`router.go`): `ClassifyIntent` (`router.go:93`) makes one forced `classify_intent` call on the router model (`gpt-5.4-mini` — bake-off 29/32 on the 32-case intent suite, 2026-07-17), returning strict JSON `IntentResult{intent, machine, metric, fields, bucket, dateRange, targetWidget, status, sku, confidence}`. Recognized intents: `chat`, `read_metric`, `read_agg`, `edit_widget`, `compare`, `create_dashboard`, `alerts`, `production`. `confidence` is **self-reported by the model** (0..1, per a 3-band rubric in `routerSystemPrompt` — 0.85+ unambiguous, 0.5–0.85 loose wording, below 0.5 genuinely ambiguous); it is not a logprob or a calibrated probability. A confidence floor of 0.5 applies (`parseIntentResult`, `router.go`); below it — or on any classification failure — `ok=false` and the caller falls back to auto tool selection. Design law: **the model classifies, Go decides.**
 4. `dispatchIntent(res, ok, focused, inlineData, role, machineValid, chartExists)` (`controller.go:1032`) is a pure Go function that maps the classified intent to a `(tool_choice, roundCap)` pair — no LLM call is involved in this decision.
 
 | Intent | Forced tool_choice |
@@ -377,11 +377,11 @@ Numbered walkthrough:
 | `edit_widget` | `preview_update_widget` |
 | `compare` | `preview_update_widget` or `preview_add_widget`, chosen by `chartExists` |
 | `create_dashboard` | `preview_dashboard` |
-| focused inline-data read | `tool_choice: "none"` — answered from injected context, no tool call |
+| focused read/chat with inline data | `tool_choice: "none"` — answered from injected context, no tool call. Fires for any read/chat intent (`readOnlyIntents`: `chat`/`read_metric`/`read_agg`/`production`/`alerts`) when a focused widget shipped its on-screen data. This also rescues a router miss: a focused `daily-count`/`alarm-panel` that the router mislabels `chat` still answers correctly from context, so the classification error is cosmetic. |
 | classification failed | `""` (auto — model chooses) |
 
 5. **Tool loop:** up to 5 iterations total, chained across `roundCap` rounds. `callAI(msgs, tools, tc)` is called each iteration; when `finish_reason == "tool_calls"`, `runToolRound` (`controller.go:539`) dispatches through `ctrl.dispatch` (`controller.go:153`) (role-gated), and the tool results are appended to the message list and persisted. Once `roundCap` tool rounds are used, tools are dropped from the next call to force a final text summary.
-6. **Verify-then-repair:** `verifyAndMaybeRepair` (`controller.go:596`) runs only when at least one tool executed. Deterministic checks (`runDeterministicChecks` in `verify.go`) run first, followed by an LLM `VerifyAnswer` judge. The outcome is deliver, ask back, or one repair round (`runRepairRound`).
+6. **Verify-then-repair:** `verifyAndMaybeRepair` (`controller.go:596`) runs only when at least one tool executed. Deterministic checks (`runDeterministicChecks` in `verify.go`) run first — they validate that any metric/fields introduced by `preview_add_widget`/`preview_update_widget` exist on the target machine and that a `preview_dashboard` plan has no metric-less widgets — followed by an LLM `VerifyAnswer` judge. The outcome is deliver, ask back, or one repair round (`runRepairRound`).
 7. **Response:** `{success, data: newMessages, intent}`.
 
 ### 4.3 Tools

@@ -116,6 +116,10 @@ func runDeterministicChecks(ctx context.Context, orgID string, contextText strin
 			if p, bad := checkPreviewUpdateResult(ctx, orgID, contextText, t.resultJSON, resolveID, lookup); bad {
 				return p, true
 			}
+		case "preview_add_widget":
+			if p, bad := checkPreviewAddResult(ctx, t.resultJSON, lookup); bad {
+				return p, true
+			}
 		case "preview_dashboard":
 			var res PreviewDashboardResult
 			if err := json.Unmarshal([]byte(t.resultJSON), &res); err != nil {
@@ -179,6 +183,39 @@ func checkPreviewUpdateResult(ctx context.Context, orgID string, contextText str
 		return "", false // lookup error/empty — skip rather than false-fail
 	}
 	return checkFieldsExist(want, machineLabel, fields)
+}
+
+// checkPreviewAddResult checks a preview_add_widget result's metric/fields against
+// its resolved machine. Unlike update, add always carries the resolved machineUuid
+// (PreviewAddWidget fails outright on an unknown machine), so there's no context
+// fallback — just look up the machine's fields and verify. Skips (never fails) when
+// there's no metric/fields, no resolved machine, or the lookup comes back empty.
+func checkPreviewAddResult(ctx context.Context, resultJSON string, lookup machineFieldsLookup) (problem string, failed bool) {
+	var w PreviewWidget
+	if err := json.Unmarshal([]byte(resultJSON), &w); err != nil || w.MachineUUID == "" {
+		return "", false
+	}
+	var want []string
+	if w.Metric != "" {
+		want = append(want, w.Metric)
+	}
+	for _, f := range w.Fields {
+		if f != "" {
+			want = append(want, f)
+		}
+	}
+	if len(want) == 0 {
+		return "", false
+	}
+	fields := lookup(ctx, w.MachineUUID)
+	if fields == nil {
+		return "", false // lookup error/empty — skip rather than false-fail
+	}
+	label := w.Machine
+	if label == "" {
+		label = w.MachineUUID
+	}
+	return checkFieldsExist(want, label, fields)
 }
 
 // ── Cap logic (pure) ─────────────────────────────────────────────────────────

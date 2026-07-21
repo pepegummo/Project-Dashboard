@@ -121,6 +121,38 @@ func TestRunDeterministicChecksPreviewUpdateMetricAbsent(t *testing.T) {
 	}
 }
 
+func TestRunDeterministicChecksPreviewAddMetricExists(t *testing.T) {
+	result := `{"type":"gauge","title":"Speed","machine":"CW-01","machineUuid":"m-1","metric":"speed"}`
+	log := []toolExecution{{name: "preview_add_widget", resultJSON: result}}
+	problem, failed := runDeterministicChecks(context.Background(), "org-1", "", log, fakeResolver("", false), fakeLookup([]string{"speed", "temp"}))
+	if failed {
+		t.Errorf("failed = true, want false (metric exists); problem=%q", problem)
+	}
+}
+
+func TestRunDeterministicChecksPreviewAddMetricAbsent(t *testing.T) {
+	result := `{"type":"gauge","title":"Bogus","machine":"CW-01","machineUuid":"m-1","metric":"bogus"}`
+	log := []toolExecution{{name: "preview_add_widget", resultJSON: result}}
+	problem, failed := runDeterministicChecks(context.Background(), "org-1", "", log, fakeResolver("", false), fakeLookup([]string{"speed", "temp"}))
+	if !failed {
+		t.Fatal("failed = false, want true (added metric absent on machine)")
+	}
+	if problem == "" {
+		t.Error("problem string is empty, want a specific reason")
+	}
+}
+
+func TestRunDeterministicChecksPreviewAddNoMachineSkips(t *testing.T) {
+	// PreviewAddWidget can't reach here without a resolved machineUuid, but if the
+	// result JSON lacks one (or lookup is empty), the check must skip, never false-fail.
+	result := `{"type":"gauge","title":"Speed","metric":"bogus"}`
+	log := []toolExecution{{name: "preview_add_widget", resultJSON: result}}
+	problem, failed := runDeterministicChecks(context.Background(), "org-1", "", log, fakeResolver("", false), fakeLookup([]string{"speed"}))
+	if failed {
+		t.Errorf("failed = true, want false (no machineUuid → skip); problem=%q", problem)
+	}
+}
+
 func TestRunDeterministicChecksPreviewUpdateResolvesMachineFromContext(t *testing.T) {
 	// No machineUuid in changes (machine wasn't reassigned this call) — must fall
 	// back to the widget's current machine on the dashboard-context line, then
