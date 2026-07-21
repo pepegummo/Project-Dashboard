@@ -482,6 +482,18 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	if routerOK && readOnlyIntents[intentRes.Intent] {
 		callTools = buildAIToolsWith(role, true)
 	}
+	// When dispatchIntent pinned tool_choice to one function, that single tool resolves
+	// the turn in one round: send only its schema on turn 0 (not the whole ~2k slim set)
+	// and drop tools for the summary call below. "required"/auto may still fan out
+	// (get_machines -> show_metric), so those keep the full set + roundCap.
+	forcedName := forcedFuncName(firstToolChoice)
+	if forcedName != "" {
+		if single := oneAITool(forcedName); single != nil {
+			callTools = single
+		} else {
+			forcedName = "" // unknown tool name — keep the full set + roundCap
+		}
+	}
 	for i := 0; i < 5; i++ {
 		tc := ""
 		if i == 0 {
@@ -539,8 +551,10 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 		// dispatchIntent (0 for a focused-widget message, else 1) — each round
 		// re-sends the full ~3k context, so more rounds blow the 8k/min limit.
 		// Non-focused keeps 2 rounds for the get_machines → show_metric ×N fan-out.
-		// Outer loop cap is the hard stop.
-		if i >= roundCap {
+		// A forced single function needs no second tool round — drop tools right after
+		// its one round so the summary call carries no ~2k schema. Outer loop is the
+		// hard stop.
+		if i >= roundCap || forcedName != "" {
 			callTools = nil
 		}
 	}
@@ -872,6 +886,40 @@ func buildAIToolsWith(role string, slimAll bool) []map[string]any {
 	return out
 }
 
+// forcedFuncName returns the function name embedded in a forceFunc tool_choice, or
+// "" for auto (""), "required", "none", or anything not a single forced-function
+// object. Lets the Chat loop send only that one tool's schema instead of the whole
+// set when the choice is already pinned to one function.
+func forcedFuncName(toolChoice string) string {
+	const p = `{"type":"function","function":{"name":"`
+	if !strings.HasPrefix(toolChoice, p) {
+		return ""
+	}
+	rest := toolChoice[len(p):]
+	if i := strings.IndexByte(rest, '"'); i >= 0 {
+		return rest[:i]
+	}
+	return ""
+}
+
+// oneAITool returns just the named tool as a one-element list — full schema for the
+// complex preview_* tools, slim otherwise, matching buildAIToolsWith's per-tool rule.
+// Used when tool_choice forces exactly this function: the other schemas are dead
+// weight the model can't call. Returns nil if the name is unknown. Each name maps to
+// a byte-stable single-tool payload, so per-intent prefixes stay provider-cacheable.
+func oneAITool(name string) []map[string]any {
+	for _, t := range AllTools() {
+		if t["name"].(string) != name {
+			continue
+		}
+		if complexSchemaTools[name] {
+			return []map[string]any{toAITool(t)}
+		}
+		return []map[string]any{toAIToolSlim(t)}
+	}
+	return nil
+}
+
 // callAI sends messages to Groq with the default model. Pass nil tools for a
 // plain (no-function-call) request. toolChoice: "" = auto, "required" = force a tool call.
 // tokenMeter accumulates total_tokens across every callAIModel invocation. Package-global
@@ -958,6 +1006,8 @@ func callAIModel(ctx context.Context, model string, messages []aiMessage, tools 
 		// accumulate token usage here so tests/ops can read a run total. Read via loadTokenMeter.
 		if result.Usage != nil {
 			atomic.AddInt64(&tokenMeter, int64(result.Usage.TotalTokens))
+			log.Printf("[ai call] model=%s prompt=%d completion=%d total=%d",
+				model, result.Usage.PromptTokens, result.Usage.CompletionTokens, result.Usage.TotalTokens)
 		}
 		if result.Error != nil {
 			// Groq's function-call parser failed (malformed generation, e.g. gpt-oss

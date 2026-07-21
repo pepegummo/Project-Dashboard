@@ -239,3 +239,38 @@ focused widget รู้แบบ deterministic จากมาร์ค `[FOCUS
 - Pool: /ask ≈ 183k Claude + judge บน OpenAI; router 31k OpenAI — รันควบวันเดียวได้เพราะ pool แยกกัน
 - **ครบแล้ว:** ทั้ง 3 result doc (`chat-`/`router-`/`ask-fullloop-results.md`) มีตัวเลข per-case จริง —
   ไม่เหลือคอลัมน์ "รอวัด"
+
+## 14. Per-call token metering + optimize forced-tool turns (2026-07-22)
+
+เพิ่ม **log ต่อ call** ที่ choke point `callAIModel` (`[ai call] model= prompt= completion= total=`)
+เพื่อแยกต้นทุนราย call (เดิม `tokenMeter` รวมทั้ง loop เป็นก้อนเดียว)
+
+### 14.1 วัด production case จริง (before) — พลิกสมมติฐาน
+รัน `TestChatFullLoopLive/production_today_th` เดี่ยว (fresh conversation) → **11,331 tok**, แยกได้:
+
+| call | model | prompt | completion | total | pool |
+|---|---|---|---|---|---|
+| router | gpt-5.4-mini | 971 | 74 | 1,045 | OpenAI |
+| chat turn 0 (force `get_production_count`) | claude-sonnet-5 | 4,765 | 83 | 4,848 | Claude |
+| chat turn 1 (ตอบ user) | claude-sonnet-5 | 4,850 | 96 | 4,946 | Claude |
+| verify judge | gpt-5.4-mini | 464 | 28 | 492 | OpenAI |
+
+- **completion จิ๋วมาก (83, 96)** → cost มาจาก **prompt ที่ส่งซ้ำ ไม่ใช่ reasoning** (สมมติฐานเดิมผิด)
+- 2 sonnet rounds = 9,794 = **86%** ของทั้งหมด; router+judge (OpenAI) แค่ 14%
+- standalone 11,331 vs full-run 15,009 → ส่วนต่าง ~3.7k = conversation history สะสม (shared conv)
+
+### 14.2 Optimize — forced-single-function turns (2 lever)
+เมื่อ `dispatchIntent` pin tool_choice เป็นฟังก์ชันเดียว (forceFunc) → 1 tool round พอ:
+- **`oneAITool(name)`** — turn 0 ส่ง **schema แค่ tool ที่ force** (ไม่ใช่ทั้ง 12 ตัว ~2k)
+- **drop tools บน summary call** — แก้ off-by-one เดิม (`i>=roundCap` ไม่ทันเพราะ break ก่อน) →
+  เพิ่มเงื่อนไข `|| forcedName != ""`
+- ยังคง cacheable: single-tool array ต่อ intent เป็น byte-stable (`forcedFuncName`/`oneAITool`, controller.go)
+- non-forced (`required`/auto/`none`) ไม่แตะ — fan-out get_machines→show_metric ยังทำงาน
+
+**หลักฐานว่าได้ผล (วัดจริงก่อน quota ตัด):** turn-0 prompt **4,765 → 3,482 = ลด 1,283 tok**.
+turn-1 คาดลดใกล้เคียง (drop tools) → production **~11,331 → ~8,700 (~23%)** ต่อเคส
+
+- offline เขียว: `go vet` clean, `TestForcedFuncName`/`TestOneAITool` + dispatch suite ผ่าน
+- ⚠ **ยังต้อง re-measure full-loop live** — Claude pool วันนี้หมด (183k /ask + measurements → 429
+  QUOTA_EXCEEDED กลาง turn-1) → รัน `TestChatFullLoopLive` เต็ม 5 เคสวันโควตาใหม่เพื่อยืนยันตัวเลข after
+  + ไม่มี regression end-to-end (drop-tools summary ใช้ pattern เดียวกับ `i>=roundCap` ที่ทำงานอยู่แล้ว)

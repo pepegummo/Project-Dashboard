@@ -216,6 +216,47 @@ func TestDispatchIntentRoundCapFollowsFocused(t *testing.T) {
 
 // ── canWrite / hasMachineSlot / focusedContextSummary ───────────────────────────
 
+func TestForcedFuncName(t *testing.T) {
+	cases := map[string]string{
+		forceFunc("show_metric"):          "show_metric",
+		forceFunc("get_production_count"): "get_production_count",
+		forceFunc("preview_add_widget"):   "preview_add_widget",
+		"":                                "", // auto
+		"required":                        "",
+		"none":                            "",
+		`{"type":"function"}`:             "", // malformed — no name
+	}
+	for tc, want := range cases {
+		if got := forcedFuncName(tc); got != want {
+			t.Errorf("forcedFuncName(%q) = %q, want %q", tc, got, want)
+		}
+	}
+}
+
+func TestOneAITool(t *testing.T) {
+	// OpenAI tool shape is {type, function:{name,...}} — read the nested name.
+	nameOf := func(list []map[string]any) string {
+		if len(list) != 1 {
+			return ""
+		}
+		f, _ := list[0]["function"].(map[string]any)
+		n, _ := f["name"].(string)
+		return n
+	}
+	// simple tool -> exactly one entry (slim form)
+	if got := nameOf(oneAITool("show_metric")); got != "show_metric" {
+		t.Errorf("oneAITool(show_metric) name = %q, want show_metric", got)
+	}
+	// complex preview tool -> exactly one entry (full schema)
+	if got := nameOf(oneAITool("preview_add_widget")); got != "preview_add_widget" {
+		t.Errorf("oneAITool(preview_add_widget) name = %q, want preview_add_widget", got)
+	}
+	// unknown name -> nil (caller keeps the full set)
+	if got := oneAITool("does_not_exist"); got != nil {
+		t.Errorf("oneAITool(does_not_exist) = %v, want nil", got)
+	}
+}
+
 func TestCanWrite(t *testing.T) {
 	if !canWrite("admin") || !canWrite("editor") {
 		t.Error("canWrite(admin/editor) = false, want true")
