@@ -268,7 +268,7 @@ func emitSQL(ctx context.Context, question, schema string, prev *prevTurn, fixup
 	msgs := []aiMessage{{Role: "system", Content: &sp}, {Role: "user", Content: strPtr(question)}}
 	tools := []map[string]any{toAITool(emitSQLTool)}
 	resp, _, err := callAIModel(ctx, aiModel(), msgs, tools, forceFunc("emit_sql"))
-	// The model declining the forced call (prose instead of a tool call, or Groq's
+	// The model declining the forced call (prose instead of a tool call, or the provider's
 	// "tool choice" validator error) means it judged the question un-SQL-able — a meta
 	// question about the previous chart, say. Degrade to the prose path, not a 502;
 	// same stance as Chat's fallback (controller.go): forced is an optimization.
@@ -345,11 +345,13 @@ func emitProse(ctx context.Context, question, schema string, prev *prevTurn, col
 }
 
 const echartSystemPrompt = `You turn a SQL result into an ECharts option that answers the user's question, by calling emit_echart_option. Never reply in prose.
-- Pick the chart type — use ONLY 'line', 'bar', 'pie', or 'scatter': a time-bucket column → line; a category comparison → bar; parts-of-a-whole → pie.
+- Pick the chart type — use ONLY 'line', 'bar', 'pie', 'scatter', or 'heatmap': a time-bucket column → line; a category comparison → bar; parts-of-a-whole → pie; two categorical dimensions plus one numeric value → heatmap.
 - A dataset with the result rows is injected AT RENDER TIME. Reference result columns BY NAME using encode (e.g. series:[{type:'line', encode:{x:'bucket', y:'avg_speed'}}]). Do NOT include any data arrays or a dataset field yourself.
 - Emit exactly ONE series even when the rows contain a category column (e.g. machine_name) — the renderer automatically splits one series into one line per category value. NEVER emit one series per machine/category: without per-series filters they would all draw identical data.
 - Set xAxis.type: 'time' for a timestamp/bucket column, 'category' for names. Add a short title, tooltip{trigger:'axis'}, and a legend when there are multiple series.
-- If the user's message explicitly names a chart type (bar/line/pie/scatter, or the same in another language e.g. Thai "กราฟแท่ง"=bar, "กราฟเส้น"=line, "วงกลม"=pie), use THAT type even if another would be more typical.
+- Style variants stay on their base type (still ONE series): for an area chart set areaStyle:{} on a 'line' series; for a smoothed line set smooth:true; for a horizontal bar keep type:'bar' but set yAxis.type:'category' and xAxis.type:'value' (encode x=value, y=category).
+- For a 'heatmap' series use encode:{x:<category>, y:<category>, value:<numeric>}, set BOTH xAxis.type and yAxis.type to 'category', tooltip{trigger:'item'}, and add a visualMap with inRange.color as a low→high scale (e.g. ['#22c55e','#eab308','#ef4444']). Do NOT set visualMap min/max — the renderer fills them from the real data.
+- If the user's message explicitly names a chart type or style (bar/line/pie/scatter/heatmap/area/horizontal, or the same in another language e.g. Thai "กราฟแท่ง"=bar, "กราฟเส้น"=line, "วงกลม"=pie, "ฮีตแมป"/"แผนที่ความร้อน"=heatmap, "กราฟพื้นที่"=area, "แนวนอน"=horizontal), use THAT even if another would be more typical.
 - Column names and a few sample rows are given below for type inference only.`
 
 // emitEChart generates an ECharts option. prevErr, when non-empty, is the previous
@@ -383,7 +385,7 @@ func emitEChart(ctx context.Context, question string, cols []string, sample [][]
 	return a.Option, nil
 }
 
-// askVerifyPrompt is a small, static prompt (~200 tok) so Groq can prompt-cache it
+// askVerifyPrompt is a small, static prompt (~200 tok) so the provider can prompt-cache it where supported
 // across verify calls, mirroring verifySystemPrompt (router.go) but scoped to
 // Ask-Data's SQL+chart turns instead of the chat tool-call path.
 const askVerifyPrompt = `You check whether a generated SQL query — and its chart, when one is present — actually answers a factory-data question, by calling verify_answer. Always call the tool — never reply in prose.
@@ -392,7 +394,7 @@ The option field may be an empty object {} — that means the result is delivere
 
 MISMATCH (matches_intent: false) only when the SQL or chart targets a DIFFERENT metric, machine, or time window than the question asked, or (chart present only) the chart type contradicts a chart type the user explicitly requested (e.g. asked for a bar chart but got a pie chart).
 
-A chart type the user explicitly requested (pie/bar/line/scatter, in any language — e.g. Thai "กราฟแท่ง"=bar, "วงกลม"=pie) is correct BY DEFINITION, even if another type would visualize the data better — judge only the DATA (metric, machine, time window), never the style the user chose.
+A chart type or style the user explicitly requested (pie/bar/line/scatter/heatmap/area/horizontal, in any language — e.g. Thai "กราฟแท่ง"=bar, "วงกลม"=pie, "ฮีตแมป"/"แผนที่ความร้อน"=heatmap, "กราฟพื้นที่"=area, "แนวนอน"=horizontal) is correct BY DEFINITION, even if another type would visualize the data better — judge only the DATA (metric, machine, time window), never the style the user chose.
 
 MATCH (matches_intent: true) otherwise — including a result that is imperfect but honestly answers what was asked (fewer points than ideal, a slightly different aggregation, a reasonable default time window when none was specified, an empty result when the data may genuinely contain no matching rows).
 
@@ -528,7 +530,7 @@ func sanitizeEChartOption(option json.RawMessage, cols []string) json.RawMessage
 
 		// Check type is allowed.
 		t, ok := s["type"].(string)
-		if !ok || !slices.Contains([]string{"line", "bar", "pie", "scatter"}, t) {
+		if !ok || !slices.Contains([]string{"line", "bar", "pie", "scatter", "heatmap"}, t) {
 			return json.RawMessage("{}")
 		}
 
@@ -746,7 +748,7 @@ func AskData(c *fiber.Ctx) error {
 	}
 
 	// Text-only results or empty results have no numeric axis — render as a table.
-	// Empty option ({}) is the frontend's "table" signal; also skips a wasted Groq call.
+	// Empty option ({}) is the frontend's "table" signal; also skips a wasted provider call.
 	// B2: one retry on a chart-generation error before degrading to the table — a
 	// second failure still leaves option "{}" (HTTP 200, never a 502 here).
 	option := json.RawMessage("{}")

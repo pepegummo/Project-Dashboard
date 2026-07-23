@@ -281,8 +281,38 @@ func TestSanitizeEChartOption(t *testing.T) {
 			},
 		},
 		{
+			name: "valid heatmap series with x/y/value encode survives",
+			option: json.RawMessage(`{
+				"series": [{"type": "heatmap", "encode": {"x": "hour", "y": "machine_name", "value": "avg_speed"}}],
+				"visualMap": {"inRange": {"color": ["#22c55e", "#ef4444"]}},
+				"xAxis": {"type": "category"}, "yAxis": {"type": "category"}
+			}`),
+			cols:      []string{"hour", "machine_name", "avg_speed"},
+			wantValid: true,
+			checkFn: func(t *testing.T, result json.RawMessage) {
+				var m map[string]any
+				if err := json.Unmarshal(result, &m); err != nil {
+					t.Errorf("result should be valid JSON: %v", err)
+					return
+				}
+				if m["visualMap"] == nil {
+					t.Error("expected visualMap to survive sanitize")
+				}
+				series, _ := m["series"].([]any)
+				if len(series) != 1 || series[0].(map[string]any)["type"] != "heatmap" {
+					t.Errorf("expected one heatmap series, got %v", m["series"])
+				}
+			},
+		},
+		{
+			name:      "heatmap with encode value on missing column rejected",
+			option:    json.RawMessage(`{"series": [{"type": "heatmap", "encode": {"x": "hour", "y": "machine_name", "value": "missing"}}]}`),
+			cols:      []string{"hour", "machine_name"},
+			wantValid: false,
+		},
+		{
 			name:      "unknown series type rejected",
-			option:    json.RawMessage(`{"series": [{"type": "heatmap"}]}`),
+			option:    json.RawMessage(`{"series": [{"type": "radar"}]}`),
 			cols:      []string{},
 			wantValid: false,
 		},

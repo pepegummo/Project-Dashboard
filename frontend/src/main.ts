@@ -3,11 +3,11 @@ import { createPinia } from 'pinia';
 import ECharts from 'vue-echarts';
 import { use, registerTheme } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
-import { LineChart, GaugeChart, BarChart, PieChart, ScatterChart } from 'echarts/charts';
+import { LineChart, GaugeChart, BarChart, PieChart, ScatterChart, HeatmapChart } from 'echarts/charts';
 import {
   GridComponent, TooltipComponent, LegendComponent,
   DataZoomComponent, MarkLineComponent, TitleComponent,
-  DatasetComponent, TransformComponent,
+  DatasetComponent, TransformComponent, VisualMapComponent,
 } from 'echarts/components';
 
 import App from './App.vue';
@@ -17,10 +17,10 @@ import './assets/main.css';
 // ECharts — register only what we need for minimal bundle size
 use([
   CanvasRenderer,
-  LineChart, GaugeChart, BarChart, PieChart, ScatterChart,
+  LineChart, GaugeChart, BarChart, PieChart, ScatterChart, HeatmapChart,
   GridComponent, TooltipComponent, LegendComponent,
   DataZoomComponent, MarkLineComponent, TitleComponent,
-  DatasetComponent, TransformComponent,
+  DatasetComponent, TransformComponent, VisualMapComponent,
 ]);
 
 // Dark theme for Ask Data charts — LLM-authored options carry no colors, so without

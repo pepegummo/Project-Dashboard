@@ -120,3 +120,24 @@ column validation) is deterministic Go; the LLM is reserved for genuine *semanti
 gracefully rather than erroring — Ask-Data falls back to a plain table, Chat delivers its best
 text. The one hard error is a provider daily-quota exhaustion, surfaced as `429 QUOTA_EXCEEDED`
 so the UI can say "come back later."
+
+---
+
+## 4. What it can't do (yet)
+
+- **Ask-Data only sees telemetry** — the three `v_` views. Questions about dashboards, alert
+  rules, or users have no data to answer from. It also can't return more than 5000 rows, run
+  longer than 5s, or draw stacked/dual-axis charts (line, bar, pie, scatter, heatmap — plus
+  area, smoothed and horizontal as style variants — one series each).
+- **Ask-Data remembers one turn** — a follow-up refines the previous question; it can't reach
+  back to a chart from three questions ago.
+- **Chat can't create alert rules** — there is no tool for it, only reading active alerts. It
+  also can't create a dashboard on its own: preview then Confirm, always.
+- **Chat remembers the last 3 messages** and chains at most two tool rounds per turn (one when a
+  widget is focused) — both caps exist to keep the prompt (and the bill) small. Several widgets
+  can be edited in a single message; what it can't do is chain tools where each result picks the
+  next one.
+- **Element-click works on `/ai` only**, one element per widget.
+- **Capacity:** ~4,700 tokens per Ask question, ~11,400 per chat turn. Against a 200k/day quota
+  shared by the whole org that is roughly **42 questions or 17 chat turns a day**.
+- **No browser E2E tests** — coverage stops at the HTTP handler + live database.

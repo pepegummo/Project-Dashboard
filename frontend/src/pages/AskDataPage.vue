@@ -48,6 +48,29 @@ function withDataset(option: Record<string, unknown>, columns: string[], rows: u
   const seriesArr = Array.isArray(seriesRaw) ? seriesRaw : seriesRaw ? [seriesRaw] : [];
   if (seriesArr.length !== 1) return merged;
   const s = seriesArr[0] as Record<string, unknown>;
+
+  // Heatmap: the per-category split below is for x/y line series — instead fill
+  // visualMap's min/max from the real value column so the color scale spans the
+  // data (the model only sees a 20-row sample and would clip on outliers).
+  // ponytail: single value column assumed; a non-string encode.value or no numeric
+  // data keeps whatever visualMap the model authored (return merged).
+  if (s.type === 'heatmap') {
+    const enc = (s.encode ?? {}) as Record<string, unknown>;
+    const vi = typeof enc.value === 'string' ? safeCols.indexOf(enc.value) : -1;
+    if (vi < 0) return merged;
+    const nums = safeRows.map((r) => Number(r[vi])).filter((n) => Number.isFinite(n));
+    if (nums.length === 0) return merged;
+    const vm = (option?.visualMap ?? {}) as Record<string, unknown>;
+    return {
+      ...merged,
+      grid: { ...merged.grid, bottom: 60 }, // room for the horizontal visualMap
+      visualMap: {
+        calculable: true, orient: 'horizontal', left: 'center', bottom: 8,
+        ...vm, min: Math.min(...nums), max: Math.max(...nums),
+      },
+    };
+  }
+
   if (!['line', 'bar', 'scatter'].includes(s.type as string)) return merged;
   const enc = (s.encode ?? {}) as Record<string, unknown>;
   if (typeof enc.x !== 'string' || typeof enc.y !== 'string') return merged;
