@@ -117,15 +117,6 @@ func TestChatFullLoopLive(t *testing.T) {
 
 	ctrl := NewController()
 
-	// One conversation for the whole run (messages cascade-delete with it).
-	conv, err := ctrl.repo.CreateConversation(ctx, userSub, "chat-fullloop-test")
-	if err != nil {
-		t.Skipf("could not create conversation: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM ai_conversations WHERE id=$1`, conv.ID)
-	})
-
 	// Wire the SAME global error handler production uses (main.go). Without it, a
 	// handler that returns *AppError (e.g. a 502 on a provider outage) falls through
 	// to Fiber's default handler — status 500 + the plaintext "[AI_ERROR] ..." body —
@@ -143,6 +134,20 @@ func TestChatFullLoopLive(t *testing.T) {
 
 	for _, tc := range chatCases {
 		t.Run(tc.name, func(t *testing.T) {
+			// A FRESH conversation per case — do NOT hoist this back out of the loop.
+			// Sharing one conversation leaks the previous case's history (buildAIMessages
+			// keeps the last 3 rows, usually the prior case's tool rows) into this one:
+			// per-case token numbers pick up the previous case's cost, and greeting_th's
+			// "no tool must execute" assertion only means something against empty history.
+			// Messages cascade-delete with the conversation.
+			conv, cerr := ctrl.repo.CreateConversation(ctx, userSub, "chat-fullloop-"+tc.name)
+			if cerr != nil {
+				t.Fatalf("create conversation: %v", cerr) // DB already pinged — this is a real failure
+			}
+			defer func() {
+				_, _ = pool.Exec(context.Background(), `DELETE FROM ai_conversations WHERE id=$1`, conv.ID)
+			}()
+
 			pace()
 
 			raw, _ := json.Marshal(map[string]any{
