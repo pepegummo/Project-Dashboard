@@ -1,11 +1,10 @@
 package ai
 
-// Structured intent router (Phase 2). Standalone in this task — built and evaluated
-// but NOT wired into the Chat handler yet (Task 3 does that). ClassifyIntent makes one
-// forced tool call to a small/fast Groq model (classify_intent, schema.go) and returns
-// strict JSON, never prose. Callers treat a false second return as "fall back to the
-// existing auto-tools chat path" — any error, invalid JSON, unknown intent, or
-// low-confidence result is treated as a non-answer rather than guessed at.
+// Structured intent router. ClassifyIntent makes one forced tool call to a small/fast
+// model (classify_intent, schema.go) and returns strict JSON, never prose. Callers treat
+// a false second return as "fall back to the existing auto-tools chat path" — any error,
+// invalid JSON, unknown intent, or low-confidence result is treated as a non-answer
+// rather than guessed at.
 
 import (
 	"context"
@@ -15,13 +14,13 @@ import (
 	"iot-dashboard/internal/config"
 )
 
-// routerModel is ClassifyIntent's default model — openai/gpt-oss-20b per the live
-// TestRouterBakeOff run (2026-07-10): 20/32 vs llama-3.1-8b-instant's 0/32 (Groq's
-// function-call validator rejected llama-3.1-8b-instant's forced tool_choice output for
-// this schema on every case, tripping callAIModel's existing no-tools fallback).
-// TestRouterBakeOff compares candidates by calling classifyIntentWithModel directly with
-// an explicit model string — it does not mutate this default. llama stays in that
-// comparison for the record. Overridable via AI_ROUTER_MODEL.
+// routerModel is the model ClassifyIntent calls. Set it via AI_ROUTER_MODEL — in
+// production that is gpt-5.4-mini on the KKU gateway (AI_BASE_URL, provider since
+// 2026-07-16). The openai/gpt-oss-20b literal below is only a last-resort default for
+// an unset env and dates from the Groq era; it scored 20/32 vs llama-3.1-8b-instant's
+// 0/32 on the live TestRouterBakeOff run (2026-07-10), a result that says nothing about
+// the current provider. TestRouterBakeOff calls classifyIntentWithModel with an explicit
+// model string — it does not mutate this default.
 func routerModel() string { return envOr(config.Env.AIRouterModel, "openai/gpt-oss-20b") }
 
 // routerConfidenceFloor: results below this are treated as "not confident enough" —
@@ -54,14 +53,21 @@ type IntentResult struct {
 		Start string `json:"start,omitempty"`
 		End   string `json:"end,omitempty"`
 	} `json:"dateRange,omitempty"`
-	TargetWidget string  `json:"targetWidget,omitempty"`
-	Status       string  `json:"status,omitempty"`
-	Sku          string  `json:"sku,omitempty"`
-	Confidence   float64 `json:"confidence"`
+	TargetWidget string `json:"targetWidget,omitempty"`
+	// MultiTarget: the message edits MORE THAN ONE widget. Only dispatchIntent reads
+	// it — a forced single function can emit one tool call, so a multi-target edit
+	// falls back to tool_choice "required" and lets the model call the edit tool once
+	// per widget in the same round (runToolRound dispatches them all).
+	MultiTarget bool    `json:"multiTarget,omitempty"`
+	Status      string  `json:"status,omitempty"`
+	Sku         string  `json:"sku,omitempty"`
+	Confidence  float64 `json:"confidence"`
 }
 
-// routerSystemPrompt is a small, static-first prompt (~600 tokens max) so Groq can
-// prompt-cache it across calls, like systemPromptUnified. Kept tight on purpose — one
+// routerSystemPrompt is a small, static-first prompt (~600 tokens max) — static text
+// first, per-call context appended last, like systemPromptUnified. That ordering was
+// chosen for Groq's prompt cache; whether the current KKU gateway caches is unverified,
+// but the prompt is cheap either way. Kept tight on purpose — one
 // short example per intent, slot rules, nothing else. classify_intent's schema (not
 // prose here) carries the output contract.
 const routerSystemPrompt = `Classify one factory-dashboard chat message (Thai or English, often with typos) by calling classify_intent. Always call the tool — never reply in prose.
@@ -83,6 +89,7 @@ SLOTS — fill a slot only when the message explicitly states it. Never invent o
 - bucket: interval size as <number><m|h|d>, e.g. "15m"; "22 นาที" -> "22m".
 - dateRange.start / dateRange.end: YYYY-MM-DD, only if a date is explicit or trivially resolvable (today/yesterday).
 - targetWidget: widget title, only if the user names or @-mentions one.
+- multiTarget: true only when the message edits MORE THAN ONE widget ("ทุก widget", "both charts", two titles joined by "และ"/"and"). Leave false for a single widget.
 - status, sku: only if explicitly named.
 
 confidence: 0..1, how sure you are of the INTENT (not the slots). Calibrate honestly — below 0.5 the system stops trusting you and lets the model pick tools freely, so don't inflate:
@@ -158,7 +165,7 @@ type VerifyResult struct {
 	ClarifyingQuestion string `json:"clarifying_question,omitempty"`
 }
 
-// verifySystemPrompt is a small, static prompt (~250 tok) so Groq can
+// verifySystemPrompt is a small, static prompt (~250 tok) so the provider can
 // prompt-cache it across verify calls, mirroring routerSystemPrompt. The schema
 // (not prose here) carries the output contract.
 const verifySystemPrompt = `You check whether an assistant's answer actually addresses the user's request in a factory-dashboard chat app. Always call verify_answer — never reply in prose.

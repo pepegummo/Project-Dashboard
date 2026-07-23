@@ -20,6 +20,7 @@ IotVision ships two independent AI surfaces, both backed by an OpenAI-compatible
    - [4.3 Tools](#43-tools)
    - [4.4 Widget element-click](#44-widget-element-click)
 5. [API reference](#5-api-reference)
+6. [Current limits & scope](#6-current-limits--scope)
 
 ---
 
@@ -289,7 +290,7 @@ Model-call budget per turn (all inside the handler's 45s context):
 |---|---|---|
 | Retry-on-error loop | SQL self-correction loop, up to 3 attempts total (`validateSQL`/Postgres error → `sqlFixup` → re-emit via `emitSQL`) | Tool loop, max 5 iterations bounded by `roundCap` |
 | Secondary generation retry | Chart authoring (`emitEChart`) retries once, passing the prior error back to the model | — |
-| Deterministic checks | — | `runDeterministicChecks` (`verify.go`) — for `preview_add_widget` and `preview_update_widget`, the new metric/fields must exist on the target machine (`checkFieldsExist` against `machine_fields`); for `preview_dashboard`, every planned widget must carry a metric. Any check it can't resolve (no machine on hand, empty lookup) is skipped, never failed. |
+| Deterministic checks | — | `runDeterministicChecks` (`verify.go`) — for `preview_add_widget` and `preview_update_widget`, the new metric/fields must exist on the target machine (`checkFieldsExist` against `machine_fields`); for `preview_dashboard`, every planned widget must carry a metric. Any check it can't resolve (no machine on hand, empty lookup) is skipped, never failed. Plus `checkMultiTargetCoverage` — when the router flagged `multiTarget`, fewer than two `preview_update_widget` calls means the turn edited only part of what was asked (first pass only; the post-repair re-check deliberately skips it so a text-only repair isn't trapped in ask-back). |
 | LLM judge | `verify_answer` via `verifyAskAnswer` (chart + table turns; empty results skipped; user-specified chart types never judged) and `verifyAskProse` (prose turns — topicality + rows-contradiction), both `gpt-5.4-mini`, 6s bound | `VerifyAnswer` judge |
 | Repair | Exactly one repair round (chart/table: re-emit SQL with verifier's `problem` as fixup, re-run, re-chart; prose: regenerate the answer once) | One `runRepairRound` |
 | Failure outcome | Degrades to table signal (`{}` echart option) — never a 502; a provider daily-quota error is the exception → 429 `QUOTA_EXCEEDED` | Outcome is deliver / ask back / repair; provider daily-quota error → 429 `QUOTA_EXCEEDED` (else 502 `AI_ERROR`) |
@@ -335,7 +336,7 @@ sequenceDiagram
   FE->>API: POST /ai/chat {conversationId, message, context}
   API->>API: persist user message — buildAIMessages caps history to last 3 rows (controller.go:1112)
   API->>Router: ClassifyIntent — forced classify_intent call, gpt-5.4-mini
-  Router-->>API: IntentResult {intent, machine, metric, fields, bucket, dateRange, targetWidget, status, sku, confidence}
+  Router-->>API: IntentResult {intent, machine, metric, fields, bucket, dateRange, targetWidget, multiTarget, status, sku, confidence}
   Note over Router: confidence floor 0.5 — classification failure -> ok=false
   API->>API: dispatchIntent(res, ok, focused, ...) -> (tool_choice, roundCap) (controller.go:1032)
 
@@ -381,7 +382,7 @@ Numbered walkthrough:
 | classification failed | `""` (auto — model chooses) |
 
 5. **Tool loop:** up to 5 iterations total, chained across `roundCap` rounds. `callAI(msgs, tools, tc)` is called each iteration; when `finish_reason == "tool_calls"`, `runToolRound` (`controller.go:539`) dispatches through `ctrl.dispatch` (`controller.go:153`) (role-gated), and the tool results are appended to the message list and persisted. Once `roundCap` tool rounds are used, tools are dropped from the next call to force a final text summary.
-6. **Verify-then-repair:** `verifyAndMaybeRepair` (`controller.go:596`) runs only when at least one tool executed. Deterministic checks (`runDeterministicChecks` in `verify.go`) run first — they validate that any metric/fields introduced by `preview_add_widget`/`preview_update_widget` exist on the target machine and that a `preview_dashboard` plan has no metric-less widgets — followed by an LLM `VerifyAnswer` judge. The outcome is deliver, ask back, or one repair round (`runRepairRound`).
+6. **Verify-then-repair:** `verifyAndMaybeRepair` (`controller.go:596`) runs only when at least one tool executed. Deterministic checks (`runDeterministicChecks` in `verify.go`) run first — they validate that any metric/fields introduced by `preview_add_widget`/`preview_update_widget` exist on the target machine, that a `preview_dashboard` plan has no metric-less widgets, and that a `multiTarget` turn actually edited more than one widget — followed by an LLM `VerifyAnswer` judge. A failed deterministic check skips the judge entirely and goes straight to repair, so the common failures cost no extra tokens. The outcome is deliver, ask back, or one repair round (`runRepairRound`).
 7. **Response:** `{success, data: newMessages, intent}`.
 
 ### 4.3 Tools
@@ -395,6 +396,8 @@ Tool implementations live in `tool_actions.go` (ToolKit methods) and `dashboard_
 `buildAIToolsWith(role, slimAll)` (`controller.go`; `buildAITools(role)` is the full-schema wrapper) filters the tool list by role — viewers lose write/preview tools. Simple tools always go over slim (name + description only). The three `preview_*` widget tools keep their full schemas **only on edit-intent turns and router fallback**; when the router classifies the turn as a read (`chat`/`read_metric`/`read_agg`/`production`/`alerts`, see `readOnlyIntents`) they are sent slim too (~850 tokens saved per call) while remaining callable in case of a misclassification. When `dispatchIntent` pins `tool_choice` to a single function (a `forceFunc` choice), the Chat loop sends **only that one tool's schema** on turn 0 (`forcedFuncName` + `oneAITool`, `controller.go`) instead of the whole ~2k slim set, and drops tools entirely for the summary call — the forced function resolves the turn in one round, so the other schemas are dead weight the model can't call. Per-call token logging (`[ai call] model=… prompt=… completion=… total=…`) at the `callAIModel` choke point confirmed this: a `production` turn's two sonnet calls are prompt-dominated (~4.8k prompt, ~90 completion each), i.e. the cost is the re-sent system prompt + tool schemas, not hidden reasoning. Each per-intent variant stays byte-stable, so provider-cacheable prefixes are preserved.
 
 Token budget (2026-07-20): every call carries `max_completion_tokens` (`AI_MAX_TOKENS`, default 2048 — hidden reasoning counts against it, so don't set below ~1024). Tool results for `get_telemetry_series` / `get_production_count` are capped at 100 stride-sampled rows plus a `summary` (min/max/avg/total computed over the full data before sampling), since those results are re-sent on every remaining loop iteration.
+
+**Capacity, derived from the measured suites:** /ask averages ~4,700 tokens per question (183,542 ÷ 39, 2026-07-22) and /ai ~11,400 tokens per turn (57,141 ÷ 5, 2026-07-21). Against KKU's 200k tokens/day — shared across the whole org, and shared with test runs — that is roughly **42 /ask questions or 17 /ai turns per day**. The 11% reduction above bought ~2 extra chat turns per day. One full /ask live suite run consumes nearly the entire daily budget, which is why it runs once a day at most.
 
 `tool_choice` serialization in `callAIModel` (`controller.go:834`): an empty string means auto, `"required"`/`"none"` are sent as plain strings, and a value starting with `{` is sent as a forced-function object. Provider `tool_choice` errors are retried with auto; a function-parser failure is retried with no tools at all. The response parser (`aiError.UnmarshalJSON`, `controller.go`) tolerates both OpenAI-style `{"error":{"message":...}}` objects and bare-string errors (`{"error":"This model reached daily limit."}` — the KKU proxy's format).
 
@@ -449,6 +452,41 @@ Token budget (2026-07-20): every call carries `max_completion_tokens` (`AI_MAX_T
 | `GET /ai/tools` | — | role-filtered tool schema list |
 | `POST /ai/tools/execute` | tool name + args (frontend-only path, used for `create_custom_dashboard` after Confirm) | tool execution result |
 | conversation + preview-draft CRUD | standard list/get/create/delete for `ai_conversations`/`ai_messages` and staged preview drafts | — |
+
+---
+
+## 6. Current limits & scope
+
+**In short:** what the two surfaces cannot do today, split into limits that are deliberate (safety or cost decisions, don't "fix" them without a design discussion) and limits that are simply not built yet.
+
+**Ask-Data**
+
+| Can't do | Enforced by |
+|---|---|
+| `WITH`/CTE, or any statement not starting with `SELECT` | `validateSQL` (`nl2sql.go`) requires the trimmed statement to start with `select` |
+| A query containing the word `into` | `sqlForbidden` word-scan — a deliberate false-positive in the safe direction (it is a regex scan, not a parser) |
+| Anything outside telemetry: dashboards, alert rules, users | `allowedViews` is the three `v_` views; every base table is in `deniedTables` |
+| Results beyond 5000 rows, or queries slower than 5s | `maxRows` + `SET LOCAL statement_timeout='5s'` in `runScoped` |
+| Stacked/heatmap/dual-axis charts, multi-series options | `echartSystemPrompt` restricts the model to line/bar/pie/scatter, `encode`-only, one series; the per-machine split is a frontend transform in `withDataset` capped at 2–20 categories |
+| Referring back further than one turn | `prevTurn` carries only `{question, sql, clarification}` of the immediately previous turn |
+| Streaming/partial answers | No streaming path — the handler returns once, inside its 45s context |
+
+**Chat Assistant — deliberate**
+
+- The model cannot create a dashboard: `create_custom_dashboard` is excluded from `AllTools()` and only reachable via `POST /ai/tools/execute` after the user confirms a staged preview.
+- Viewers lose every write/preview tool in `buildAIToolsWith(role, …)`; role gating is server-side, not a UI affordance.
+
+**Chat Assistant — not built yet**
+
+| Can't do | Why |
+|---|---|
+| Create or edit alert rules ("ตั้ง alert ให้หน่อย") | No such tool exists — `AllTools()` exposes `get_active_alerts` (read) only; the router still classifies these as `alerts` |
+| Remember more than the last few messages | `buildAIMessages` caps history to the last 3 rows to keep the prompt small |
+| Chain tools across **several dependent rounds** (A's result picks B, B's picks C) | `dispatchIntent` returns `roundCap` 1 — two tool rounds, dropping to 0 when a widget is focused; the loop's hard stop is 5 iterations. Editing several widgets at once is a different case and *is* supported: the router's `multiTarget` flag routes to `tool_choice: "required"` so the model emits one `preview_update_widget` per widget in one round |
+| Element-click outside `/ai` | `elementPickMode` is set true only while `AIAssistantPage.vue` is mounted; one element per widget, and `AlarmPanel` exposes only its title |
+| Treat router `confidence` as calibrated | It is self-reported by the model against a 3-band rubric, not a logprob; the only mechanical use is the 0.5 floor in `parseIntentResult` |
+
+**Both:** no browser-level E2E coverage — testing reaches the Fiber handler + live TimescaleDB and stops there (`llm2viz/test-results.md` §5).
 
 ---
 

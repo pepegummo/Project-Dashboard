@@ -15,7 +15,7 @@ import (
 	"strings"
 )
 
-// toolExecution is one tool call/result pair from this request's Groq round-trips
+// toolExecution is one tool call/result pair from this request's provider round-trips
 // (main loop or the single repair round) — the raw material both the deterministic
 // checks and VerifyAnswer's "tools used" summary are built from.
 type toolExecution struct {
@@ -216,6 +216,35 @@ func checkPreviewAddResult(ctx context.Context, resultJSON string, lookup machin
 		label = w.MachineUUID
 	}
 	return checkFieldsExist(want, label, fields)
+}
+
+// checkMultiTargetCoverage catches the one failure the other checks structurally
+// cannot see: the router flagged the message as editing SEVERAL widgets, but only
+// one edit actually ran. runDeterministicChecks only inspects tools that DID run
+// (two correct edits look perfect), and the LLM judge treats an honestly-reported
+// partial answer as a MATCH (verifySystemPrompt) — so without this, "I edited two,
+// couldn't find the third" sails through. Skipped entirely when the router didn't
+// flag multiTarget.
+//
+// ponytail: counts >= 2 as covered — multiTarget is a boolean, so the real target
+// count is unknown here. Asking the router to COUNT targets instead of noticing
+// them is less reliable and costs more; upgrade to targetCount only if partial
+// multi-edits show up in the metering log.
+func checkMultiTargetCoverage(multiTarget bool, log []toolExecution) (problem string, failed bool) {
+	if !multiTarget {
+		return "", false
+	}
+	edits := 0
+	for _, t := range log {
+		if t.name == "preview_update_widget" {
+			edits++
+		}
+	}
+	if edits >= 2 {
+		return "", false
+	}
+	return "the request targets several widgets but only " + fmt.Sprint(edits) +
+		" was edited — call preview_update_widget once per remaining widget", true
 }
 
 // ── Cap logic (pure) ─────────────────────────────────────────────────────────

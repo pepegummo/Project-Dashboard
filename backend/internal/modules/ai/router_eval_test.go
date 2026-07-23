@@ -60,6 +60,8 @@ type routerCase struct {
 	wantIntents []string // pass if the returned intent is any of these; nil when wantNotOk
 	wantNotOk   bool     // true: passing requires the router to decline (ok == false) — the
 	// correct behavior for a genuinely ambiguous message, not a miss.
+	wantMultiTarget bool // true: the right intent alone is not enough — multiTarget must be
+	// set too, since a false flag still forces a single tool call (dispatchIntent).
 }
 
 // legacyIntentCases re-labels the 24 bakeCases (eval_test.go) with the router's expected
@@ -206,6 +208,16 @@ var newRouterCases = []routerCase{
 	{label: "agg-production-read", message: "ผลิตกี่ชิ้นใน 22 นาที", wantIntents: []string{"production"}},
 	{label: "compare-metrics", message: "เปรียบเทียบ speed กับ temp", wantIntents: []string{"compare"}},
 	{label: "greeting-short", message: "สวัสดี", wantIntents: []string{"chat"}},
+	{
+		// Two widgets in one message: edit_widget alone is not enough — without
+		// multiTarget dispatchIntent forces preview_update_widget and only the first
+		// widget gets edited.
+		label:           "multi-widget-edit",
+		message:         "เปลี่ยน Trend กับ Speed Gauge เป็นเมื่อวานทั้งคู่",
+		contextLine:     "preview dashboard CW-01 Overview, widget: Trend (line-chart, machine CW-01, metric speed), widget: Speed Gauge (gauge, machine CW-01, metric speed)",
+		wantIntents:     []string{"edit_widget"},
+		wantMultiTarget: true,
+	},
 }
 
 func TestRouterBakeOff(t *testing.T) {
@@ -293,6 +305,11 @@ func TestRouterBakeOff(t *testing.T) {
 					tt.score++
 					break
 				}
+			}
+			// Right intent but no multiTarget still forces one tool call — score it a miss.
+			if status == "PASS" && tc.wantMultiTarget && !result.MultiTarget {
+				status = "FAIL (multiTarget=false)"
+				tt.score--
 			}
 			scores[model] = tt
 			fmt.Printf("  -> intent=%s confidence=%.2f machine=%q metric=%q bucket=%q targetWidget=%q\n",

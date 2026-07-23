@@ -41,6 +41,22 @@ func TestParseIntentResultDateRangeAndFields(t *testing.T) {
 	}
 }
 
+func TestParseIntentResultMultiTarget(t *testing.T) {
+	// multiTarget is the only slot dispatchIntent reads to decide between a forced
+	// single function and "required" — an omitted flag must parse as false.
+	raw := `{"intent":"edit_widget","multiTarget":true,"confidence":0.9}`
+	got, ok := parseIntentResult(raw)
+	if !ok {
+		t.Fatalf("parseIntentResult(%s) ok = false, want true", raw)
+	}
+	if !got.MultiTarget {
+		t.Errorf("MultiTarget = false, want true")
+	}
+	if got, _ := parseIntentResult(`{"intent":"edit_widget","confidence":0.9}`); got.MultiTarget {
+		t.Errorf("MultiTarget = true for an omitted flag, want false")
+	}
+}
+
 func TestParseIntentResultUnknownIntent(t *testing.T) {
 	raw := `{"intent":"delete_everything","confidence":0.99}`
 	got, ok := parseIntentResult(raw)

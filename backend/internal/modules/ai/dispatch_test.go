@@ -152,6 +152,19 @@ func TestDispatchIntentEditWidgetFocusedForcesByName(t *testing.T) {
 	}
 }
 
+func TestDispatchIntentEditWidgetMultiTargetIsRequired(t *testing.T) {
+	// A forced function name yields exactly ONE tool call, so a multi-widget edit must
+	// stay on "required" — that's what lets the model emit one preview_update_widget
+	// per widget in a single round.
+	for _, role := range []string{"editor", "admin"} {
+		res := IntentResult{Intent: "edit_widget", TargetWidget: "Trend", MultiTarget: true, Confidence: 0.9}
+		toolChoice, _ := dispatchIntent(res, true, true, false, role, false, false)
+		if toolChoice != "required" {
+			t.Errorf("role=%s: toolChoice = %q, want %q (multi-target must not force a single function)", role, toolChoice, "required")
+		}
+	}
+}
+
 func TestDispatchIntentEditWidgetNotFocusedIsRequired(t *testing.T) {
 	res := IntentResult{Intent: "edit_widget", Confidence: 0.9}
 	toolChoice, _ := dispatchIntent(res, true, false, false, "editor", false, false)

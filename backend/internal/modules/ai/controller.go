@@ -24,7 +24,8 @@ import (
 // gpt-oss-20b: confirmed via bake-off (see eval_test.go) — 2026-07-06 run: 23/23, zero
 // rate-limits, smallest prompts (~2.7k tok), fastest (~0.83s median); 120b scored 21/22
 // (one nondeterministic preview_* slip) and buys no accuracy edge. 20b is also cheaper and
-// Groq prompt-caches the stable base prefix. See docs/AI_ARCHITECTURE.md §3.
+// The provider prompt-caches the stable base prefix where it supports that (Groq did;
+// the current KKU gateway is unverified). See docs/AI_ARCHITECTURE.md §3.
 // Overridable via AI_MODEL / AI_BASE_URL env vars (config.Load); defaults below.
 func aiModel() string { return envOr(config.Env.AIModel, "openai/gpt-oss-120b") }
 func aiBaseURL() string {
@@ -63,7 +64,7 @@ func envOr(v, def string) string {
 //   - bucketEditRule (bar interval change EDIT rules)
 //   - fieldsEditRule (metric-overlay change EDIT rules)
 //
-// Groq caches the static prefix; tools are ordered static-first for cache re-use.
+// Static prefix first for prompt-cache re-use where the provider offers it; tools are ordered static-first for cache re-use.
 const systemPromptUnified = `You are IotVision AI, assistant for an industrial IoT platform. Language: match the user's latest message exactly — Thai or English, never mix. Plain text only — no markdown, no asterisks (**) or bold.
 
 TOOL SELECTION:
@@ -104,11 +105,12 @@ EDITS of a focused widget — the following are preview_update_widget calls, NOT
 - BUCKET: changing a focused count/chart widget's bar interval — a bare "<N> minutes/hours", "22 นาที", "ทุก 15 นาที", "รายชั่วโมง", or "every 15 min" — is such an EDIT: pass bucket as <number><m|h|d> (22 นาที → "22m", 1 ชั่วโมง → "1h"). Any bucket like "22m" is valid — never say the widget only supports its current interval.
 - METRIC OVERLAYS: comparing or overlaying metrics — "เปรียบเทียบ weight, speed", "compare speed and throughput", "overlay X vs Y" — ALWAYS resolves to a custom chart widget (type "chart"), NEVER a line-chart (a line-chart shows one metric and cannot compare). Match the user's metric words to the machine's real field keys, e.g. fields:["weight","speed"].
   • A custom chart (type "chart") already on the dashboard → EDIT it: preview_update_widget with fields as the new metric keys — never refuse because it currently shows other metrics.
-  • NO custom chart yet → ADD one: preview_add_widget with type:"chart", fields:[the metric keys], and for exactly two metrics scaling:"dual" (they usually have different units; dual axis keeps both readable).`
+  • NO custom chart yet → ADD one: preview_add_widget with type:"chart", fields:[the metric keys], and for exactly two metrics scaling:"dual" (they usually have different units; dual axis keeps both readable).
+- SEVERAL WIDGETS AT ONCE: when one message edits more than one widget ("เปลี่ยนทุก widget เป็นเมื่อวาน", "make both charts hourly", two titles joined by และ/and), call preview_update_widget ONCE PER WIDGET in the SAME turn — one call per widget_title, each carrying only that widget's changes. Never edit only the first and never merge several widgets into one call.`
 
 // dateLineForRequest returns "Today is YYYY-MM-DD (plant-local)." to append to
 // the dynamic context (dashboard state message) so the model can resolve relative dates.
-// This moves the date OUT of the system prompt (which is Groq-cached) and INTO the
+// This moves the date OUT of the system prompt (which is the prompt-cache prefix) and INTO the
 // per-request context, so the cache remains byte-identical across all requests and days.
 // ponytail: server-local date. In Docker that's UTC — near midnight it can be a day
 // off plant-local. If the plant isn't near UTC, have the frontend pass its local date.
@@ -117,7 +119,7 @@ func dateLineForRequest() string {
 	return "Today is " + today + " (plant-local)."
 }
 
-// ── Groq / OpenAI-compatible API types ───────────────────────────────────────
+// ── Provider (OpenAI-compatible) API types ───────────────────────────────────────
 
 type aiMessage struct {
 	Role       string       `json:"role"`
@@ -405,13 +407,13 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 		return err
 	}
 
-	// Build Groq messages: unified system prompt + capped history.
+	// Build provider messages: unified system prompt + capped history.
 	hasContext := body.Context != ""
 
 	// The frontend injects the focused widget's full series (marked "on-screen data")
 	// only for analytical questions. The prompt's ON-SCREEN DATA rule tells the model
 	// to answer from it directly instead of re-fetching via a tool; tools stay attached
-	// (Groq prompt-prefix cache survives) but tool_choice is forced to "none" below for
+	// (the prompt-prefix cache, if any, survives) but tool_choice is forced to "none" below for
 	// this turn — that redundant fetch+summarize round doubled tokens and hit the
 	// 8k/min rate limit.
 	inlineData := hasContext && strings.Contains(body.Context, "on-screen data")
@@ -502,7 +504,7 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 		resp, err := callAI(msgs, callTools, tc)
 		if err != nil {
 			// qwen3 reasoning models try to chain tools even on no-tool summary calls.
-			// Groq surfaces this as "Tool choice is none" — retry with the full toolset.
+			// Groq surfaced this as "Tool choice is none" — retry with the full toolset.
 			if strings.Contains(err.Error(), "Tool choice is none") {
 				resp, err = callAI(msgs, tools, "")
 			}
@@ -585,7 +587,7 @@ func (ctrl *Controller) Chat(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"success": true, "data": newMessages, "intent": chatIntentResponse(intentRes, routerOK)})
 }
 
-// runToolRound dispatches every tool call from one Groq response, persists each
+// runToolRound dispatches every tool call from one provider response, persists each
 // as a "tool" message, appends the tool result into msgs for the next completion
 // call, and returns the accumulated log entries for verification. Shared by the
 // main loop above and the single repair round (verifyAndMaybeRepair) so both stay
@@ -643,7 +645,7 @@ type verifyRequest struct {
 // checks (free) -> LLM verify (router model, bounded) -> at most ONE repair round
 // -> a clarifying question if still wrong. Only called when at least one tool
 // executed this request (Chat()'s scope-rule gate). Every failure path here
-// (verifier timeout/parse error, DB lookup miss, repair-round Groq error)
+// (verifier timeout/parse error, DB lookup miss, repair-round provider error)
 // degrades to returning req.finalText unchanged — verification can never break
 // or block Chat(). newMessages accumulates any tool messages persisted during
 // the repair round, same shape as the main loop's.
@@ -651,6 +653,14 @@ func (ctrl *Controller) verifyAndMaybeRepair(c *fiber.Ctx, ctx context.Context, 
 	start := time.Now()
 
 	detProblem, detFailed := runDeterministicChecks(ctx, req.orgID, req.contextText, req.toolLog, resolveMachineID, getMachineFieldsForMachine)
+	// Coverage is checked only on the FIRST pass (not after the repair round, which
+	// re-checks repairLog alone): a text-only repair legitimately runs no tools, and
+	// re-tripping this there would trap an otherwise-fine answer in askback forever.
+	if !detFailed && req.routerOK {
+		if p, bad := checkMultiTargetCoverage(req.intentRes.MultiTarget, req.toolLog); bad {
+			detProblem, detFailed = p, true
+		}
+	}
 
 	var verdict *VerifyResult
 	if !detFailed {
@@ -687,7 +697,7 @@ func (ctrl *Controller) verifyAndMaybeRepair(c *fiber.Ctx, ctx context.Context, 
 		}
 
 		if repairErr != nil {
-			// Repair round's own Groq call failed — degrade to the original answer
+			// Repair round's own provider call failed — degrade to the original answer
 			// rather than blocking the request on infrastructure trouble.
 			logVerdict = "repair-error"
 			break
@@ -727,7 +737,7 @@ func (ctrl *Controller) verifyAndMaybeRepair(c *fiber.Ctx, ctx context.Context, 
 // — up to one round of tool calls, then a forced text summary), mirroring the
 // cap pattern of Chat()'s main loop via runToolRound. tool_choice is left auto
 // ("") throughout; tools stay attached (role-filtered, passed in by the caller).
-// A Groq error here is returned to the caller, which degrades to the original
+// A provider error here is returned to the caller, which degrades to the original
 // (pre-repair) answer rather than failing the request.
 func (ctrl *Controller) runRepairRound(c *fiber.Ctx, ctx context.Context, convID string, msgs []aiMessage, tools []map[string]any) (text string, toolLog []toolExecution, persisted []Message, err error) {
 	const repairRoundCap = 1
@@ -791,7 +801,7 @@ func chatIntentResponse(res IntentResult, ok bool) fiber.Map {
 	}
 }
 
-// ── Groq HTTP helpers ─────────────────────────────────────────────────────────
+// ── Provider HTTP helpers ─────────────────────────────────────────────────────────
 
 func toAITool(t map[string]any) map[string]any {
 	return map[string]any{
@@ -832,7 +842,7 @@ func toAIToolSlim(t map[string]any) map[string]any {
 			"name":        name,
 			"description": desc,
 			// additionalProperties:true lets the model pass args derived from the
-			// description hints without Groq's schema validator rejecting them.
+			// description hints without the provider's schema validator rejecting them.
 			"parameters": map[string]any{
 				"type":                 "object",
 				"additionalProperties": true,
@@ -920,7 +930,7 @@ func oneAITool(name string) []map[string]any {
 	return nil
 }
 
-// callAI sends messages to Groq with the default model. Pass nil tools for a
+// callAI sends messages to the provider with the default model. Pass nil tools for a
 // plain (no-function-call) request. toolChoice: "" = auto, "required" = force a tool call.
 // tokenMeter accumulates total_tokens across every callAIModel invocation. Package-global
 // (not per-request) — reset+read it around a known workload (e.g. a live test) to total its cost.
@@ -950,7 +960,7 @@ func callAIModel(ctx context.Context, model string, messages []aiMessage, tools 
 		reqBody["tools"] = tools
 		if toolChoice != "" {
 			// "" = auto, "required"/"none" = string; a leading "{" means a forced-function
-			// object (forceFunc) that Groq needs as JSON, not a quoted string.
+			// object (forceFunc) that the provider needs as JSON, not a quoted string.
 			if strings.HasPrefix(toolChoice, "{") {
 				var tc map[string]any
 				if err := json.Unmarshal([]byte(toolChoice), &tc); err == nil {
@@ -1010,7 +1020,7 @@ func callAIModel(ctx context.Context, model string, messages []aiMessage, tools 
 				model, result.Usage.PromptTokens, result.Usage.CompletionTokens, result.Usage.TotalTokens)
 		}
 		if result.Error != nil {
-			// Groq's function-call parser failed (malformed generation, e.g. gpt-oss
+			// The provider's function-call parser failed (malformed generation, e.g. gpt-oss
 			// leaking a "<|channel|>commentary" token into the tool name). Retry once
 			// without tools so the user gets a plain-text reply instead of an error.
 			if (strings.Contains(result.Error.Message, "Failed to call a function") ||
@@ -1031,7 +1041,7 @@ func callAIModel(ctx context.Context, model string, messages []aiMessage, tools 
 	return nil, 0, lastErr
 }
 
-// rateLimitError signals a Groq 429 whose wait is too long to sit on server-side.
+// rateLimitError signals a provider 429 whose wait is too long to sit on server-side.
 // The Chat handler surfaces it as a 429 so the frontend can tell the user to retry.
 type rateLimitError struct{ seconds float64 }
 
@@ -1050,7 +1060,7 @@ func (e *quotaError) Error() string { return "AI daily quota reached. Please try
 var retryHintRe = regexp.MustCompile(`try again in ([0-9.]+)s`)
 
 func parseRetryAfter(header string, body []byte) time.Duration {
-	const maxWait = 30 * time.Second // honor Groq's TPM-window wait (can be ~17s); ceiling guards the 90s client timeout
+	const maxWait = 30 * time.Second // honor the provider's TPM-window wait (can be ~17s); ceiling guards the 90s client timeout
 	if header != "" {
 		if secs, err := strconv.ParseFloat(strings.TrimSpace(header), 64); err == nil && secs > 0 {
 			if d := time.Duration(secs * float64(time.Second)); d <= maxWait {
@@ -1072,7 +1082,7 @@ func parseRetryAfter(header string, body []byte) time.Duration {
 
 func strPtr(s string) *string { return &s }
 
-// forceFunc builds an OpenAI/Groq tool_choice object that forces one named function.
+// forceFunc builds an OpenAI-compatible tool_choice object that forces one named function.
 // callAIModel detects the leading "{" and sends it as an object rather than a string.
 func forceFunc(name string) string {
 	return `{"type":"function","function":{"name":"` + name + `"}}`
@@ -1211,7 +1221,10 @@ func dispatchIntent(res IntentResult, ok bool, focused bool, inlineData bool, ro
 		if !canWrite(role) {
 			return "", roundCap
 		}
-		if focused {
+		// A forced function name yields exactly ONE tool call, so a multi-widget edit
+		// must stay on "required": the model then calls preview_update_widget once per
+		// widget in a single round, and runToolRound dispatches them all.
+		if focused && !res.MultiTarget {
 			return forceFunc("preview_update_widget"), roundCap
 		}
 		return "required", roundCap
@@ -1237,9 +1250,9 @@ func dispatchIntent(res IntentResult, ok bool, focused bool, inlineData bool, ro
 	}
 }
 
-// buildAIMessages converts the last few DB messages to Groq/OpenAI format.
+// buildAIMessages converts the last few DB messages to OpenAI-compatible format.
 // GetMessages now returns DESC order (newest first) to avoid a full table scan;
-// reverse here so Groq receives oldest-first conversation order.
+// reverse here so the provider receives oldest-first conversation order.
 //
 // Capped to the last 3 rows: after a long chat the transcript was the single
 // biggest input-token cost per call, and inflating every request pushed focused

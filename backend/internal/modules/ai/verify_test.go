@@ -244,6 +244,35 @@ func TestRunDeterministicChecksMalformedResultSkips(t *testing.T) {
 
 // ── VerifyResult parsing ──────────────────────────────────────────────────────
 
+func TestCheckMultiTargetCoverage(t *testing.T) {
+	edit := toolExecution{name: "preview_update_widget"}
+	read := toolExecution{name: "show_metric"}
+	cases := []struct {
+		name        string
+		multiTarget bool
+		log         []toolExecution
+		wantFailed  bool
+	}{
+		{"not multi-target skips", false, []toolExecution{edit}, false},
+		{"multi-target, one edit only", true, []toolExecution{edit}, true},
+		{"multi-target, no edit at all", true, []toolExecution{read}, true},
+		{"multi-target, two edits", true, []toolExecution{edit, edit}, false},
+		{"multi-target, three edits", true, []toolExecution{edit, edit, edit}, false},
+		{"reads alongside edits don't count", true, []toolExecution{read, edit, read}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			problem, failed := checkMultiTargetCoverage(c.multiTarget, c.log)
+			if failed != c.wantFailed {
+				t.Errorf("failed = %v, want %v (problem=%q)", failed, c.wantFailed, problem)
+			}
+			if failed && problem == "" {
+				t.Error("failed check returned an empty problem — repair needs a reason to act on")
+			}
+		})
+	}
+}
+
 func TestParseVerifyResultMismatch(t *testing.T) {
 	raw := `{"matches_intent":false,"problem":"answered temperature, user asked speed","clarifying_question":""}`
 	got, ok := parseVerifyResult(raw)

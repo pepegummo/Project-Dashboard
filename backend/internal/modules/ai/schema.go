@@ -220,6 +220,7 @@ var ClassifyIntentTool = map[string]any{
 				"description": "Explicit or resolved date range. Omit fields not mentioned.",
 			},
 			"targetWidget": map[string]any{"type": "string", "description": "Widget title, only if the user names or @-mentions one."},
+			"multiTarget":  map[string]any{"type": "boolean", "description": "True only when the message edits MORE THAN ONE widget (e.g. 'ทุก widget', 'both charts', two titles joined by and/และ). False for a single widget."},
 			"status":       map[string]any{"type": "string", "enum": []string{"all", "good", "reject"}, "description": "Piece status filter, only if explicitly named (production intent)."},
 			"sku":          map[string]any{"type": "string", "description": "SKU filter, only if explicitly named."},
 			"confidence":   map[string]any{"type": "number", "description": "0..1 — how sure you are of the chosen intent."},
