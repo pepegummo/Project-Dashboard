@@ -6,10 +6,37 @@ import (
 	"fmt"
 	"io"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 )
+
+// TestNeedsBucketing guards the raw-time-series truncation backstop: a windowed
+// query with no time_bucket that hit the row cap must be flagged for re-emission,
+// while bucketed series, listings, and under-cap results must not be.
+func TestNeedsBucketing(t *testing.T) {
+	const rawSeries = "select ts, (data->>'speed')::float as speed from v_telemetry where ts >= $1 and ts < $2 order by ts limit 5000"
+	cases := []struct {
+		name     string
+		sqlLower string
+		runText  string
+		rowCount int
+		want     bool
+	}{
+		{"raw windowed series truncated", rawSeries, rawSeries, maxRows, true},
+		{"raw series under cap", rawSeries, rawSeries, maxRows - 1, false},
+		{"bucketed series at cap", "select time_bucket('%bucket%', ts) as bucket, avg(x) from v_telemetry where ts >= $1 group by bucket", "select time_bucket('1 day', ts) as bucket, avg(x) from v_telemetry where ts >= $1 group by bucket", maxRows, false},
+		{"distinct listing at cap", "select distinct data->>'sku' as sku from v_telemetry where ts >= $1", "select distinct data->>'sku' as sku from v_telemetry where ts >= $1", maxRows, false},
+		{"unwindowed at cap", "select ts, x from v_telemetry order by ts", "select ts, x from v_telemetry order by ts", maxRows, false},
+	}
+	for _, tc := range cases {
+		if got := needsBucketing(tc.sqlLower, tc.runText, tc.rowCount); got != tc.want {
+			t.Errorf("%s: needsBucketing = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
 
 // TestAskAIErrorMapsQuota verifies the shared /ask error mapper turns a provider
 // quotaError into 429 QUOTA_EXCEEDED and leaves any other error a 502 — the same
@@ -364,4 +391,157 @@ func TestSanitizeEChartOption(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Zoom contract: the bucket must get finer as the window narrows, stay under the
+// point budget, and the SQL must only pick up bind args when it actually has $1.
+func TestAutoBucketAndResolveSQL(t *testing.T) {
+	windows := []struct {
+		window time.Duration
+		want   string
+	}{
+		{365 * 24 * time.Hour, "1 day"},
+		{30 * 24 * time.Hour, "6 hours"},
+		{7 * 24 * time.Hour, "1 hour"},
+		{24 * time.Hour, "5 minutes"},
+		{2 * time.Hour, "1 minute"},
+	}
+	for _, w := range windows {
+		if got := autoBucket(w.window); got != w.want {
+			t.Errorf("autoBucket(%v) = %q, want %q", w.window, got, w.want)
+		}
+	}
+
+	// Whatever the window, the bucket must keep the result chartable.
+	for _, h := range []float64{1, 24, 168, 720, 8760, 5 * 365 * 24} {
+		from, to := windowFor(h)
+		label := autoBucket(to.Sub(from))
+		var step time.Duration
+		for _, b := range bucketLadder {
+			if b.label == label {
+				step = b.step
+			}
+		}
+		if points := to.Sub(from) / step; points > targetPoints {
+			t.Errorf("window %vh → %s yields %d points, over the %d budget", h, label, points, targetPoints)
+		}
+	}
+
+	from, to := windowFor(24)
+	tmpl := "SELECT time_bucket('%BUCKET%', ts) FROM v_telemetry WHERE ts >= $1 AND ts < $2"
+	gotSQL, args := resolveSQL(tmpl, from, to)
+	if strings.Contains(gotSQL, bucketToken) {
+		t.Errorf("bucket token survived resolution: %s", gotSQL)
+	}
+	if len(args) != 2 {
+		t.Errorf("windowed SQL got %d args, want 2", len(args))
+	}
+
+	// A model that writes a literal interval (user insisting on "real 1-minute data
+	// over a year") is normalized back to the token — the server owns the bucket.
+	got, err := validateSQL("SELECT time_bucket( '1 minute',  ts) FROM v_telemetry WHERE ts >= $1")
+	if err != nil {
+		t.Fatalf("validateSQL: %v", err)
+	}
+	if !strings.Contains(got, bucketToken) {
+		t.Errorf("literal interval not normalized: %s", got)
+	}
+	if b := chartBucket(got, to.Add(-365*24*time.Hour), to); b != "1 day" {
+		t.Errorf("chartBucket over a year = %q, want %q", b, "1 day")
+	}
+
+	// A listing query has no window — it must run with no args, or pgx errors out.
+	if _, args := resolveSQL("SELECT DISTINCT data->>'sku' FROM v_telemetry", from, to); args != nil {
+		t.Errorf("param-free SQL got args %v, want none", args)
+	}
+
+	// A hallucinated window falls back to the default rather than scanning everything.
+	if f, tt := windowFor(-5); tt.Sub(f) != defaultWindowHours*time.Hour {
+		t.Errorf("windowFor(-5) spans %v, want %vh", tt.Sub(f), defaultWindowHours)
+	}
+}
+
+// TestSummarizeRowsKeepsExtremes: the summary is computed over EVERY row, so a spike on
+// a row the 40-point sample would skip must still surface as the max — the whole reason
+// the analyze path sends a summary instead of only a thinned sample.
+func TestSummarizeRowsKeepsExtremes(t *testing.T) {
+	cols := []string{"bucket", "avg_speed"}
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var rows [][]any
+	for i := 0; i < 365; i++ {
+		rows = append(rows, []any{base.AddDate(0, 0, i), 100.0})
+	}
+	rows[201][1] = 999.0 // a spike downsampleRows(_, 40) does not land on
+
+	if s := downsampleRows(rows, 40); containsSpeed(s, 999.0) {
+		t.Fatalf("test premise broken: the sample happened to include the spike")
+	}
+	got := summarizeRows(cols, rows)
+	if !strings.Contains(got, "max=999") {
+		t.Fatalf("summary lost the spike:\n%s", got)
+	}
+	if !strings.Contains(got, "min=100") {
+		t.Fatalf("summary lost the baseline min:\n%s", got)
+	}
+}
+
+// TestSummarizeRowsPerCategory: with a category column the stats are broken down per
+// value, so machine B's spike shows under B — not blended into a single global line.
+func TestSummarizeRowsPerCategory(t *testing.T) {
+	cols := []string{"bucket", "machine_name", "avg_speed"}
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var rows [][]any
+	for i := 0; i < 100; i++ {
+		rows = append(rows, []any{base.AddDate(0, 0, i), "Checkweigher CW-01", 100.0})
+		rows = append(rows, []any{base.AddDate(0, 0, i), "Filler FL-03", 200.0})
+	}
+	rows[41][2] = 999.0 // a spike on Filler FL-03
+
+	got := summarizeRows(cols, rows)
+	if !strings.Contains(got, "by machine_name") {
+		t.Fatalf("expected a per-category breakdown:\n%s", got)
+	}
+	if !strings.Contains(got, "Filler FL-03: min=200 (") || !strings.Contains(got, "max=999") {
+		t.Fatalf("Filler FL-03 spike not reported under its own line:\n%s", got)
+	}
+	// CW-01 must keep its own range, unblended by the other machine's spike.
+	if !strings.Contains(got, "Checkweigher CW-01: min=100 (") || !strings.Contains(got, "Checkweigher CW-01: min=100 (2026-01-01T00:00:00Z), max=100") {
+		t.Fatalf("CW-01 stats blended with the other machine:\n%s", got)
+	}
+}
+
+// TestCleanChartTextsRecoversLeak: when a model bleeds tool-format XML tags into the
+// analysis value (and drops nextQuestion into it), the analysis is cut at the tag and
+// the nextQuestion is recovered — the user never sees raw markup.
+func TestCleanChartTextsRecoversLeak(t *testing.T) {
+	leaked := chartEmission{
+		Caption:  "ความเร็วเฉลี่ยรายเดือน",
+		Analysis: `Checkweigher CW-01 เฉลี่ย 62.6 ต่ำสุด มิ.ย. 2026 ส่วน CB-01 เฉลี่ย 1027.8</analysis>` + "\n" + `<parameter name="nextQuestion">ขอดูความเร็วรายนาที CB-01 พ.ย. 2025 ได้ไหม`,
+	}
+	got := cleanChartTexts(leaked)
+	if strings.ContainsAny(got.Analysis, "<>") {
+		t.Fatalf("analysis still has markup: %q", got.Analysis)
+	}
+	if !strings.Contains(got.Analysis, "1027.8") || strings.Contains(got.Analysis, "parameter") {
+		t.Fatalf("analysis not cleanly cut: %q", got.Analysis)
+	}
+	if got.NextQuestion != "ขอดูความเร็วรายนาที CB-01 พ.ย. 2025 ได้ไหม" {
+		t.Fatalf("nextQuestion not recovered: %q", got.NextQuestion)
+	}
+
+	// A clean emission must pass through untouched.
+	clean := chartEmission{Caption: "c", Analysis: "ทุกอย่างปกติ", NextQuestion: "ดูเครื่องอื่นไหม"}
+	if out := cleanChartTexts(clean); out.Analysis != "ทุกอย่างปกติ" || out.NextQuestion != "ดูเครื่องอื่นไหม" {
+		t.Fatalf("clean emission altered: %+v", out)
+	}
+}
+
+// containsSpeed reports whether any row's last column equals v — a tiny test helper.
+func containsSpeed(rows [][]any, v float64) bool {
+	for _, r := range rows {
+		if f, ok := r[len(r)-1].(float64); ok && f == v {
+			return true
+		}
+	}
+	return false
 }

@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, reactive, nextTick } from 'vue';
 import { api } from '@/services/api.service';
 import type { AskDataResult, AskBoardSummary, AskBoard, AskBoardChart } from '@/types';
-import { Sparkles, Loader2, Save, Trash2, RefreshCw, User, Plus, Pencil } from 'lucide-vue-next';
+import { Sparkles, Loader2, Save, Trash2, RefreshCw, User, Plus, Pencil, ZoomOut } from 'lucide-vue-next';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 
@@ -25,7 +25,7 @@ const askedQuestion = ref('');
 // Previous turn, so a follow-up ("make it a bar chart") refines it instead of being rejected.
 // clarification set instead of sql when the previous turn asked back (B3) — the next
 // message is the user's reply to that question.
-const prev = ref<{ question: string; sql: string; clarification?: string } | null>(null);
+const prev = ref<{ question: string; sql: string; clarification?: string; windowHours?: number } | null>(null);
 
 // Merge the LLM's ECharts option (no data) with the result rows as an ECharts
 // dataset. Re-running the SQL just swaps the source — the encoding stays put.
@@ -37,10 +37,16 @@ function withDataset(option: Record<string, unknown>, columns: string[], rows: u
   // array spread never throws "not iterable".
   const safeRows = Array.isArray(rows) ? rows : [];
   const safeCols = Array.isArray(columns) ? columns : [];
+  // Long series get a zoom slider + wheel/drag zoom. Client-side only: it re-frames
+  // the rows already loaded, it does not fetch finer buckets.
+  // ponytail: 60-row threshold, no refetch-on-zoom — add drill-down when a day/point
+  // is genuinely too coarse for what people zoom into.
+  const zoom = safeRows.length > 60;
   // grid.top clears the chart title; the LLM's own grid (if any) wins on the rest.
   const merged = {
     ...(option ?? {}),
-    grid: { containLabel: true, ...(option?.grid as object), top: 56 },
+    grid: { containLabel: true, ...(option?.grid as object), top: 56, ...(zoom ? { bottom: 64 } : {}) },
+    ...(zoom ? { dataZoom: [{ type: 'inside' }, { type: 'slider', bottom: 8, height: 18 }] } : {}),
     dataset: { source: [safeCols, ...safeRows] },
   };
 
@@ -63,6 +69,7 @@ function withDataset(option: Record<string, unknown>, columns: string[], rows: u
     const vm = (option?.visualMap ?? {}) as Record<string, unknown>;
     return {
       ...merged,
+      dataZoom: undefined, // a heatmap's axes are categories — the slider would clash with visualMap
       grid: { ...merged.grid, bottom: 60 }, // room for the horizontal visualMap
       visualMap: {
         calculable: true, orient: 'horizontal', left: 'center', bottom: 8,
@@ -109,6 +116,88 @@ const resultOption = computed(() =>
 const resultIsTable = computed(() => !!result.value && isTabular(result.value.echartOption));
 const resultIsEmpty = computed(() => !!result.value && (result.value.rows?.length ?? 0) === 0);
 
+// ── Zoom → drill down ────────────────────────────────────────────────────────
+// The dataZoom slider only re-frames rows already loaded. Once the user settles on
+// a narrower range we re-run the SAME SQL bound to it, so the backend picks a finer
+// bucket for it (a year of daily points becomes a week of hourly ones). Only a
+// windowed query can drill — a listing has no $1 to re-bind.
+type ZoomEvent = { start?: number; end?: number; startValue?: number; endValue?: number; batch?: ZoomEvent[] };
+
+// zoomStack: breadcrumb of ranges we've drilled through. Last entry = what's on
+// screen now; [0] = the originally-asked window. The slider can only pick a
+// sub-range of loaded rows, so zoom-OUT can't be a gesture — it pops this stack.
+const zoomStack = ref<{ from?: string; to?: string; windowHours?: number }[]>([]);
+const drilled = computed(() => zoomStack.value.length > 1);
+const drilling = ref(false);
+let drillTimer: number | undefined;
+
+// Index of the column the chart puts on the x axis, via the LLM's encode.
+function xIndex(r: AskDataResult) {
+  const raw = r.echartOption?.series;
+  const s = (Array.isArray(raw) ? raw[0] : raw) as Record<string, unknown> | undefined;
+  const enc = (s?.encode ?? {}) as Record<string, unknown>;
+  return typeof enc.x === 'string' ? r.columns.indexOf(enc.x) : -1;
+}
+
+function onZoom(e: ZoomEvent) {
+  const r = result.value;
+  if (!r?.sql?.includes('$1') || drilling.value) return;
+  const rows = r.rows ?? [];
+  const xi = xIndex(r);
+  if (xi < 0 || rows.length < 4) return;
+
+  const b = e.batch?.[0] ?? e;
+  const last = rows.length - 1;
+  const i0 = Math.max(0, Math.floor(b.startValue ?? ((b.start ?? 0) / 100) * last));
+  const i1 = Math.min(last, Math.ceil(b.endValue ?? ((b.end ?? 100) / 100) * last));
+  // Whole range = not a zoom; a handful of points left = nothing finer to show.
+  if ((i0 === 0 && i1 === last) || i1 - i0 < 2) return;
+
+  const from = String(rows[i0][xi]);
+  const to = String(rows[i1][xi]);
+  if (Number.isNaN(Date.parse(from)) || Number.isNaN(Date.parse(to))) return; // x isn't time
+
+  // Debounced — dragging a slider handle fires this continuously.
+  clearTimeout(drillTimer);
+  drillTimer = window.setTimeout(() => void drillTo({ from, to }), 400);
+}
+
+// Re-runs the current SQL over a range and swaps the rows in place — the LLM's
+// option, and so the whole chart's look, is untouched.
+async function fetchRange(range: { from?: string; to?: string; windowHours?: number }) {
+  const r = result.value;
+  if (!r) return;
+  drilling.value = true;
+  try {
+    const d = await api.runSql(r.sql, range);
+    result.value = { ...r, columns: d.columns, rows: d.rows, from: d.from, to: d.to };
+  } catch (e) {
+    askError.value = (e as Error).message;
+  } finally {
+    drilling.value = false;
+  }
+}
+
+// Drill one level finer: push the range so zoom-out can walk back to it.
+function drillTo(range: { from: string; to: string }) {
+  zoomStack.value.push(range);
+  void fetchRange(range);
+}
+
+// Zoom out one step — drop the current range, re-render the one beneath it.
+function zoomOut() {
+  if (zoomStack.value.length < 2) return;
+  zoomStack.value.pop();
+  void fetchRange(zoomStack.value[zoomStack.value.length - 1]);
+}
+
+// Jump straight back to the originally-asked window.
+function resetZoom() {
+  if (zoomStack.value.length < 2) return;
+  zoomStack.value = [zoomStack.value[0]];
+  void fetchRange(zoomStack.value[0]);
+}
+
 async function ask() {
   const q = question.value.trim();
   if (!q || asking.value) return;
@@ -123,7 +212,8 @@ async function ask() {
       result.value = res;
       askedQuestion.value = q;
       notes.value = [];
-      prev.value = { question: q, sql: res.sql };
+      prev.value = { question: q, sql: res.sql, windowHours: res.windowHours };
+      zoomStack.value = [{ windowHours: res.windowHours }];
     } else if (res.clarification) {
       notes.value.push({ q, text: res.clarification, kind: 'clarification' });
       prev.value = { question: q, sql: '', clarification: res.clarification };
@@ -136,6 +226,14 @@ async function ask() {
   } finally {
     asking.value = false;
   }
+}
+
+// askSuggested fills the box with the chart's suggested follow-up and submits it —
+// a one-click next step that runs through the same ask() path (a fresh data turn).
+function askSuggested(q: string) {
+  if (asking.value) return;
+  question.value = q;
+  void ask();
 }
 
 // newChat clears the whole ask thread — result, notes, the follow-up context, and any
@@ -172,7 +270,9 @@ async function openBoard(id: string) {
 async function runChart(ch: AskBoardChart) {
   chartData[ch.id] = 'loading';
   try {
-    chartData[ch.id] = await api.runSql(ch.sql);
+    // Saved charts store their window, so reopening a board shows live data over the
+    // span the chart was created with, not a default 24h.
+    chartData[ch.id] = await api.runSql(ch.sql, { windowHours: ch.windowHours });
   } catch {
     chartData[ch.id] = 'error';
   }
@@ -204,6 +304,7 @@ async function saveToBoard() {
       question: askedQuestion.value,
       sql: result.value.sql,
       echartOption: result.value.echartOption,
+      windowHours: result.value.windowHours,
     });
     saveTarget.value = boardId;
     newBoardName.value = '';
@@ -343,7 +444,11 @@ onMounted(loadBoards);
 
         <!-- Chart / table result — its own card -->
         <div v-if="result" class="mt-10 rounded-2xl border border-white/10 bg-surface-100 p-6 lg:p-8">
-          <h2 class="mb-5 text-lg font-semibold text-white">{{ askedQuestion }}</h2>
+          <h2 class="mb-1 text-lg font-semibold text-white">{{ askedQuestion }}</h2>
+          <!-- Caption comes from the chart author itself (same call, no extra LLM round) —
+               it names the ACTUAL bucket, which can be coarser than the question asked for. -->
+          <p v-if="result.caption" class="mb-5 text-sm text-gray-400">{{ result.caption }}</p>
+          <div v-else class="mb-5"></div>
 
           <template v-if="result">
           <div v-if="resultIsEmpty" class="rounded-lg border border-white/5 bg-surface-200/50 px-5 py-8 text-center text-base text-gray-500">No data matched — try a wider time range or check the machine name.</div>
@@ -359,8 +464,31 @@ onMounted(loadBoards);
               </tbody>
             </table>
           </div>
-          <div v-else-if="resultOption" class="h-[40rem] w-full">
-            <v-chart :option="resultOption" theme="cpf-dark" autoresize />
+          <div v-else-if="resultOption">
+            <!-- Zooming the slider re-queries the range at a finer bucket (see onZoom). -->
+            <div v-if="drilled || drilling" class="mb-3 flex flex-wrap items-center gap-2.5 text-sm">
+              <Loader2 v-if="drilling" class="h-4 w-4 animate-spin text-gray-400" />
+              <span v-if="drilled" class="text-gray-400">Zoomed in — showing this range at a finer interval.</span>
+              <button v-if="drilled" class="flex items-center gap-1.5 rounded-lg bg-primary-500 px-3.5 py-1.5 font-medium text-white transition-colors hover:bg-primary-600 disabled:opacity-50" :disabled="drilling"
+                @click="zoomOut"><ZoomOut class="h-4 w-4" /> Zoom out</button>
+              <button v-if="drilled" class="flex items-center gap-1.5 rounded-lg border border-white/15 px-3.5 py-1.5 font-medium text-gray-300 transition-colors hover:bg-surface-200 disabled:opacity-50" :disabled="drilling"
+                @click="resetZoom"><RefreshCw class="h-4 w-4" /> Reset range</button>
+            </div>
+            <div class="h-[40rem] w-full">
+              <v-chart :option="resultOption" theme="cpf-dark" autoresize @datazoom="onZoom" />
+            </div>
+          </div>
+
+          <!-- Auto-analysis + suggested next question — folded into the chart's own LLM
+               call (no extra round-trip), grounded in the per-machine summary. Both are
+               optional; each hides when the model didn't return it. -->
+          <div v-if="!resultIsEmpty && (result.analysis || result.nextQuestion)" class="mt-6 space-y-3">
+            <p v-if="result.analysis" class="rounded-lg border border-white/5 bg-surface-200/40 px-4 py-3 text-sm leading-relaxed text-gray-300">{{ result.analysis }}</p>
+            <button v-if="result.nextQuestion" type="button" :disabled="asking"
+              class="inline-flex items-center gap-2 rounded-full border border-primary-500/40 bg-primary-500/10 px-4 py-2 text-sm text-primary-200 transition-colors hover:bg-primary-500/20 disabled:opacity-50"
+              @click="askSuggested(result!.nextQuestion!)">
+              <Sparkles class="h-4 w-4 shrink-0" /> {{ result.nextQuestion }}
+            </button>
           </div>
 
           <!-- Save to board -->

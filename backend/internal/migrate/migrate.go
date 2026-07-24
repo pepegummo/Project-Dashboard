@@ -330,6 +330,9 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool) error {
 		`ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS acknowledged_by TEXT`,
 		`ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS resolved_at     TIMESTAMPTZ`,
 		`ALTER TABLE alert_events ADD COLUMN IF NOT EXISTS resolved_by     TEXT`,
+		// Ask-Data charts saved before the zoomable-window change have their range baked
+		// into the SQL (now() - interval); NULL here means "run it as stored".
+		`ALTER TABLE ai_board_charts ADD COLUMN IF NOT EXISTS window_hours DOUBLE PRECISION`,
 	}
 	for _, stmt := range alertEventsMigrations {
 		if _, err := pool.Exec(ctx, stmt); err != nil {

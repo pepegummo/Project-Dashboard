@@ -119,7 +119,7 @@ flowchart TD
   Q["🙋 Ask<br/>POST /ai/ask {question, prev?}"] --> Schema["buildSchemaContext<br/>views + machines + SQL rules"]
   Schema --> Emit["emitSQL — claude-sonnet-5<br/>forced emit_sql"]
   Emit --> Parse{"parseSQLEmission"}
-  Parse -->|not a data question| Prose["emitProse<br/>grounded by prev.SQL rows"]
+  Parse -->|not a data question| Prose["emitProse — main model<br/>grounded by prev.SQL summary + rows"]
   Prose --> PVerify{"check score<br/>verifyAskProse judge — gpt-5.4-mini, 6s"}
   PVerify -->|"ok / no verdict"| AnsText(["💬 Answer (text)"])
   PVerify -->|"mismatch → regenerate (once)"| Prose
@@ -164,7 +164,7 @@ sequenceDiagram
   end
 
   alt errNotDataQuestion
-    API->>Groq: emitProse (nl2sql.go:297) — no tools, grounded by re-running prev.SQL downsampled to 200 rows
+    API->>Groq: emitProse — no tools, main model, grounded by re-running prev.SQL (per-machine summary over ALL rows + 40-row sample)
     Groq-->>API: {answer}
     API->>Groq: verifyAskProse — forced verify_answer judge, gpt-5.4-mini, 6s bound
     opt matches_intent:false
@@ -198,7 +198,7 @@ Numbered walkthrough (same substance as the sequence diagram, for reference):
 
 1. **`buildSchemaContext(ctx, orgID)`** (`nl2sql.go:154`) — describes the three allowed views (`v_telemetry`, `v_machines`, `v_machine_fields`) plus the org's real machine names and metric keys, and the SQL rules the model must follow: use `time_bucket`, use `now()`-relative windows, use `ILIKE '%code%'` for machine-code matching, and access metrics via JSONB `data->>'key'`.
 2. **`emitSQL(ctx, question, schema, prev, fixup)`** (`nl2sql.go:218`) — one forced tool call to `emit_sql` via `forceFunc("emit_sql")` on the generation model (`claude-sonnet-5`); the tool schema is `{answerable, sql, clarification}`. Follow-ups are handled by prompt injection: if `prev.SQL` is set, the prompt asks the model to adapt the previous SQL; if `prev.Clarification` is set, it combines the original question with the user's reply. Two prompt rules keep the model from over-clarifying (added 2026-07-17 for claude-sonnet-5): an explain/definition question ("what does X mean", "อธิบาย", "ต่างกันยังไง") must set `answerable=false` (prose path) and never a clarification; and when a reasonable default exists (no time range → last 24h, fuzzy "drops/low" → below the window average) the model answers with the default instead of asking back — clarification is reserved for questions where no metric/machine/dimension is identifiable at all. `parseSQLEmission` (`nl2sql.go:274`) returns SQL XOR a clarification, or the sentinel error `errNotDataQuestion`.
-3. **Branch on the emission:** `errNotDataQuestion` routes to the prose path `emitProse` (`nl2sql.go:297`) — a no-tools completion grounded by re-running `prev.SQL` via `runScoped` downsampled to 200 rows. The answer then passes a prose judge, `verifyAskProse` — same contract as the chart judge (6s bound, `gpt-5.4-mini`, forced `verify_answer`): a MISMATCH verdict (off-topic answer, or a number contradicting the grounding rows) triggers exactly one regenerate with the verifier's problem as fixup, no second judge round; no verdict or a failed regenerate delivers the original answer — never a 502. Returns `{answer}`. A clarification response returns `{clarification}` directly. Otherwise the SQL path continues.
+3. **Branch on the emission:** `errNotDataQuestion` routes to the prose path `emitProse` (`nl2sql.go`, main model) — a no-tools completion grounded by re-running `prev.SQL` via `runScoped`, then fed a per-machine summary (min/max/avg computed over ALL rows, so no extreme is thinned away) plus a 40-row sample for trend shape. The answer then passes a prose judge, `verifyAskProse` — same contract as the chart judge (6s bound, `gpt-5.4-mini`, forced `verify_answer`): a MISMATCH verdict (off-topic answer, or a number contradicting the grounding rows) triggers exactly one regenerate with the verifier's problem as fixup, no second judge round; no verdict or a failed regenerate delivers the original answer — never a 502. Returns `{answer}`. A clarification response returns `{clarification}` directly. Otherwise the SQL path continues.
 4. **`validateSQL`** (`nl2sql.go:42`) — enforces a single `SELECT` statement, rejects forbidden write keywords (`sqlForbidden`), and rejects any access to base tables (`deniedTables`), scrubbing the allowed `v_` views first.
 5. **`runScoped(ctx, orgID, sql)`** (`nl2sql.go:71`) — opens a read-only transaction, sets `SET LOCAL statement_timeout='5s'`, sets `set_config('app.current_org', orgID, true)` as a Postgres GUC for org isolation, and caps results at 5000 rows. A retry loop runs up to 3 times: any validation failure or Postgres error is turned into a `sqlFixup` message fed back into `emitSQL` so the model can self-correct.
 6. **`hasNumericColumn(cols, rows)`** (`nl2sql.go:420`) — if there is no numeric column, or the result is empty, the response sets `option = "{}"` (the table signal) and skips the chart-authoring model call entirely.
@@ -271,11 +271,11 @@ Conceptual layer ↔ code map for the Ask-Data pipeline (every structural check 
 | 4.3 Error handling | retry loop in `AskData` (SQL ×3, chart ×1) | Go (deterministic) — no LLM classifier |
 | 5 Orchestration | `AskData` handler (nl2sql.go) | Go |
 
-Model-call budget per turn (all inside the handler's 45s context):
+Model-call budget per turn (all inside the handler's 200s context; per-call cap 90s):
 
 | Turn type | Calls |
 |---|---|
-| prose (not a data question) | `emitSQL` 1 + `emitProse` 1 + judge 1 (+ `emitProse` 1 on mismatch) = **3–4** |
+| prose (not a data question) | `emitSQL` 1 + `emitProse` 1 + judge 1 (+ `emitProse` 1 on mismatch) = **3–4**. `emitSQL`, `emitProse` and its repair run on the **main model** (analysis quality matters); only the judge runs on the router model. |
 | table (no numeric column) | `emitSQL` **1–3** (retry loop); no chart/judge — `hasNumericColumn` gates before `emitEChart` |
 | chart | SQL 1(–3) + chart 1(–2) + judge 1 (~1s) |
 | chart + judge-ordered repair (worst case) | above + SQL 1 + chart 1(–2) |
@@ -491,5 +491,7 @@ Token budget (2026-07-20): every call carries `max_completion_tokens` (`AI_MAX_T
 ---
 
 The generation model lives at `controller.go`'s `aiModel()` (`AI_MODEL`, production `claude-sonnet-5`); the router/judge model at `router.go`'s `routerModel()` (`AI_ROUTER_MODEL`, production `gpt-5.4-mini`). The endpoint comes from `aiBaseURL()` (`AI_BASE_URL`, production KKU) — it accepts a provider base or a full URL and auto-appends `/chat/completions` when missing; unset values fall back to Groq defaults.
+
+**Model split on Ask-Data.** The main model (`aiModel()`) handles all generation — `emitSQL` (right metric/machine, valid SELECT), `emitEChart` (valid chart spec), and `emitProse` (the analyze/explain prose, plus its repair), because analysis quality is the point of an "analyze this" answer. The router model (`routerModel()`) handles only the judging — every verifier. Numeric correctness of a prose answer comes from the grounded per-machine summary fed to `emitProse` (min/max/avg over ALL rows), not from the model. Note: `emitProse` was briefly moved to the router model while the main model was `kimi-k3` (a reasoning model that burned ~77s + ~5k tokens per prose call, blowing the timeout); under a fast main model that offload is unnecessary.
 
 **Testing:** the Ask-Data pipeline has three live suites in `backend/internal/modules/ai/` — `nl2sql_live_test.go` (`TestAskDataLiveQuestions`, ~39 questions through the LLM half against a schema fixture), `TestVerifyAskChartLive` (the judge in isolation), and `ask_fullloop_live_test.go` (`TestAskDataFullLoopLive`, the same cases POSTed through the real Fiber handler + live TimescaleDB — the full production path). All read the real `.env` AI settings via `liveKeyOrSkip`, so they exercise the exact provider/models production uses. Latest run results and quota guidance: [`llm2viz/test-results.md`](../llm2viz/test-results.md).

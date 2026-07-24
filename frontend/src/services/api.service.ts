@@ -312,15 +312,23 @@ class ApiService {
   }
 
   // ─── Ask Data (NL → SQL → ECharts) ──────────────────────────────────────────
-  async askData(question: string, context?: { question: string; sql: string; clarification?: string }) {
-    // Two LLM round-trips (SQL + chart) → allow more than the default 15s.
+  async askData(question: string, context?: { question: string; sql: string; clarification?: string; windowHours?: number }) {
+    // Up to three sequential LLM round-trips (SQL → prose/chart → judge) → far
+    // more than the default 15s. Outermost rung of the timeout ladder: it must
+    // stay at/above nginx's proxy_read_timeout (210s) and above the backend's own
+    // askHandlerTimeout (200s, nl2sql.go) so the backend is what gives up first —
+    // its 502 carries a real error.message, a proxy cut carries only HTML.
     // context = previous turn, so a follow-up ("make it a bar chart") refines it.
-    const { data } = await this.client.post<ApiResponse<AskDataResult>>('/ai/ask', { question, context }, { timeout: 60_000 });
+    const { data } = await this.client.post<ApiResponse<AskDataResult>>('/ai/ask', { question, context }, { timeout: 210_000 });
     return data.data;
   }
 
-  async runSql(sql: string) {
-    const { data } = await this.client.post<ApiResponse<{ columns: string[]; rows: unknown[][] }>>('/ai/run-sql', { sql });
+  // Doubles as the zoom endpoint: from/to re-runs the same SQL over a narrower
+  // range (and a finer bucket). Without them the window is windowHours back from now.
+  async runSql(sql: string, range?: { from?: string; to?: string; windowHours?: number }) {
+    const { data } = await this.client.post<ApiResponse<{ columns: string[]; rows: unknown[][]; from: string; to: string }>>(
+      '/ai/run-sql', { sql, ...range },
+    );
     return data.data;
   }
 
@@ -348,7 +356,7 @@ class ApiService {
     await this.client.delete(`/ai/boards/${id}`);
   }
 
-  async addBoardChart(boardId: string, payload: { question: string; sql: string; echartOption: Record<string, unknown> }) {
+  async addBoardChart(boardId: string, payload: { question: string; sql: string; echartOption: Record<string, unknown>; windowHours?: number }) {
     const { data } = await this.client.post<ApiResponse<{ id: string }>>(`/ai/boards/${boardId}/charts`, payload);
     return data.data;
   }

@@ -301,8 +301,16 @@ export interface AskDataResult {
   columns: string[];
   rows: unknown[][];
   echartOption: Record<string, unknown>;
+  caption?: string; // one-line prose the chart author wrote alongside the option
+  analysis?: string; // short auto-analysis of what the chart shows (folded into the chart call)
+  nextQuestion?: string; // one suggested follow-up the user might ask next
   answer?: string; // set instead of the fields above when the question is answered in prose
   clarification?: string; // set instead of the fields above when the question is under-specified
+  // Window the SQL's $1/$2 were bound to. Zooming re-runs the same SQL over a
+  // narrower from/to, which also buys a finer bucket (backend autoBucket).
+  windowHours?: number;
+  from?: string;
+  to?: string;
 }
 
 export interface AskBoardSummary {
@@ -317,6 +325,7 @@ export interface AskBoardChart {
   question: string;
   sql: string;
   echartOption: Record<string, unknown>;
+  windowHours?: number; // 0 for charts saved before windows became parameters
 }
 
 export interface AskBoard {

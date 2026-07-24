@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"slices"
 	"strings"
@@ -62,14 +63,113 @@ func validateSQL(sqlText string) (string, error) {
 	if m := deniedTables.FindString(scrub); m != "" {
 		return "", fmt.Errorf("relation %q is not queryable — use the v_ views", m)
 	}
+	// ponytail: the bucket is ALWAYS the server's call. A model that ignores the
+	// prompt and writes a literal interval (a user insisting "give me real 1-minute
+	// data over a year" pushes it there) would emit 525k rows and get silently
+	// truncated at LIMIT 5000 — a wrong answer that looks fine. Force the token back.
+	s = literalBucket.ReplaceAllString(s, "time_bucket('"+bucketToken+"',")
 	return s, nil
+}
+
+// literalBucket matches time_bucket('<any interval>', — the first arg only.
+var literalBucket = regexp.MustCompile(`(?i)time_bucket\(\s*'[^']*'\s*,`)
+
+// ── Zoomable time windows ────────────────────────────────────────────────────
+//
+// A generated time-series query carries its window as bind params ($1 = from,
+// $2 = to) and its bucket as the literal token '%BUCKET%'. That makes the SAME
+// stored SQL re-runnable over a narrower range at a finer resolution when the
+// user zooms — no second LLM call, no SQL rewriting. Queries with no time filter
+// (listings) carry neither, and resolveSQL leaves them untouched.
+const bucketToken = "%BUCKET%"
+
+// targetPoints is what autoBucket aims for. maxRows is the hard ceiling, but a
+// chart stops being readable — and the JSON payload stops being small — long
+// before that, so the bucket is chosen to land well under it.
+const targetPoints = 400
+
+// bucketLadder is ordered finest-first: the first interval that keeps the window
+// under targetPoints wins, so zooming from a year down to an hour walks it
+// automatically (1 day → 1 hour → 5 minutes → 1 minute).
+var bucketLadder = []struct {
+	step  time.Duration
+	label string
+}{
+	{time.Minute, "1 minute"},
+	{5 * time.Minute, "5 minutes"},
+	{15 * time.Minute, "15 minutes"},
+	{time.Hour, "1 hour"},
+	{6 * time.Hour, "6 hours"},
+	{24 * time.Hour, "1 day"},
+	{7 * 24 * time.Hour, "7 days"},
+}
+
+// chartBucket is the resolution the rows were actually aggregated at, for the
+// chart's title — empty when the query has no bucket (a listing).
+func chartBucket(sqlText string, from, to time.Time) string {
+	if !strings.Contains(sqlText, bucketToken) {
+		return ""
+	}
+	return autoBucket(to.Sub(from))
+}
+
+func autoBucket(window time.Duration) string {
+	for _, b := range bucketLadder {
+		if window/b.step <= targetPoints {
+			return b.label
+		}
+	}
+	return bucketLadder[len(bucketLadder)-1].label
+}
+
+// defaultWindowHours is the lookback for a question that names no time range,
+// and the fallback when the model reports a nonsensical one.
+const defaultWindowHours = 24
+
+// windowFor turns the model's reported lookback into a concrete [from, to).
+// Clamped to (0, 5 years] so a hallucinated window_hours can't scan the whole
+// hypertable.
+func windowFor(hours float64) (from, to time.Time) {
+	if hours <= 0 || hours > 5*365*24 {
+		hours = defaultWindowHours
+	}
+	to = time.Now()
+	return to.Add(-time.Duration(hours * float64(time.Hour))), to
+}
+
+// resolveSQL substitutes the bucket token for the resolution this window deserves
+// and returns the bind args the query needs — none when it has no $1, so a
+// listing query runs unchanged.
+func resolveSQL(sqlText string, from, to time.Time) (string, []any) {
+	resolved := strings.ReplaceAll(sqlText, bucketToken, autoBucket(to.Sub(from)))
+	if !strings.Contains(resolved, "$1") {
+		return resolved, nil
+	}
+	return resolved, []any{from, to}
+}
+
+// needsBucketing spots a raw, unbucketed windowed time-series that got truncated
+// at the row cap — the shape "give me real 1-minute data over a year" produces:
+// windowed ($1) but no time_bucket, so ORDER BY ts + LIMIT returns only the first
+// maxRows rows (the window's opening slice), silently dropping the rest. When true,
+// AskData re-emits the query forcing %BUCKET% aggregation so it covers the whole
+// window. DISTINCT/GROUP BY queries are listings/aggregates, not raw series — excluded.
+func needsBucketing(sqlLower, runText string, rowCount int) bool {
+	return rowCount >= maxRows &&
+		strings.Contains(runText, "$1") &&
+		!strings.Contains(sqlLower, "time_bucket") &&
+		!strings.Contains(sqlLower, "distinct") &&
+		!strings.Contains(sqlLower, "group by")
 }
 
 // runScoped executes a validated SELECT for one org inside a read-only transaction.
 // Org isolation comes from the app.current_org GUC (the views filter on it); writes
 // are blocked by the read-only tx; runaway queries by statement_timeout + a row cap.
-func runScoped(ctx context.Context, orgID, sqlText string) (cols []string, rows [][]any, err error) {
-	const maxRows = 5000
+// maxRows is the hard row ceiling for any scoped query. A time-series that hits it
+// was truncated — AskData detects that (needsBucketing) and forces aggregation.
+const maxRows = 5000
+
+func runScoped(ctx context.Context, orgID, sqlText string, args ...any) (cols []string, rows [][]any, err error) {
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 
@@ -93,7 +193,7 @@ func runScoped(ctx context.Context, orgID, sqlText string) (cols []string, rows 
 		return nil, nil, err
 	}
 
-	r, err := tx.Query(ctx, sqlText)
+	r, err := tx.Query(ctx, sqlText, args...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -129,6 +229,7 @@ var emitSQLTool = map[string]any{
 		"properties": map[string]any{
 			"answerable":    map[string]any{"type": "boolean", "description": "false ONLY for a greeting, chit-chat, clearly non-factory input, or a question about a previous chart/result itself (how it was computed, its interval) — then leave sql empty. A data-listing question ('which SKUs', 'what machines', 'list values') is answerable=true."},
 			"sql":           map[string]any{"type": "string", "description": "One SELECT over the allowed v_ views. No semicolons, no CTEs, no writes. Always include a LIMIT."},
+			"window_hours":  map[string]any{"type": "number", "description": "The lookback the SQL's $1/$2 window should span, in hours: last 24h → 24, last 7 days → 168, last month → 720, last year → 8760. Omit (or 0) when the query has no time filter or the question names no range — the server then uses 24."},
 			"clarification": map[string]any{"type": "string", "description": "Set ONLY when the question IS about factory data but you cannot determine WHAT to query — no identifiable metric/machine/dimension. ONE short question in the user's language, offering concrete choices from the schema. Leave empty when a sensible default exists (no time range → assume last 24h). Never set together with sql."},
 		},
 	},
@@ -142,9 +243,12 @@ var emitEChartTool = map[string]any{
 	"description": "Return an ECharts option object (no data — a dataset is injected at render time) that best visualizes the result.",
 	"input_schema": map[string]any{
 		"type":     "object",
-		"required": []string{"option"},
+		"required": []string{"option", "caption"},
 		"properties": map[string]any{
-			"option": map[string]any{"type": "object", "description": "A complete ECharts option: title, tooltip, xAxis, yAxis, legend, series[] with type and encode. Reference result columns by name via encode; do NOT embed data or dataset."},
+			"option":       map[string]any{"type": "object", "description": "A complete ECharts option: title, tooltip, xAxis, yAxis, legend, series[] with type and encode. Reference result columns by name via encode; do NOT embed data or dataset."},
+			"caption":      map[string]any{"type": "string", "description": "ONE short sentence, in the user's language, stating what the chart shows and at what resolution — and, when the given bucket is coarser than the user asked for, that it was aggregated to fit the window and zooming in gives finer detail."},
+			"analysis":     map[string]any{"type": "string", "description": "A SHORT analysis (1-2 sentences, same language as the question) of what the data shows — the trend, the peak/low and when, or a notable difference between machines. Ground EVERY number in the provided summary/rows; never invent values. Different from caption: caption says what the chart IS, analysis says what it MEANS."},
+			"nextQuestion": map[string]any{"type": "string", "description": "ONE natural follow-up question the user might ask next, in their language, concrete and answerable from this data (e.g. compare another machine, zoom a narrower range, look at a related metric). Phrase it as the user would type it."},
 		},
 	},
 }
@@ -194,8 +298,8 @@ v_machine_fields(machine_id uuid, machine_name text, key text, label text, unit 
 	b.WriteString(`
 Rules:
 - Exactly ONE SELECT. No semicolons, no CTEs, no INSERT/UPDATE/DELETE/DDL.
-- Any question about a time range or trend ("last N hours/days", "over time", "per hour", "trend", "history") MUST return a time series: GROUP BY time_bucket('<interval>', ts) AS bucket and ORDER BY bucket, giving many rows — never a single scalar. Pick the interval so a 24h window yields ~24 points (1 hour), a 7d window ~7 (1 day).
-- A relative window ("past/last N units", "recent", "latest", or the same in other languages — e.g. Thai "ย้อนหลัง N", "ล่าสุด") MUST be bounded with WHERE ts > now() - interval 'N <unit>'. ALWAYS use now() — never hardcode a date, never leave the window unbounded. now() is the implicit upper bound, so no end filter is needed. Questions in any language map to this same SQL.
+- Any question about a time range or trend ("last N hours/days", "over time", "per hour", "trend", "history") MUST return a time series: GROUP BY time_bucket('%BUCKET%', ts) AS bucket and ORDER BY bucket, giving many rows — never a single scalar. Write the interval as the LITERAL token '%BUCKET%', exactly like that: the server substitutes the resolution the window deserves (a year gets days, an hour gets minutes) and re-substitutes it when the user zooms in. NEVER write a real interval like '1 hour' there.
+- A window ("past/last N units", "recent", "latest", or the same in other languages — e.g. Thai "ย้อนหลัง N", "ล่าสุด") MUST be bounded with WHERE ts >= $1 AND ts < $2 — the server binds both ends. NEVER write now(), NEVER hardcode a date, NEVER an interval literal, and never leave a time query unbounded. Report the span you mean in window_hours (last 24h → 24, 7 days → 168, a month → 720, a year → 8760); no range named → omit it and the server uses 24h. Questions in any language map to this same SQL.
 - Numeric metric: (data->>'speed')::float. When reading a metric, ALWAYS filter AND data->>'<key>' IS NOT NULL — machines that never report that metric must not appear in the result.
 - A "which/what <dimension> are available / exist / does X run" question (e.g. SKUs) is a listing query, NOT a time series: SELECT DISTINCT data->>'sku' AS sku FROM v_telemetry WHERE data->>'sku' IS NOT NULL ORDER BY sku (filter by machine with machine_name ILIKE '%<code>%').
 - Match a machine by name with ILIKE '%<code>%' (e.g. machine_name ILIKE '%CW-01%'), NEVER exact =. Names include a descriptive prefix, so the user's "CW-01" is stored as "Checkweigher CW-01". Same for v_machines.name.
@@ -211,6 +315,9 @@ type prevTurn struct {
 	Question      string
 	SQL           string
 	Clarification string
+	// Window the previous SQL's $1/$2 were bound to, so re-running it for a prose
+	// follow-up ("what does this chart show") reads the same range the user saw.
+	WindowHours float64
 }
 
 // sqlFixup carries a failed SQL attempt and its error for the retry loop in AskData.
@@ -224,15 +331,42 @@ type sqlFixup struct {
 type sqlEmission struct {
 	SQL           string
 	Clarification string
+	WindowHours   float64
 }
 
+// askCallTimeout bounds ONE generation call (emitSQL / emitProse / emitEChart).
+// Raised 60s -> 90s because the slow KKU reasoning provider spends most of a call
+// on hidden thinking: the analyze path runs TWO such calls back-to-back (emitSQL
+// classifier, then emitProse) and 60s each no longer left the second one room.
+//
+// This is the innermost rung of a timeout ladder that must stay strictly
+// increasing, or an outer layer silently becomes the real limit (a 30s nginx
+// once cut a successful 32s /ask, see frontend/nginx.conf):
+//
+//	90s  per generation call   (here)
+//	100s HTTP client           (controller.go callAIModel)
+//	200s AskData handler       (askHandlerTimeout below)
+//	210s nginx proxy_read      (frontend/nginx.conf)
+//	210s browser axios         (api.service.ts askData)
+//
+// The judge calls stay at 6s — they run on the small router model, and a slow
+// verdict must never delay an answer that is already correct.
+const askCallTimeout = 90 * time.Second
+
+// askHandlerTimeout is the whole-request ceiling: emitSQL + the prev-SQL re-run
+// + emitProse/emitEChart + judge, plus one repair round. Sized so the analyze
+// path's two sequential 90s reasoning calls fit inside it (emitSQL 90 + rerun 8
+// + emitProse 90 + judge 6 ≈ 194s); the optional repair round degrades gracefully
+// if it can't fit before the deadline (the caller keeps the answer already made).
+const askHandlerTimeout = 200 * time.Second
+
 func emitSQL(ctx context.Context, question, schema string, prev *prevTurn, fixup *sqlFixup) (sqlEmission, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, askCallTimeout)
 	defer cancel()
 	sp := "You translate a factory-analytics question into ONE read-only Postgres SELECT by calling emit_sql. Never reply in prose.\n\n" +
-		"Example — \"avg speed last 24h for CW-01\":\n" +
-		"SELECT time_bucket('1 hour', ts) AS bucket, avg((data->>'speed')::float) AS avg_speed " +
-		"FROM v_telemetry WHERE machine_name ILIKE '%CW-01%' AND ts > now() - interval '24 hours' " +
+		"Example — \"avg speed last 24h for CW-01\" (window_hours 24):\n" +
+		"SELECT time_bucket('%BUCKET%', ts) AS bucket, avg((data->>'speed')::float) AS avg_speed " +
+		"FROM v_telemetry WHERE machine_name ILIKE '%CW-01%' AND ts >= $1 AND ts < $2 " +
 		"AND data->>'speed' IS NOT NULL GROUP BY bucket ORDER BY bucket LIMIT 5000\n\n" +
 		"Example — \"which SKUs does CW-01 run\" (a listing question, answerable=true):\n" +
 		"SELECT DISTINCT data->>'sku' AS sku FROM v_telemetry WHERE machine_name ILIKE '%CW-01%' " +
@@ -244,7 +378,11 @@ func emitSQL(ctx context.Context, question, schema string, prev *prevTurn, fixup
 		"answerable=false and NEVER set clarification for it.\n" +
 		"When a reasonable default interpretation exists, answer with the default instead of asking: no time " +
 		"range → last 24h; a fuzzy condition like \"drops/low\" → below that metric's average over the window. " +
-		"Set clarification ONLY when no metric, machine, or dimension is identifiable at all.\n\n"
+		"Set clarification ONLY when no metric, machine, or dimension is identifiable at all.\n\n" +
+		"A time-series over a window MUST aggregate with time_bucket('%BUCKET%', ts) even when the user " +
+		"explicitly demands raw / per-reading / every-minute data (\"ข้อมูลจริง\", \"ทุก 1 นาที\", \"every row\") — " +
+		"NEVER return raw ungrouped rows for a window, or a long window is silently truncated to its first rows. " +
+		"The server picks the finest resolution that fits and the user can zoom in for finer detail.\n\n"
 	switch {
 	case prev != nil && prev.SQL != "":
 		sp += "The user previously asked: \"" + prev.Question + "\"\nwhich ran this SQL:\n" + prev.SQL +
@@ -290,9 +428,10 @@ func emitSQL(ctx context.Context, question, schema string, prev *prevTurn, fixup
 // -> errNotDataQuestion (the pre-B3 contract, unchanged for the 36/36 live suite).
 func parseSQLEmission(rawJSON string) (sqlEmission, error) {
 	var a struct {
-		Answerable    bool   `json:"answerable"`
-		SQL           string `json:"sql"`
-		Clarification string `json:"clarification"`
+		Answerable    bool    `json:"answerable"`
+		SQL           string  `json:"sql"`
+		Clarification string  `json:"clarification"`
+		WindowHours   float64 `json:"window_hours"`
 	}
 	if err := json.Unmarshal([]byte(rawJSON), &a); err != nil {
 		return sqlEmission{}, err
@@ -303,16 +442,22 @@ func parseSQLEmission(rawJSON string) (sqlEmission, error) {
 	if !a.Answerable || strings.TrimSpace(a.SQL) == "" {
 		return sqlEmission{}, errNotDataQuestion
 	}
-	return sqlEmission{SQL: a.SQL}, nil
+	return sqlEmission{SQL: a.SQL, WindowHours: a.WindowHours}, nil
 }
 
 // emitProse answers a question that isn't a SQL query (an explanation or follow-up like
-// "how do they differ") in plain text — the fallback for emitSQL's answerable=false branch.
-// Grounded in the same schema context; a plain completion (no tools). cols/rows, when
-// non-empty, are the ACTUAL re-executed result of prev.SQL — without them the model
-// invents numbers for "analyze the chart" questions.
-func emitProse(ctx context.Context, question, schema string, prev *prevTurn, cols []string, rows [][]any, fixup string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+// "how do they differ", "analyze this chart") in plain text — the fallback for emitSQL's
+// answerable=false branch. Grounded in the same schema context; a plain completion (no
+// tools). cols/rows, when non-empty, are the ACTUAL re-executed result of prev.SQL —
+// without them the model invents numbers for "analyze the chart" questions.
+//
+// Runs on aiModel() (the main model): analysis quality is the whole point of "analyze
+// this", so it wants the strong model, not the small router one. This was briefly moved
+// to routerModel() when the main model was kimi-k3 — a reasoning model that burned ~77s +
+// ~5k tokens per prose call and blew the timeout — but under a fast main model (sonnet)
+// that isn't a problem, and the grounded summary keeps the numbers correct regardless.
+func emitProse(ctx context.Context, question, schema string, prev *prevTurn, cols []string, rows [][]any, summary, fixup string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, askCallTimeout)
 	defer cancel()
 	sp := "You are a factory-data assistant for an IoT dashboard. Answer the user's question directly and " +
 		"concisely in prose, in the SAME language as the question (Thai or English). Use the schema below to " +
@@ -324,9 +469,11 @@ func emitProse(ctx context.Context, question, schema string, prev *prevTurn, col
 	if prev != nil && prev.SQL != "" {
 		sp += "For context, the user's previous question was: \"" + prev.Question + "\" (it ran SQL: " + prev.SQL + ").\n\n"
 		if len(cols) > 0 {
-			sp += "That SQL was just re-executed; its ACTUAL result is below (" + fmt.Sprint(len(rows)) +
-				" rows, evenly sampled if truncated). Ground EVERY number, time range, and machine name in these " +
-				"rows — never invent or estimate values not present. If the rows don't cover what's asked, say so.\n" +
+			sp += "That SQL was just re-executed. " + summary +
+				"A representative sample of the rows follows (" + fmt.Sprint(len(rows)) +
+				" rows, evenly spaced across the full range). Ground EVERY number, time range, and machine name " +
+				"in the summary above and these rows — never invent or estimate values not present. If they don't " +
+				"cover what's asked, say so.\n" +
 				serializeRows(cols, rows) + "\n"
 		}
 	} else if prev != nil && prev.Clarification != "" {
@@ -352,15 +499,78 @@ const echartSystemPrompt = `You turn a SQL result into an ECharts option that an
 - Style variants stay on their base type (still ONE series): for an area chart set areaStyle:{} on a 'line' series; for a smoothed line set smooth:true; for a horizontal bar keep type:'bar' but set yAxis.type:'category' and xAxis.type:'value' (encode x=value, y=category).
 - For a 'heatmap' series use encode:{x:<category>, y:<category>, value:<numeric>}, set BOTH xAxis.type and yAxis.type to 'category', tooltip{trigger:'item'}, and add a visualMap with inRange.color as a low→high scale (e.g. ['#22c55e','#eab308','#ef4444']). Do NOT set visualMap min/max — the renderer fills them from the real data.
 - If the user's message explicitly names a chart type or style (bar/line/pie/scatter/heatmap/area/horizontal, or the same in another language e.g. Thai "กราฟแท่ง"=bar, "กราฟเส้น"=line, "วงกลม"=pie, "ฮีตแมป"/"แผนที่ความร้อน"=heatmap, "กราฟพื้นที่"=area, "แนวนอน"=horizontal), use THAT even if another would be more typical.
-- Column names and a few sample rows are given below for type inference only.`
+- Column names and a few sample rows are given below for type inference only.
+- Always write the caption too: one sentence, same language as the question, about what the chart shows — not a restatement of the title.
+- Also write a SHORT analysis (1-2 sentences) and ONE suggested nextQuestion, both in the user's language. Ground the analysis in the provided "summary" (per-machine min/max/avg over ALL rows) and sample rows — state the trend, the peak/low and roughly when, or a notable machine difference; never invent a number not in the summary/rows. The nextQuestion is a natural follow-up the user would type next (compare another machine, zoom a range, a related metric).
+- When a "bucket" field is given, that is the ACTUAL resolution the rows were aggregated at — the server picks it from the window, so it may be coarser than the user asked for. Say it in the title (e.g. "Speed over 1 year (1 day avg)"). NEVER title a chart with a resolution the user requested but the data does not have.`
 
-// emitEChart generates an ECharts option. prevErr, when non-empty, is the previous
-// attempt's error text — passed back to the model as one retry (B2); pass "" for a
-// fresh (non-retry) call.
-func emitEChart(ctx context.Context, question string, cols []string, sample [][]any, prevErr string) (json.RawMessage, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+// chartEmission is emitEChart's parsed result: the ECharts option plus the short
+// texts folded into the same tool call — caption (what the chart is), analysis (what
+// it means, grounded in the summary), and a suggested nextQuestion. analysis and
+// nextQuestion are optional (the schema doesn't require them): an older/terser model
+// may omit them, and the frontend just hides what's empty.
+type chartEmission struct {
+	Option       json.RawMessage
+	Caption      string
+	Analysis     string
+	NextQuestion string
+}
+
+// leakedNextQ recovers a nextQuestion that some models bleed into another text field as
+// an XML-ish tool tag (<parameter name="nextQuestion">…) instead of a clean JSON value.
+var leakedNextQ = regexp.MustCompile(`(?is)<\s*parameter\s+name\s*=\s*"?nextquestion"?\s*>(.*?)(?:<\s*/\s*parameter\s*>|$)`)
+
+// anyTag strips a stray XML/HTML tag. Claude via some proxies emits tool arguments in an
+// XML format whose tags leak into the JSON string VALUES (a trailing </analysis>, a
+// <parameter …> starting the next field) — the user must never see raw markup.
+var anyTag = regexp.MustCompile(`(?s)<[^>]*>`)
+
+// cleanChartTexts scrubs the folded caption/analysis/nextQuestion of leaked tool-format
+// tags and recovers a nextQuestion that bled into another field. Defensive: a clean JSON
+// tool call passes through untouched.
+func cleanChartTexts(ce chartEmission) chartEmission {
+	if strings.TrimSpace(ce.NextQuestion) == "" {
+		for _, field := range []string{ce.Analysis, ce.Caption} {
+			if m := leakedNextQ.FindStringSubmatch(field); m != nil {
+				ce.NextQuestion = m[1]
+				break
+			}
+		}
+	}
+	ce.Caption = cleanLeak(ce.Caption)
+	ce.Analysis = cleanLeak(ce.Analysis)
+	ce.NextQuestion = cleanLeak(ce.NextQuestion)
+	return ce
+}
+
+// cleanLeak cuts a string at the first leaked tag boundary (the real value ends there),
+// strips any residual tags, and trims. Case-insensitive on the markers; Thai/ASCII byte
+// indices align under ToLower so slicing the original by the found index is safe.
+func cleanLeak(s string) string {
+	low := strings.ToLower(s)
+	for _, marker := range []string{"</analysis>", "</parameter>", "<parameter", "<function", "</function", "</caption>"} {
+		if i := strings.Index(low, marker); i >= 0 {
+			s, low = s[:i], low[:i]
+		}
+	}
+	return strings.TrimSpace(anyTag.ReplaceAllString(s, ""))
+}
+
+// emitEChart generates an ECharts option plus the folded caption/analysis/nextQuestion.
+// prevErr, when non-empty, is the previous attempt's error text — passed back to the
+// model as one retry (B2); pass "" for a fresh (non-retry) call. summary, when non-empty,
+// is the per-machine stats block (summarizeRows) that grounds the analysis; pass "" to
+// skip it (the analysis then leans on the sample rows alone).
+func emitEChart(ctx context.Context, question string, cols []string, sample [][]any, prevErr, bucket, summary string) (chartEmission, error) {
+	ctx, cancel := context.WithTimeout(ctx, askCallTimeout)
 	defer cancel()
 	payloadMap := map[string]any{"question": question, "columns": cols, "sampleRows": sample}
+	if bucket != "" {
+		payloadMap["bucket"] = bucket
+	}
+	if summary != "" {
+		payloadMap["summary"] = summary
+	}
 	if prevErr != "" {
 		payloadMap["previousError"] = prevErr + " — return a corrected option"
 	}
@@ -371,18 +581,25 @@ func emitEChart(ctx context.Context, question string, cols []string, sample [][]
 	tools := []map[string]any{toAITool(emitEChartTool)}
 	resp, _, err := callAIModel(ctx, aiModel(), msgs, tools, forceFunc("emit_echart_option"))
 	if err != nil {
-		return nil, err
+		return chartEmission{}, err
 	}
 	if len(resp.Choices) == 0 || len(resp.Choices[0].Message.ToolCalls) == 0 {
-		return nil, errors.New("no chart generated")
+		return chartEmission{}, errors.New("no chart generated")
 	}
 	var a struct {
-		Option json.RawMessage `json:"option"`
+		Option       json.RawMessage `json:"option"`
+		Caption      string          `json:"caption"`
+		Analysis     string          `json:"analysis"`
+		NextQuestion string          `json:"nextQuestion"`
 	}
 	if err := json.Unmarshal([]byte(resp.Choices[0].Message.ToolCalls[0].Function.Arguments), &a); err != nil {
-		return nil, err
+		return chartEmission{}, err
 	}
-	return a.Option, nil
+	ce := cleanChartTexts(chartEmission{Option: a.Option, Caption: a.Caption, Analysis: a.Analysis, NextQuestion: a.NextQuestion})
+	ce.Caption = truncateRunes(ce.Caption, 300)
+	ce.Analysis = truncateRunes(ce.Analysis, 500)
+	ce.NextQuestion = truncateRunes(ce.NextQuestion, 200)
+	return ce, nil
 }
 
 // askVerifyPrompt is a small, static prompt (~200 tok) so the provider can prompt-cache it where supported
@@ -634,6 +851,153 @@ func serializeRows(cols []string, rows [][]any) string {
 	return b.String()
 }
 
+// toFloat extracts a float from a pgx-scanned value — matches serializeRows' number
+// handling (float, int widths, pgtype.Numeric). false for non-numeric values.
+func toFloat(v any) (float64, bool) {
+	switch t := v.(type) {
+	case float64:
+		return t, true
+	case float32:
+		return float64(t), true
+	case int:
+		return float64(t), true
+	case int16:
+		return float64(t), true
+	case int32:
+		return float64(t), true
+	case int64:
+		return float64(t), true
+	case pgtype.Numeric:
+		if f, err := t.Float64Value(); err == nil {
+			return f.Float64, true
+		}
+	}
+	return 0, false
+}
+
+// summarizeRows produces a compact per-numeric-column summary — count, min, max (each
+// tagged with the timestamp it occurred at, when the result has a time column), and avg —
+// computed over EVERY row, so the small sample that accompanies it in an "analyze" prose
+// prompt can be thinned without ever hiding an extreme. When the result carries a category
+// (text) column (e.g. machine_name), stats are broken down PER category value — analyze
+// charts routinely show several machines at once and a blended global min/max would lose
+// which machine spiked. Falls back to one global line per numeric column when there is no
+// category column. Returns "" when there are no rows or no numeric column (a text listing).
+func summarizeRows(cols []string, rows [][]any) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	// Classify columns by their first non-null value: one timestamp col (for WHEN the
+	// min/max occurred), one category col (the grouping dimension), the numeric cols.
+	timeCol, catCol := -1, -1
+	var numCols []int
+	for ci := range cols {
+		for _, r := range rows {
+			if ci >= len(r) || r[ci] == nil {
+				continue
+			}
+			switch r[ci].(type) {
+			case time.Time:
+				if timeCol < 0 {
+					timeCol = ci
+				}
+			case string:
+				if catCol < 0 {
+					catCol = ci
+				}
+			default:
+				if _, ok := toFloat(r[ci]); ok {
+					numCols = append(numCols, ci)
+				}
+			}
+			break // first non-null value classifies the column
+		}
+	}
+	if len(numCols) == 0 {
+		return ""
+	}
+
+	type stat struct {
+		n             int
+		sum, min, max float64
+		minAt, maxAt  string
+	}
+	// group value -> one stat per numeric column (parallel to numCols).
+	groups := map[string][]*stat{}
+	var order []string
+	// ponytail: cap categories so a high-cardinality dimension can't blow the payload;
+	// raise only if a real result legitimately needs >50 groups summarized.
+	const maxGroups = 50
+	truncated := false
+	for _, r := range rows {
+		cat := ""
+		if catCol >= 0 && catCol < len(r) && r[catCol] != nil {
+			cat = fmt.Sprint(r[catCol])
+		}
+		st, ok := groups[cat]
+		if !ok {
+			if len(order) >= maxGroups {
+				truncated = true
+				continue
+			}
+			st = make([]*stat, len(numCols))
+			for i := range st {
+				st[i] = &stat{}
+			}
+			groups[cat] = st
+			order = append(order, cat)
+		}
+		when := ""
+		if timeCol >= 0 && timeCol < len(r) {
+			if t, ok := r[timeCol].(time.Time); ok {
+				when = t.Format(time.RFC3339)
+			}
+		}
+		for i, ci := range numCols {
+			if ci >= len(r) {
+				continue
+			}
+			f, ok := toFloat(r[ci])
+			if !ok {
+				continue
+			}
+			s := st[i]
+			if s.n == 0 || f < s.min {
+				s.min, s.minAt = f, when
+			}
+			if s.n == 0 || f > s.max {
+				s.max, s.maxAt = f, when
+			}
+			s.sum += f
+			s.n++
+		}
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Summary over all %d rows:\n", len(rows))
+	for i, ci := range numCols {
+		if catCol >= 0 {
+			fmt.Fprintf(&b, "%s by %s:\n", cols[ci], cols[catCol])
+		}
+		for _, cat := range order {
+			s := groups[cat][i]
+			if s.n == 0 {
+				continue
+			}
+			label := cols[ci]
+			if catCol >= 0 {
+				label = "  " + cat
+			}
+			fmt.Fprintf(&b, "- %s: min=%g (%s), max=%g (%s), avg=%g, n=%d\n",
+				label, s.min, s.minAt, s.max, s.maxAt, s.sum/float64(s.n), s.n)
+		}
+	}
+	if truncated {
+		fmt.Fprintf(&b, "(only the first %d categories summarized)\n", maxGroups)
+	}
+	return b.String()
+}
+
 // ── HTTP handlers ────────────────────────────────────────────────────────────
 
 // askAIError maps an AI-generation failure to a Fiber response: a provider daily
@@ -659,15 +1023,16 @@ func AskData(c *fiber.Ctx) error {
 	var body struct {
 		Question string `json:"question"`
 		Context  *struct {
-			Question      string `json:"question"`
-			SQL           string `json:"sql"`
-			Clarification string `json:"clarification"`
+			Question      string  `json:"question"`
+			SQL           string  `json:"sql"`
+			Clarification string  `json:"clarification"`
+			WindowHours   float64 `json:"windowHours"`
 		} `json:"context"`
 	}
 	if err := c.BodyParser(&body); err != nil || strings.TrimSpace(body.Question) == "" {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": "question is required"}})
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), askHandlerTimeout)
 	defer cancel()
 
 	// prev's SQL and Clarification are mutually exclusive (see prevTurn) — SQL wins
@@ -675,7 +1040,7 @@ func AskData(c *fiber.Ctx) error {
 	var prev *prevTurn
 	if body.Context != nil {
 		if s := strings.TrimSpace(body.Context.SQL); s != "" {
-			prev = &prevTurn{Question: body.Context.Question, SQL: body.Context.SQL}
+			prev = &prevTurn{Question: body.Context.Question, SQL: body.Context.SQL, WindowHours: body.Context.WindowHours}
 		} else if c := strings.TrimSpace(body.Context.Clarification); c != "" {
 			prev = &prevTurn{Question: body.Context.Question, Clarification: body.Context.Clarification}
 		}
@@ -688,6 +1053,10 @@ func AskData(c *fiber.Ctx) error {
 	var rows [][]any
 	var sqlText string
 	var fixup *sqlFixup
+	// The window the emitted SQL's $1/$2 were bound to. Returned to the client so a
+	// zoom (RunSQL with an explicit range) starts from what is actually on screen.
+	var windowHours float64
+	var from, to time.Time
 	for attempt := 1; attempt <= 3; attempt++ {
 		emission, err := emitSQL(ctx, question, schema, prev, fixup)
 		if errors.Is(err, errNotDataQuestion) {
@@ -696,14 +1065,26 @@ func AskData(c *fiber.Ctx) error {
 			// grounded in the real rows; on any re-run failure just answer without them.
 			var pcols []string
 			var prows [][]any
+			var psummary string
 			if prev != nil && prev.SQL != "" {
 				if s, verr := validateSQL(prev.SQL); verr == nil {
-					if cs, rs, rerr := runScoped(ctx, user.OrgId, s); rerr == nil {
-						pcols, prows = cs, downsampleRows(rs, 200)
+					pfrom, pto := windowFor(prev.WindowHours)
+					ptext, pargs := resolveSQL(s, pfrom, pto)
+					if cs, rs, rerr := runScoped(ctx, user.OrgId, ptext, pargs...); rerr == nil {
+						pcols = cs
+						psummary = summarizeRows(cs, rs) // over ALL rows — extremes never sampled away
+						prows = downsampleRows(rs, 40)   // ~40 points, trend shape only
+						log.Printf("[ask prose] grounded: reran prev.SQL, rows=%d windowHours=%.0f", len(rs), prev.WindowHours)
+					} else {
+						log.Printf("[ask prose] NOT grounded: prev.SQL re-run failed: %v", rerr)
 					}
+				} else {
+					log.Printf("[ask prose] NOT grounded: prev.SQL failed validation: %v", verr)
 				}
+			} else {
+				log.Printf("[ask prose] NOT grounded: no prev.SQL in context (prev=%t)", prev != nil)
 			}
-			answer, perr := emitProse(ctx, question, schema, prev, pcols, prows, "")
+			answer, perr := emitProse(ctx, question, schema, prev, pcols, prows, psummary, "")
 			if perr != nil {
 				return askAIError(c, "could not answer: ", perr)
 			}
@@ -712,7 +1093,7 @@ func AskData(c *fiber.Ctx) error {
 			// the chart repair). No verdict or a failed regenerate delivers the
 			// original answer — never a 502.
 			if v, ok := verifyAskProse(ctx, question, answer, pcols, sampleRows(prows, 5)); ok && !v.MatchesIntent {
-				if repaired, rerr := emitProse(ctx, question, schema, prev, pcols, prows, "verifier: "+v.Problem); rerr == nil && repaired != "" {
+				if repaired, rerr := emitProse(ctx, question, schema, prev, pcols, prows, psummary, "verifier: "+v.Problem); rerr == nil && repaired != "" {
 					answer = repaired
 				}
 			}
@@ -736,13 +1117,25 @@ func AskData(c *fiber.Ctx) error {
 			return c.Status(400).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": "generated query rejected: " + err.Error()}, "sql": emission.SQL})
 		}
 
-		cols, rows, err = runScoped(ctx, user.OrgId, sqlText)
+		windowHours = emission.WindowHours
+		from, to = windowFor(windowHours)
+		runText, args := resolveSQL(sqlText, from, to)
+		cols, rows, err = runScoped(ctx, user.OrgId, runText, args...)
 		if err != nil {
 			if attempt < 3 {
 				fixup = &sqlFixup{SQL: sqlText, Err: err.Error()}
 				continue
 			}
 			return c.Status(400).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": "query failed: " + err.Error()}, "sql": sqlText})
+		}
+		// A raw windowed series that hit the row cap only covers the window's opening
+		// slice (ORDER BY ts + LIMIT). Re-emit forcing %BUCKET% so it spans the whole
+		// window instead of the first ~maxRows readings. Reuses the fixup channel.
+		if needsBucketing(strings.ToLower(sqlText), runText, len(rows)) && attempt < 3 {
+			fixup = &sqlFixup{SQL: sqlText, Err: fmt.Sprintf(
+				"returned the maximum %d rows and was truncated — a raw per-reading time series over this window only covers its opening slice. Rewrite as an aggregated series: time_bucket('%s', ts) AS bucket with avg()/min()/max() etc., GROUP BY bucket ORDER BY bucket, so it spans the WHOLE window.",
+				maxRows, bucketToken)}
+			continue
 		}
 		break
 	}
@@ -751,24 +1144,28 @@ func AskData(c *fiber.Ctx) error {
 	// Empty option ({}) is the frontend's "table" signal; also skips a wasted provider call.
 	// B2: one retry on a chart-generation error before degrading to the table — a
 	// second failure still leaves option "{}" (HTTP 200, never a 502 here).
-	option := json.RawMessage("{}")
+	option, caption := json.RawMessage("{}"), ""
+	var analysis, nextQuestion string
 	if len(rows) > 0 && hasNumericColumn(cols, rows) {
-		echartOpt, err := emitEChart(ctx, body.Question, cols, sampleRows(rows, 20), "")
+		bucket := chartBucket(sqlText, from, to)
+		summary := summarizeRows(cols, rows) // grounds the folded analysis in real per-machine stats
+		ce, err := emitEChart(ctx, body.Question, cols, sampleRows(rows, 20), "", bucket, summary)
 		if err != nil {
-			echartOpt, err = emitEChart(ctx, body.Question, cols, sampleRows(rows, 20), err.Error())
+			ce, err = emitEChart(ctx, body.Question, cols, sampleRows(rows, 20), err.Error(), bucket, summary)
 		}
 		if err == nil {
-			option = sanitizeEChartOption(echartOpt, cols)
+			option, caption = sanitizeEChartOption(ce.Option, cols), ce.Caption
+			analysis, nextQuestion = ce.Analysis, ce.NextQuestion
 		}
 	}
 
 	// B1: judge gate on chart AND table turns (prose turns are free — no call; empty
 	// results are skipped — nothing to judge beyond the SQL text). Call budget per
 	// turn: SQL 1(-3 on retry) + chart 0-2 + judge 1 (~1s); worst case with the
-	// judge's one repair round adds SQL 1 + chart 0-1 more — still well inside the
-	// 45s handler ctx, and a repair failure degrades to the table signal, never a 502.
+	// judge's one repair round adds SQL 1 + chart 0-1 more — bounded by
+	// askHandlerTimeout, and a repair failure degrades to the table signal, never a 502.
 	if len(rows) > 0 {
-		sqlText, cols, rows, option = verifyAndRepairAnswer(ctx, user.OrgId, question, sqlText, cols, rows, option, schema, prev)
+		sqlText, cols, rows, option, caption, analysis, nextQuestion = verifyAndRepairAnswer(ctx, user.OrgId, question, sqlText, cols, rows, option, caption, analysis, nextQuestion, schema, prev, from, to)
 	}
 
 	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{
@@ -776,6 +1173,12 @@ func AskData(c *fiber.Ctx) error {
 		"columns":      cols,
 		"rows":         rows,
 		"echartOption": option,
+		"caption":      caption,
+		"analysis":     analysis,
+		"nextQuestion": nextQuestion,
+		"windowHours":  windowHours,
+		"from":         from,
+		"to":           to,
 	}})
 }
 
@@ -786,38 +1189,45 @@ func AskData(c *fiber.Ctx) error {
 // fails to emit, validate, or run, or returns no rows, the ORIGINAL rows are kept
 // (chart degraded to the table signal "{}") — the judge must never turn an already
 // delivered answer into a 502.
-func verifyAndRepairAnswer(ctx context.Context, orgID, question, sqlText string, cols []string, rows [][]any, option json.RawMessage, schema string, prev *prevTurn) (string, []string, [][]any, json.RawMessage) {
+func verifyAndRepairAnswer(ctx context.Context, orgID, question, sqlText string, cols []string, rows [][]any, option json.RawMessage, caption, analysis, nextQuestion, schema string, prev *prevTurn, from, to time.Time) (string, []string, [][]any, json.RawMessage, string, string, string) {
 	v, ok := verifyAskAnswer(ctx, question, sqlText, cols, sampleRows(rows, 5), option)
 	if !ok || v.MatchesIntent {
-		return sqlText, cols, rows, option
+		return sqlText, cols, rows, option, caption, analysis, nextQuestion
 	}
 
 	emission, err := emitSQL(ctx, question, schema, prev, &sqlFixup{SQL: sqlText, Err: "verifier: " + v.Problem})
 	if err != nil || emission.Clarification != "" || emission.SQL == "" {
-		return sqlText, cols, rows, json.RawMessage("{}")
+		return sqlText, cols, rows, json.RawMessage("{}"), "", "", ""
 	}
 	repairedSQL, err := validateSQL(emission.SQL)
 	if err != nil {
-		return sqlText, cols, rows, json.RawMessage("{}")
+		return sqlText, cols, rows, json.RawMessage("{}"), "", "", ""
 	}
-	repairedCols, repairedRows, err := runScoped(ctx, orgID, repairedSQL)
+	// The repair keeps the original turn's window — the judge flags what was asked,
+	// not when, and a repair that silently moved the range would be its own bug.
+	repairedText, repairedArgs := resolveSQL(repairedSQL, from, to)
+	repairedCols, repairedRows, err := runScoped(ctx, orgID, repairedText, repairedArgs...)
 	if err != nil || len(repairedRows) == 0 {
-		return sqlText, cols, rows, json.RawMessage("{}")
+		return sqlText, cols, rows, json.RawMessage("{}"), "", "", ""
 	}
 
 	// Repaired rows accepted. Chart them if chartable; otherwise deliver as a table —
 	// ponytail: no second judge round on the repaired result, by design (bounded cost).
 	if !hasNumericColumn(repairedCols, repairedRows) {
-		return repairedSQL, repairedCols, repairedRows, json.RawMessage("{}")
+		return repairedSQL, repairedCols, repairedRows, json.RawMessage("{}"), "", "", ""
 	}
-	repairedOpt, err := emitEChart(ctx, question, repairedCols, sampleRows(repairedRows, 20), "")
+	ce, err := emitEChart(ctx, question, repairedCols, sampleRows(repairedRows, 20), "", chartBucket(repairedSQL, from, to), summarizeRows(repairedCols, repairedRows))
 	if err != nil {
-		return repairedSQL, repairedCols, repairedRows, json.RawMessage("{}")
+		return repairedSQL, repairedCols, repairedRows, json.RawMessage("{}"), "", "", ""
 	}
-	return repairedSQL, repairedCols, repairedRows, sanitizeEChartOption(repairedOpt, repairedCols)
+	return repairedSQL, repairedCols, repairedRows, sanitizeEChartOption(ce.Option, repairedCols), ce.Caption, ce.Analysis, ce.NextQuestion
 }
 
-// RunSQL re-executes a stored query (board reopen → live data). POST /ai/run-sql
+// RunSQL re-executes a stored query (board reopen → live data) and doubles as the
+// zoom endpoint: pass an explicit from/to to re-run the SAME SQL over a narrower
+// range, and the bucket token resolves finer automatically — no LLM call.
+// Without from/to the window is windowHours back from now, so a saved board chart
+// reopens on live data over the span it was created with. POST /ai/run-sql
 // Re-validates even though the SQL came from our DB — cheap, and the guard is the point.
 func RunSQL(c *fiber.Ctx) error {
 	user := middleware.GetUser(c)
@@ -825,7 +1235,10 @@ func RunSQL(c *fiber.Ctx) error {
 		return c.Status(401).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": "unauthorized"}})
 	}
 	var body struct {
-		SQL string `json:"sql"`
+		SQL         string     `json:"sql"`
+		From        *time.Time `json:"from"`
+		To          *time.Time `json:"to"`
+		WindowHours float64    `json:"windowHours"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": "sql is required"}})
@@ -834,9 +1247,17 @@ func RunSQL(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": err.Error()}})
 	}
-	cols, rows, err := runScoped(context.Background(), user.OrgId, sqlText)
+	from, to := windowFor(body.WindowHours)
+	if body.From != nil && body.To != nil {
+		if !body.To.After(*body.From) {
+			return c.Status(400).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": "to must be after from"}})
+		}
+		from, to = *body.From, *body.To
+	}
+	runText, args := resolveSQL(sqlText, from, to)
+	cols, rows, err := runScoped(context.Background(), user.OrgId, runText, args...)
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": "query failed: " + err.Error()}})
 	}
-	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"columns": cols, "rows": rows}})
+	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"columns": cols, "rows": rows, "from": from, "to": to}})
 }

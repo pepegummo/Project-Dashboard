@@ -5,8 +5,9 @@ security tables, API contracts), see [`ai-pages.md`](./ai-pages.md).
 
 IotVision has **two independent AI surfaces**. They share the same AI provider account and the
 same org-scoped database, but nothing else — no shared code, conversation state, or UI.
-Production runs on **KKU GenAI**: `claude-sonnet-5` does the heavy generation, and a cheaper
-`gpt-5.4-mini` does intent routing and answer-checking. Both are OpenAI-compatible chat APIs.
+Production runs on **KKU GenAI**: `claude-sonnet-5` does all the generation (SQL, chart specs,
+and the analyze/explain prose answers), and a cheaper `gpt-5.4-mini` does intent routing and
+answer-checking. Both are OpenAI-compatible chat APIs.
 
 | Surface | Page | What it does |
 |---|---|---|

@@ -86,7 +86,7 @@ func GetBoard(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": "board not found"}})
 	}
 	rows, err := database.Pool.Query(context.Background(),
-		`SELECT id, question, sql, echart_option FROM ai_board_charts WHERE board_id = $1 ORDER BY "order", created_at`, id)
+		`SELECT id, question, sql, echart_option, COALESCE(window_hours, 0) FROM ai_board_charts WHERE board_id = $1 ORDER BY "order", created_at`, id)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": err.Error()}})
 	}
@@ -95,10 +95,11 @@ func GetBoard(c *fiber.Ctx) error {
 	for rows.Next() {
 		var cid, question, sqlText string
 		var option json.RawMessage
-		if err := rows.Scan(&cid, &question, &sqlText, &option); err != nil {
+		var windowHours float64
+		if err := rows.Scan(&cid, &question, &sqlText, &option, &windowHours); err != nil {
 			return c.Status(500).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": err.Error()}})
 		}
-		charts = append(charts, fiber.Map{"id": cid, "question": question, "sql": sqlText, "echartOption": option})
+		charts = append(charts, fiber.Map{"id": cid, "question": question, "sql": sqlText, "echartOption": option, "windowHours": windowHours})
 	}
 	return c.JSON(fiber.Map{"success": true, "data": fiber.Map{"id": id, "name": name, "charts": charts}})
 }
@@ -161,6 +162,7 @@ func AddBoardChart(c *fiber.Ctx) error {
 		Question     string          `json:"question"`
 		SQL          string          `json:"sql"`
 		EchartOption json.RawMessage `json:"echartOption"`
+		WindowHours  float64         `json:"windowHours"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": "invalid body"}})
@@ -174,10 +176,10 @@ func AddBoardChart(c *fiber.Ctx) error {
 	}
 	var id string
 	err = database.Pool.QueryRow(context.Background(),
-		`INSERT INTO ai_board_charts (board_id, question, sql, echart_option, "order")
-		 VALUES ($1, $2, $3, $4, (SELECT COALESCE(MAX("order")+1, 0) FROM ai_board_charts WHERE board_id = $1))
+		`INSERT INTO ai_board_charts (board_id, question, sql, echart_option, window_hours, "order")
+		 VALUES ($1, $2, $3, $4, $5, (SELECT COALESCE(MAX("order")+1, 0) FROM ai_board_charts WHERE board_id = $1))
 		 RETURNING id`,
-		boardID, body.Question, sqlText, body.EchartOption).Scan(&id)
+		boardID, body.Question, sqlText, body.EchartOption, body.WindowHours).Scan(&id)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"success": false, "error": fiber.Map{"message": err.Error()}})
 	}

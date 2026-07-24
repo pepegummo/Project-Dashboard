@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -150,11 +151,16 @@ type aiResponse struct {
 	Error *aiError `json:"error"`
 }
 
-// aiError tolerates both OpenAI-style {"error":{"message":...,"code":...}} and
-// bare-string errors ({"error":"This model reached daily limit."} — KKU proxy).
+// aiError tolerates both OpenAI-style {"error":{"message":...}} and bare-string
+// errors ({"error":"This model reached daily limit."} — KKU proxy).
+//
+// "code" is deliberately NOT declared: providers type it as a string OR a number
+// (Groq sends "invalid_request_error", others send 429), nothing here reads it,
+// and encoding/json ignores undeclared keys. Declaring it as a string made a
+// numeric code fail the whole parse — which then MASKED the provider's actual
+// message, turning every such response into "failed to parse AI response".
 type aiError struct {
 	Message string `json:"message"`
-	Code    string `json:"code"`
 }
 
 func (e *aiError) UnmarshalJSON(b []byte) error {
@@ -939,6 +945,20 @@ var tokenMeter int64
 func resetTokenMeter()      { atomic.StoreInt64(&tokenMeter, 0) }
 func loadTokenMeter() int64 { return atomic.LoadInt64(&tokenMeter) }
 
+// noForcedTools remembers models whose provider rejected a named-function
+// tool_choice (Moonshot rejects it whenever the model's thinking is enabled), so
+// that probe is paid ONCE per model per process rather than on every call.
+// Cleared only by a restart — which is also the only time AI_MODEL can change,
+// so a stale entry is unreachable.
+//
+// ponytail: sync.Map, not a typed cache with eviction. Bounded by the number of
+// distinct model strings one process uses (2: AI_MODEL + AI_ROUTER_MODEL).
+var noForcedTools sync.Map // model string -> struct{}
+
+// isForcedFunc reports whether toolChoice names a specific function (the object
+// form built by forceFunc) rather than "", "required", or "none".
+func isForcedFunc(toolChoice string) bool { return strings.HasPrefix(toolChoice, "{") }
+
 func callAI(messages []aiMessage, tools []map[string]any, toolChoice string) (*aiResponse, error) {
 	resp, _, err := callAIModel(context.Background(), aiModel(), messages, tools, toolChoice)
 	return resp, err
@@ -958,6 +978,12 @@ func callAIModel(ctx context.Context, model string, messages []aiMessage, tools 
 	}
 	if len(tools) > 0 {
 		reqBody["tools"] = tools
+		// This model's provider already rejected a named function once — send
+		// "required" instead. Safe: three of the four forced call sites pass a
+		// single-tool list, so requiring *a* tool is requiring *that* tool.
+		if _, blocked := noForcedTools.Load(model); blocked && isForcedFunc(toolChoice) {
+			toolChoice = "required"
+		}
 		if toolChoice != "" {
 			// "" = auto, "required"/"none" = string; a leading "{" means a forced-function
 			// object (forceFunc) that the provider needs as JSON, not a quoted string.
@@ -977,7 +1003,7 @@ func callAIModel(ctx context.Context, model string, messages []aiMessage, tools 
 		return nil, 0, err
 	}
 
-	httpClient := &http.Client{Timeout: 90 * time.Second}
+	httpClient := &http.Client{Timeout: 100 * time.Second}
 
 	const maxAttempts = 3
 	lastErr := fmt.Errorf("the AI service is busy (rate limit). Please wait a few seconds and try again")
@@ -993,6 +1019,10 @@ func callAIModel(ctx context.Context, model string, messages []aiMessage, tools 
 		attemptStart := time.Now() // time THIS attempt's round-trip only
 		httpResp, err := httpClient.Do(req)
 		if err != nil {
+			// Log elapsed on failure: without this a timed-out call leaves no trace
+			// (callers discard attemptLat), so we can't tell "provider hung the full
+			// budget" from "ctx was already nearly drained when this call started".
+			log.Printf("[ai call] model=%s FAILED after %s: %v", model, time.Since(attemptStart).Round(time.Millisecond), err)
 			return nil, 0, err
 		}
 		respBytes, _ := io.ReadAll(httpResp.Body)
@@ -1010,7 +1040,11 @@ func callAIModel(ctx context.Context, model string, messages []aiMessage, tools 
 
 		var result aiResponse
 		if err := json.Unmarshal(respBytes, &result); err != nil {
-			return nil, 0, fmt.Errorf("failed to parse AI response: %w", err)
+			// Include the body: a parse failure means the response didn't match the
+			// OpenAI shape at all (an HTML error page, a gateway envelope), and the
+			// json error alone names a field without ever showing what arrived.
+			return nil, 0, fmt.Errorf("failed to parse AI response (status %d): %w — body: %s",
+				httpResp.StatusCode, err, truncateRunes(string(respBytes), 500))
 		}
 		// ponytail: single choke point for every model call (router/main/verify/repair) —
 		// accumulate token usage here so tests/ops can read a run total. Read via loadTokenMeter.
@@ -1020,6 +1054,23 @@ func callAIModel(ctx context.Context, model string, messages []aiMessage, tools 
 				model, result.Usage.PromptTokens, result.Usage.CompletionTokens, result.Usage.TotalTokens)
 		}
 		if result.Error != nil {
+			// ponytail: log the raw body rather than modelling each gateway's error
+			// shape. "message" is frequently just a wrapper ("Provider returned error"
+			// — OpenRouter) with the real cause in metadata we deliberately don't map.
+			log.Printf("[ai error] model=%s status=%d body=%s",
+				model, httpResp.StatusCode, truncateRunes(string(respBytes), 800))
+			// Some providers reject a named-function tool_choice outright (Moonshot:
+			// "tool_choice 'specified' is incompatible with thinking enabled"). Record
+			// the model and retry once with "required" rather than failing the feature
+			// — every forced call site already handles the model not calling the tool.
+			// Matched against the RAW body, not Error.Message: gateways wrap the
+			// upstream text (OpenRouter reports only "Provider returned error" and
+			// buries the real message in error.metadata.raw).
+			if isForcedFunc(toolChoice) && strings.Contains(strings.ToLower(string(respBytes)), "tool_choice") {
+				noForcedTools.Store(model, struct{}{})
+				log.Printf("[ai call] model=%s rejected forced tool_choice — falling back to \"required\" for this process", model)
+				return callAIModel(ctx, model, messages, tools, "required")
+			}
 			// The provider's function-call parser failed (malformed generation, e.g. gpt-oss
 			// leaking a "<|channel|>commentary" token into the tool name). Retry once
 			// without tools so the user gets a plain-text reply instead of an error.

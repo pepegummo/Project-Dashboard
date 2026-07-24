@@ -252,13 +252,13 @@ func TestAskDataLiveQuestions(t *testing.T) {
 				{"2026-07-13T11:00:00Z", 39.8},
 				{"2026-07-13T12:00:00Z", 44.5},
 			}
-			opt, cerr := emitEChart(ctx, c.question, cols, sample, "")
+			ce, cerr := emitEChart(ctx, c.question, cols, sample, "", "", "")
 			if cerr != nil {
 				t.Fatalf("emitEChart error: %v", cerr)
 			}
-			sanitized := sanitizeEChartOption(opt, cols)
+			sanitized := sanitizeEChartOption(ce.Option, cols)
 			if string(sanitized) == "{}" {
-				t.Fatalf("sanitizeEChartOption returned empty option; raw option: %s", string(opt))
+				t.Fatalf("sanitizeEChartOption returned empty option; raw option: %s", string(ce.Option))
 			}
 			var parsed struct {
 				Series []struct {

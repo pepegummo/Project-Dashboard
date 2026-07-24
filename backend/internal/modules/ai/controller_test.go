@@ -5,6 +5,74 @@ import (
 	"testing"
 )
 
+// TestForcedFuncNameIgnoresRequired guards the assumption the whole cross-provider
+// degradation rests on: once callAIModel downgrades a named function to "required",
+// Chat()'s single-schema optimization disengages by itself, with no caller changes.
+func TestForcedFuncNameIgnoresRequired(t *testing.T) {
+	if got := forcedFuncName(forceFunc("emit_sql")); got != "emit_sql" {
+		t.Errorf("forcedFuncName(forceFunc(%q)) = %q, want %q", "emit_sql", got, "emit_sql")
+	}
+	for _, tc := range []string{"required", "none", ""} {
+		if got := forcedFuncName(tc); got != "" {
+			t.Errorf("forcedFuncName(%q) = %q, want \"\" (not a named function)", tc, got)
+		}
+		if isForcedFunc(tc) {
+			t.Errorf("isForcedFunc(%q) = true, want false", tc)
+		}
+	}
+	if !isForcedFunc(forceFunc("classify_intent")) {
+		t.Error("isForcedFunc(forceFunc(...)) = false, want true")
+	}
+}
+
+// TestNoForcedToolsMemo covers the per-model capability memory that keeps the
+// probe to once per process instead of once per call.
+func TestNoForcedToolsMemo(t *testing.T) {
+	const model = "test-model-rejects-forcing"
+	t.Cleanup(func() { noForcedTools.Delete(model) }) // never leak into other tests
+
+	if _, blocked := noForcedTools.Load(model); blocked {
+		t.Fatal("model is blocked before anything stored it")
+	}
+	noForcedTools.Store(model, struct{}{})
+	if _, blocked := noForcedTools.Load(model); !blocked {
+		t.Error("model not blocked after Store")
+	}
+	if _, blocked := noForcedTools.Load("some-other-model"); blocked {
+		t.Error("an unrelated model was reported blocked")
+	}
+}
+
+// TestAIErrorShapes covers every error envelope a provider has actually sent.
+// A parse failure here is worse than it looks: it replaces the provider's real
+// message with "failed to parse AI response", so the operator never learns what
+// was actually wrong (bad model name, bad key, quota).
+func TestAIErrorShapes(t *testing.T) {
+	cases := []struct {
+		name, body, wantMessage string
+	}{
+		{"bare string (KKU)", `{"error":"This model reached daily limit."}`, "This model reached daily limit."},
+		{"object, string code", `{"error":{"message":"boom","code":"invalid_request_error"}}`, "boom"},
+		{"object, numeric code", `{"error":{"message":"boom","code":429}}`, "boom"},
+		{"object, no code", `{"error":{"message":"boom"}}`, "boom"},
+		{"object, unknown extra keys", `{"error":{"message":"boom","code":429,"param":null,"type":"x"}}`, "boom"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var got aiResponse
+			if err := json.Unmarshal([]byte(c.body), &got); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got.Error == nil {
+				t.Fatal("Error = nil, want a parsed error")
+			}
+			if got.Error.Message != c.wantMessage {
+				t.Errorf("Message = %q, want %q", got.Error.Message, c.wantMessage)
+			}
+		})
+	}
+}
+
 // TestBuildAIToolsPreviewGating verifies buildAITools drops the preview_*
 // staging tools for viewers (read-only role) but keeps them for editor/admin —
 // a viewer must never be offered a tool that dispatch() will then reject.

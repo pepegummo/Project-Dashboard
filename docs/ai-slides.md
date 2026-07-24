@@ -316,8 +316,8 @@ flowchart TB
     S["buildSchemaContext(orgID)"]
     E["emitSQL — forced tool"]
     V["validateSQL + runScoped (Go)"]
-    C["emitEChart + sanitizeEChartOption"]
-    J["verifyAskAnswer / verifyAskProse"]
+    C["emitEChart — สเปก option ไม่มีข้อมูล<br/>sanitizeEChartOption (Go) — type/encode ใช้ได้จริงไหม"]
+    J["judge — คำถาม vs SQL + rows + ชนิดกราฟ<br/>ตัดสินจาก JSON ไม่ใช่จากภาพ"]
   end
   Gen["claude-sonnet-5"]
   Small["gpt-5.4-mini (judge)"]
